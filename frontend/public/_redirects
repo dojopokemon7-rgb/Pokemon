@@ -1,0 +1,10 @@
+# ─────────────────────────────────────────────────────────────
+#  Netlify Redirects & API Proxy Config
+# ─────────────────────────────────────────────────────────────
+
+# 1. Proxy relative API requests to Netlify Serverless Functions
+/api/*  /.netlify/functions/api  200
+
+# 2. Support client-side routing in Single Page Apps (React Router)
+#    Redirects all other requests to index.html
+/*      /index.html                                      200

@@ -1,0 +1,194 @@
+/* VerifyResult.css */
+
+.vr-panel {
+  border-radius: 20px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  text-align: center;
+  animation: vrSlideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes vrSlideUp {
+  from { opacity: 0; transform: translateY(30px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+
+.vr-panel--found {
+  background: linear-gradient(135deg, rgba(16,185,129,0.12) 0%, rgba(5,150,105,0.06) 100%);
+  border: 1.5px solid rgba(16, 185, 129, 0.35);
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.12), 0 8px 32px rgba(0,0,0,0.3);
+}
+
+.vr-panel--missing {
+  background: linear-gradient(135deg, rgba(239,68,68,0.1) 0%, rgba(185,28,28,0.05) 100%);
+  border: 1.5px solid rgba(239, 68, 68, 0.35);
+  box-shadow: 0 0 40px rgba(239, 68, 68, 0.1), 0 8px 32px rgba(0,0,0,0.3);
+}
+
+/* ── Icon ── */
+.vr-icon-wrap {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vr-icon {
+  font-size: 3.2rem;
+  position: relative;
+  z-index: 1;
+  animation: vrIconPop 0.5s 0.1s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes vrIconPop {
+  from { transform: scale(0) rotate(-20deg); }
+  to   { transform: scale(1) rotate(0deg);   }
+}
+
+.vr-icon-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  animation: vrRingPulse 2s ease-in-out infinite;
+}
+
+.vr-icon-ring--found  { background: rgba(16, 185, 129, 0.15); }
+.vr-icon-ring--missing{ background: rgba(239, 68, 68, 0.15);  }
+
+@keyframes vrRingPulse {
+  0%,100% { transform: scale(1);   opacity: 0.8; }
+  50%     { transform: scale(1.25); opacity: 0.3; }
+}
+
+/* ── Text ── */
+.vr-message { display: flex; flex-direction: column; gap: 6px; }
+
+.vr-title {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.vr-title--found   { color: #34d399; }
+.vr-title--missing { color: #f87171; }
+
+.vr-subtitle {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.vr-subtitle strong { color: #e2e8f0; }
+
+/* ── Card chip ── */
+.vr-card-chip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  padding: 12px 16px;
+  width: 100%;
+  max-width: 420px;
+  text-align: left;
+}
+
+.vr-chip-img {
+  width: 64px;
+  height: 88px;
+  object-fit: contain;
+  border-radius: 6px;
+  flex-shrink: 0;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.4));
+}
+
+.vr-chip-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.vr-chip-name {
+  font-weight: 700;
+  font-size: 1rem;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vr-chip-meta {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.vr-chip-rarity {
+  display: inline-block;
+  background: rgba(99,102,241,0.2);
+  color: #a5b4fc;
+  border: 1px solid rgba(99,102,241,0.3);
+  border-radius: 20px;
+  padding: 1px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.vr-chip-qty {
+  font-size: 0.8rem;
+  color: #6ee7b7;
+}
+
+.vr-chip-qty strong { font-weight: 700; }
+
+.vr-chip-price {
+  font-size: 0.8rem;
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+/* ── Actions ── */
+.vr-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.vr-btn {
+  padding: 11px 22px;
+  border: none;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.vr-btn:hover { transform: translateY(-2px); }
+
+.vr-btn--wishlist {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #1a1a2e;
+  box-shadow: 0 4px 16px rgba(245,158,11,0.3);
+}
+.vr-btn--wishlist:hover { box-shadow: 0 6px 24px rgba(245,158,11,0.5); }
+
+.vr-btn--scan-again {
+  background: rgba(255,255,255,0.08);
+  color: #cbd5e1;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+.vr-btn--scan-again:hover { background: rgba(255,255,255,0.14); }

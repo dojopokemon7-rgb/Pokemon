@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PokéScan — Test Cards</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #080812;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 40px;
+      background:
+        radial-gradient(ellipse at 15% 15%, rgba(99,102,241,0.13) 0%, transparent 55%),
+        radial-gradient(ellipse at 85% 85%, rgba(240,171,252,0.08) 0%, transparent 55%);
+    }
+
+    h1 {
+      font-size: 2rem; font-weight: 800;
+      background: linear-gradient(90deg, #facc15, #f97316, #ef4444);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    p.subtitle { color: #64748b; font-size: 0.9rem; text-align: center; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      width: 100%; max-width: 760px;
+    }
+
+    .card-block {
+      border-radius: 20px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      text-align: center;
+    }
+
+    .card-block--match {
+      background: rgba(16,185,129,0.08);
+      border: 1.5px solid rgba(16,185,129,0.35);
+    }
+    .card-block--no-match {
+      background: rgba(239,68,68,0.08);
+      border: 1.5px solid rgba(239,68,68,0.35);
+    }
+
+    .badge {
+      font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; padding: 4px 14px; border-radius: 20px;
+    }
+    .badge--match   { background: rgba(16,185,129,0.2);  color: #34d399; border: 1px solid rgba(16,185,129,0.4); }
+    .badge--nomatch { background: rgba(239,68,68,0.2);   color: #f87171; border: 1px solid rgba(239,68,68,0.4); }
+
+    .card-img {
+      width: 220px;
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+      transition: transform 0.2s;
+    }
+    .card-img:hover { transform: scale(1.04); }
+
+    .card-name  { font-size: 1.1rem; font-weight: 700; color: #e2e8f0; }
+    .card-set   { font-size: 0.8rem; color: #64748b; }
+    .card-id    { font-size: 0.72rem; color: #475569; font-family: monospace; }
+
+    .expected {
+      font-size: 0.82rem; padding: 10px 14px; border-radius: 10px;
+      line-height: 1.5;
+    }
+    .expected--match   { background: rgba(16,185,129,0.1);  color: #6ee7b7; }
+    .expected--nomatch { background: rgba(239,68,68,0.1);   color: #fca5a5; }
+
+    .dl-btn {
+      display: inline-block;
+      padding: 10px 20px;
+      border-radius: 12px;
+      font-size: 0.85rem; font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .dl-btn:hover { transform: translateY(-2px); }
+    .dl-btn--match {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(16,185,129,0.35);
+    }
+    .dl-btn--nomatch {
+      background: linear-gradient(135deg, #ef4444, #b91c1c);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(239,68,68,0.35);
+    }
+
+    .instructions {
+      max-width: 600px; text-align: center;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 20px 24px;
+    }
+    .instructions h2 { font-size: 1rem; font-weight: 700; margin-bottom: 12px; color: #a5b4fc; }
+    .instructions ol { text-align: left; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+    .instructions li { font-size: 0.85rem; color: #94a3b8; line-height: 1.5; }
+    .instructions li strong { color: #e2e8f0; }
+    .instructions a { color: #818cf8; }
+
+    @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+  <h1>⚡ PokéScan — Test Cards</h1>
+  <p class="subtitle">Two real cards from your database to test the Scan-to-Verify flow</p>
+
+  <div class="grid">
+
+    <!-- ── Card 1: IN portfolio → should MATCH ── -->
+    <div class="card-block card-block--match">
+      <span class="badge badge--match">✅ IN Your Portfolio</span>
+
+      <img
+        src="https://images.pokemontcg.io/swsh11/212_hires.png"
+        alt="Giratina VSTAR"
+        class="card-img"
+      />
+
+      <div class="card-name">Giratina VSTAR</div>
+      <div class="card-set">Lost Origin</div>
+      <div class="card-id">ID: swsh11-212</div>
+
+      <div class="expected expected--match">
+        Expected result:<br/>
+        <strong>✅ "Yes! You already own this card!"</strong>
+      </div>
+
+      <a
+        href="https://images.pokemontcg.io/swsh11/212_hires.png"
+        download="giratina_vstar.png"
+        target="_blank"
+        class="dl-btn dl-btn--match"
+      >
+        ⬇ Download &amp; Upload to Scanner
+      </a>
+    </div>
+
+    <!-- ── Card 2: NOT in portfolio → should NOT MATCH ── -->
+    <div class="card-block card-block--no-match">
+      <span class="badge badge--nomatch">❌ NOT In Your Portfolio</span>
+
+      <img
+        src="https://images.pokemontcg.io/det1/1_hires.png"
+        alt="Bulbasaur"
+        class="card-img"
+      />
+
+      <div class="card-name">Bulbasaur</div>
+      <div class="card-set">Detective Pikachu</div>
+      <div class="card-id">ID: det1-1</div>
+
+      <div class="expected expected--nomatch">
+        Expected result:<br/>
+        <strong>❌ "You don't have this card yet."</strong>
+      </div>
+
+      <a
+        href="https://images.pokemontcg.io/det1/1_hires.png"
+        download="bulbasaur.png"
+        target="_blank"
+        class="dl-btn dl-btn--nomatch"
+      >
+        ⬇ Download &amp; Upload to Scanner
+      </a>
+    </div>
+
+  </div>
+
+  <!-- Instructions -->
+  <div class="instructions">
+    <h2>📋 How to Test</h2>
+    <ol>
+      <li>Download each card image using the buttons above</li>
+      <li>Open <a href="http://localhost:5173" target="_blank">localhost:5173</a> → <strong>My Collection</strong> tab</li>
+      <li>Click <strong>"📷 Scan to Verify"</strong></li>
+      <li>Click <strong>"📁 Upload Image"</strong> and select the downloaded card</li>
+      <li>Wait for OCR to process (~2–4 seconds)</li>
+      <li><strong>Giratina VSTAR</strong> → should say <em>✅ "Yes! You already own this!"</em></li>
+      <li><strong>Bulbasaur</strong> → should say <em>❌ "You don't have this card yet."</em></li>
+    </ol>
+  </div>
+
+</body>
+</html>
