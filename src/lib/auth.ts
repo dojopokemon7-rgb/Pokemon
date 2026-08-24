@@ -219,10 +219,14 @@ export const auth = betterAuth({
   // --------------------------------------------------------
   // Trusted Origins (CORS)
   // --------------------------------------------------------
+  // Includes the configured BETTER_AUTH_URL plus Vercel preview URLs
+  // (each deploy gets a unique <hash>.vercel.app subdomain).
   trustedOrigins: [
     process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
-    // Add your production domain here in Week 4:
-    // "https://your-domain.com",
+    // Accept any Vercel preview deployment for this project
+    ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
+    // Wildcard match for all Vercel preview URLs of this project
+    "https://*.vercel.app",
   ],
 });
 

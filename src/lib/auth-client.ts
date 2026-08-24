@@ -19,10 +19,18 @@
 
 import { createAuthClient } from "better-auth/react";
 
+// Use the current browser origin at runtime so the auth client always
+// calls the same domain the page is served from. Falls back to
+// NEXT_PUBLIC_APP_URL for SSR contexts, then localhost for local dev.
+// This prevents "cross-deployment" mismatches on Vercel where each
+// preview build gets a unique hash-suffixed URL.
+const getBaseUrl = (): string => {
+  if (typeof window !== "undefined") return window.location.origin;
+  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+};
+
 export const authClient = createAuthClient({
-  // Must point to the Next.js API route that handles auth requests.
-  // In production this will be your domain (automatically uses the current origin).
-  baseURL: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+  baseURL: getBaseUrl(),
 
   // Client-side plugins MUST mirror the server-side plugins in `lib/auth.ts`.
   // Phone Number / OTP is disabled for MVP — re-enable in Week 4.
