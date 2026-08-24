@@ -1,0 +1,1004 @@
+@import "tailwindcss";
+
+/* ============================================================
+   DOJO DESIGN SYSTEM — Global CSS Variables & Tailwind Tokens
+   ============================================================ */
+
+:root {
+  /* --- Brand Colors ---
+     Reference (dojo-prototype/styles.css) uses two distinct golds:
+       --accent (gold-500, #E9B43B) for text/links/borders/FABs/chips.
+       .btn background is a separate, brighter #FFD52E with a #806A17
+       (gold-700) hard shadow — used ONLY for primary CTA buttons.
+     --color-dojo-gold below is the --accent equivalent; the button-only
+     colors live in --color-dojo-btn-gold / --color-dojo-btn-shadow. */
+  --color-dojo-gold:        #E9B43B;
+  --color-dojo-gold-hover:  #F2C866;
+  --color-dojo-btn-gold:    #FFD52E;
+  --color-dojo-btn-shadow:  #806A17;
+  --color-dojo-jade:        #00A86B;
+  --color-dojo-vermilion:   #E34234;
+  --color-dojo-negative:    #E34234;
+
+  /* --- App Surfaces (Dark Mode) --- */
+  --color-dojo-app:         #0D0D0D;
+  --color-dojo-raised:      #161616;
+  --color-dojo-card:        #1C1C1C;
+  --color-dojo-overlay:     #222222;
+
+  /* --- Text Hierarchy --- */
+  --color-dojo-ink:         #FFFFFF;
+  --color-dojo-body:        rgba(255, 255, 255, 0.60);
+  --color-dojo-faint:       rgba(255, 255, 255, 0.35);
+
+  /* --- Borders & Dividers --- */
+  --color-dojo-stroke:        rgba(255, 255, 255, 0.12);
+  --color-dojo-stroke-strong: rgba(255, 255, 255, 0.90);
+  --color-dojo-divider:       rgba(255, 255, 255, 0.10);
+}
+
+@theme {
+  /* --- Brand Colors --- */
+  --color-dojo-gold:        #E9B43B;
+  --color-dojo-gold-hover:  #F2C866;
+  --color-dojo-jade:        #00A86B;
+  --color-dojo-vermilion:   #E34234;
+  --color-dojo-negative:    #E34234;
+
+  /* --- App Surfaces (Dark Mode) --- */
+  --color-dojo-app:         #0D0D0D;
+  --color-dojo-raised:      #161616;
+  --color-dojo-card:        #1C1C1C;
+  --color-dojo-overlay:     #222222;
+
+  /* --- Text Hierarchy --- */
+  --color-dojo-ink:         #FFFFFF;
+  --color-dojo-body:        rgba(255, 255, 255, 0.60);
+  --color-dojo-faint:       rgba(255, 255, 255, 0.35);
+
+  /* --- Borders --- */
+  --color-dojo-stroke:      rgba(255, 255, 255, 0.12);
+  --color-dojo-stroke-strong: rgba(255, 255, 255, 0.90);
+
+  /* --- Divider --- */
+  --color-dojo-divider:     rgba(255, 255, 255, 0.10);
+
+  /* --- Font Families ---
+     Reference (dojo-prototype/styles.css): --font-display/--font-body
+     are 'Ubuntu Sans'. Previously this pointed at an Archivo variable,
+     which is a different typeface with different metrics/spacing. */
+  --font-display:  var(--font-ubuntu-sans), system-ui, sans-serif;
+  --font-serif:    var(--font-marcellus), Georgia, serif;
+  --font-body:     var(--font-ubuntu-sans), system-ui, sans-serif;
+
+  /* --- Spacing / Radius --- */
+  --radius-none:   0px;
+
+  /* --- Transitions --- */
+  --transition-fast:  100ms ease;
+  --transition-base:  180ms ease;
+}
+
+/* ============================================================
+   BASE RESET
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-dojo-app);
+  color: var(--color-dojo-ink);
+  font-family: var(--font-display);
+  line-height: 1.5;
+}
+
+/* ============================================================
+   DOJO COMPONENT PRIMITIVES
+   Shared classes used across auth + onboarding screens.
+   ============================================================ */
+
+/* --- Input Field --- */
+.dojo-input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dojo-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-dojo-body);
+}
+
+.dojo-input {
+  width: 100%;
+  background: var(--color-dojo-card);
+  border: 1px solid var(--color-dojo-stroke);
+  color: var(--color-dojo-ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 14px 16px;
+  outline: none;
+  border-radius: 0;
+  transition: border-color var(--transition-fast);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.dojo-input::placeholder {
+  color: var(--color-dojo-faint);
+  font-weight: 400;
+}
+
+.dojo-input:focus {
+  border-color: var(--color-dojo-gold);
+}
+
+.dojo-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- Buttons --- */
+.dojo-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.dojo-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Primary — background/shadow match the reference's .btn exactly
+   (dojo-prototype/styles.css: background:#FFD52E; box-shadow:...var(--gold-700)
+   where --gold-700:#806A17 in that file's palette). This is a brighter
+   yellow than the general --color-dojo-gold accent used for links/borders. */
+.dojo-btn-primary {
+  background: var(--color-dojo-btn-gold);
+  color: #0D0D0D;
+  font-size: 13px;
+  padding: 17px 24px;
+  width: 100%;
+}
+
+.dojo-btn-primary:hover:not(:disabled) {
+  background: #ffde5c;
+}
+
+.dojo-btn-primary:active:not(:disabled) {
+  opacity: 0.85;
+}
+
+/* Outline */
+.dojo-btn-outline {
+  background: transparent;
+  border: 1px solid var(--color-dojo-stroke);
+  color: var(--color-dojo-ink);
+  font-size: 11px;
+  padding: 13px 20px;
+  width: 100%;
+}
+
+.dojo-btn-outline:hover:not(:disabled) {
+  border-color: var(--color-dojo-gold);
+  color: var(--color-dojo-gold);
+}
+
+/* Small outline */
+.dojo-btn-outline-sm {
+  background: transparent;
+  border: 1px solid var(--color-dojo-stroke);
+  color: var(--color-dojo-body);
+  font-size: 10px;
+  padding: 8px 14px;
+}
+
+.dojo-btn-outline-sm:hover:not(:disabled) {
+  border-color: var(--color-dojo-gold);
+  color: var(--color-dojo-gold);
+}
+
+/* --- Divider with OR --- */
+.dojo-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.dojo-divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--color-dojo-divider);
+}
+
+.dojo-divider-text {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--color-dojo-faint);
+}
+
+/* --- Back chevron row --- */
+.dojo-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-dojo-gold);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* --- Accent link text --- */
+.dojo-link {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-dojo-gold);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  text-decoration: none;
+}
+
+.dojo-link:hover {
+  color: var(--color-dojo-gold-hover);
+}
+
+/* --- Select / Dropdown --- */
+.dojo-select {
+  width: 100%;
+  background: var(--color-dojo-card);
+  border: 1px solid var(--color-dojo-stroke);
+  color: var(--color-dojo-ink);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 10px 14px;
+  outline: none;
+  border-radius: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color var(--transition-fast);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='7' viewBox='0 0 12 7'%3E%3Cpath d='M1 1l5 5 5-5' stroke='rgba(255,255,255,0.5)' stroke-width='1.5' fill='none' stroke-linecap='square'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 38px;
+}
+
+.dojo-select:focus {
+  border-color: var(--color-dojo-gold);
+}
+
+.dojo-select option {
+  background: var(--color-dojo-card);
+  color: var(--color-dojo-ink);
+}
+
+/* --- Toggle Switch --- */
+.dojo-toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex: none;
+}
+
+.dojo-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.dojo-toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--color-dojo-card);
+  border: 1px solid var(--color-dojo-stroke);
+  cursor: pointer;
+  transition: background var(--transition-base);
+}
+
+.dojo-toggle input:checked ~ .dojo-toggle-track {
+  background: var(--color-dojo-gold);
+  border-color: var(--color-dojo-gold);
+}
+
+.dojo-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  background: var(--color-dojo-faint);
+  transition: transform var(--transition-base), background var(--transition-base);
+}
+
+.dojo-toggle input:checked ~ .dojo-toggle-track .dojo-toggle-thumb {
+  transform: translateX(18px);
+  background: #0D0D0D;
+}
+
+/* --- OTP digit box --- */
+.dojo-otp-box {
+  width: 46px;
+  height: 56px;
+  background: var(--color-dojo-card);
+  border: 1px solid var(--color-dojo-stroke);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-dojo-ink);
+  text-align: center;
+  caret-color: var(--color-dojo-gold);
+  outline: none;
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color var(--transition-fast);
+}
+
+.dojo-otp-box:focus {
+  border-color: var(--color-dojo-gold);
+}
+
+.dojo-otp-box.filled {
+  border-color: var(--color-dojo-stroke);
+}
+
+/* --- Step label --- */
+.dojo-step-label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-dojo-gold);
+}
+
+/* --- Heading (serif) --- */
+.dojo-heading {
+  font-family: var(--font-serif);
+  font-size: 27px;
+  line-height: 1.2;
+  color: var(--color-dojo-ink);
+}
+
+/* --- Body text --- */
+.dojo-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-dojo-body);
+}
+
+/* --- Hint / Faint text --- */
+.dojo-faint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-dojo-faint);
+}
+
+/* --- Error text --- */
+.dojo-error {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-dojo-negative);
+}
+
+/* --- Custom select trigger + dropdown menu ---
+   Ported from .select/.select.open/.select .chev/.menu/.menu .row
+   (dojo-prototype/styles.css). Used for the profile screen's Location
+   field, which needs an actual popover menu (native <select> can't
+   match the reference's chevron-rotate + custom row list). */
+.dojo-select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-dojo-stroke);
+  background: var(--color-dojo-card);
+  padding: 13px 14px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.dojo-select-trigger.open {
+  border-color: var(--color-dojo-gold);
+}
+
+.dojo-select-trigger .val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 13.5px;
+  color: var(--color-dojo-ink);
+}
+
+.dojo-select-trigger .val.ph {
+  color: var(--color-dojo-faint);
+}
+
+.dojo-select-trigger .chev {
+  display: flex;
+  color: var(--color-dojo-body);
+  transition: transform 150ms;
+  flex: none;
+}
+
+.dojo-select-trigger.open .chev {
+  transform: rotate(180deg);
+}
+
+.dojo-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  max-height: 214px;
+  overflow-y: auto;
+  background: var(--color-dojo-raised);
+  border: 1px solid var(--color-dojo-stroke);
+  box-shadow: 5px 5px 0 0 #000;
+}
+
+.dojo-menu .row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 13px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-dojo-divider);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 12.5px;
+  color: var(--color-dojo-ink);
+}
+
+.dojo-menu .row.on {
+  background: rgba(233, 180, 59, 0.1);
+}
+
+.dojo-menu .row .mk {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-dojo-gold);
+}
+
+/* --- Segmented control (public/private, etc.) ---
+   Ported from .seg (dojo-prototype/styles.css). Two-way (or n-way)
+   toggle rendered as adjacent buttons, not a checkbox-style switch. */
+.dojo-seg {
+  display: flex;
+  border: 1px solid var(--color-dojo-stroke);
+}
+
+.dojo-seg > button {
+  flex: 1;
+  text-align: center;
+  padding: 11px 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-dojo-body);
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--color-dojo-stroke);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.dojo-seg > button:first-child {
+  border-left: none;
+}
+
+.dojo-seg > button.on {
+  background: var(--color-dojo-gold);
+  color: #0d0d0d;
+}
+
+/* --- Segmented control, tight variant (per-row visibility toggle) ---
+   Ported from .seg.tight (dojo-prototype/styles.css): auto-width
+   buttons instead of the full-width .dojo-seg, used for compact
+   inline Public/Private switches on the account settings screen. */
+.dojo-seg-tight {
+  display: inline-flex;
+  border: 1px solid var(--color-dojo-stroke);
+  flex: none;
+}
+
+.dojo-seg-tight > button {
+  flex: none;
+  padding: 7px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-dojo-faint);
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--color-dojo-stroke);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.dojo-seg-tight > button:first-child {
+  border-left: none;
+}
+
+.dojo-seg-tight > button.on {
+  background: var(--color-dojo-gold);
+  color: #0d0d0d;
+}
+
+/* --- Stat grid (account totals) ---
+   Ported from .statgrid/.statgrid.two/.statgrid .cell. */
+.dojo-statgrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--color-dojo-stroke);
+  border: 1px solid var(--color-dojo-stroke);
+  border-bottom: none;
+}
+
+.dojo-statgrid.two {
+  grid-template-columns: repeat(2, 1fr);
+  border-bottom: 1px solid var(--color-dojo-stroke);
+}
+
+.dojo-statgrid .cell {
+  background: var(--color-dojo-card);
+  padding: 12px 10px;
+  text-align: center;
+}
+
+/* --- Tag pill (account profile chips) ---
+   Ported from .tag / .tag.acc. */
+.dojo-tag {
+  display: inline-block;
+  border: 1px solid var(--color-dojo-stroke);
+  color: var(--color-dojo-body);
+  padding: 3px 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.dojo-tag.acc {
+  border-color: var(--color-dojo-gold);
+  color: var(--color-dojo-gold);
+}
+
+/* --- Avatar placeholder square --- */
+.dojo-avatar-placeholder {
+  width: 88px;
+  height: 88px;
+  flex: none;
+  background: var(--color-dojo-raised);
+  border: 1px solid var(--color-dojo-stroke);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Card row (for settings rows) --- */
+.dojo-card-row {
+  background: var(--color-dojo-card);
+  border: 1px solid var(--color-dojo-stroke);
+  padding: 16px 18px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+/* ============================================================
+   ANIMATION PRIMITIVES — ported from the Dojo prototype
+   (dojo-prototype/styles.css) plus additions documented in
+   ANIMATION_SPECS.md. See that file for what is a direct port
+   vs. a new, design-consistent addition.
+   ============================================================ */
+
+/* --- Primary button: "plunk" press + continuous shimmer sweep ---
+   Ported from .btn / .btn:active / .btn::after / @keyframes sweep.
+   Merged into the single .dojo-btn-primary rule above — this used to be
+   a second, later rule with the wrong shadow color (#75581C instead of
+   the reference's #806A17 / --color-dojo-btn-shadow), which is fixed here. */
+.dojo-btn-primary {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 5px 5px 0 0 var(--color-dojo-btn-shadow);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.dojo-btn-primary:active:not(:disabled) {
+  transform: translate(5px, 5px);
+  box-shadow: 0 0 0 0 var(--color-dojo-btn-shadow);
+  opacity: 1; /* override the plain opacity-drop active state */
+}
+
+.dojo-btn-primary::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 34%;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0),
+    rgba(255, 255, 255, 0.65) 50%,
+    rgba(255, 255, 255, 0)
+  );
+  animation: dojo-sweep 2.8s ease-in-out infinite;
+}
+
+.dojo-btn-primary:disabled::after {
+  display: none;
+}
+
+@keyframes dojo-sweep {
+  0% {
+    transform: translateX(-140%) skewX(-24deg);
+  }
+  55%,
+  100% {
+    transform: translateX(240%) skewX(-24deg);
+  }
+}
+
+/* --- Bottom sheet: scrim fade + slide-up ---
+   Ported from .scrim / .sheet / @keyframes up.
+   Plays once on mount (React preserves DOM identity across
+   re-renders, unlike the prototype's full innerHTML replace —
+   see ANIMATION_SPECS.md "deviation" note). */
+.dojo-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 80;
+  animation: dojo-fade-in 200ms ease-out;
+}
+
+.dojo-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 81;
+  background: var(--color-dojo-card);
+  border-top: 1px solid var(--color-dojo-stroke);
+  max-height: 88vh;
+  overflow-y: auto;
+  animation: dojo-sheet-up 200ms ease-out;
+}
+
+@keyframes dojo-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes dojo-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* --- Sign-in mark: SVG draw then fill ---
+   Ported from .mark / @keyframes dojo-draw / dojo-fill-in.
+   Apply to <path pathLength="1"> elements. */
+.dojo-mark-animated path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  fill-opacity: 0;
+  animation:
+    dojo-draw 1400ms cubic-bezier(0.4, 0, 0.2, 1) forwards,
+    dojo-fill-in 1400ms ease-out forwards;
+}
+
+@keyframes dojo-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes dojo-fill-in {
+  0%,
+  55% {
+    fill-opacity: 0;
+  }
+  100% {
+    fill-opacity: 1;
+  }
+}
+
+/* --- Wiggle (jiggle-mode entry) ---
+   Ported verbatim from .wiggle / @keyframes wig. */
+.dojo-wiggle {
+  animation: dojo-wig 200ms ease-in-out 2;
+}
+
+@keyframes dojo-wig {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  25% {
+    transform: rotate(-1.2deg);
+  }
+  75% {
+    transform: rotate(1.2deg);
+  }
+}
+
+/* --- Error shake ---
+   New — no shake exists in the reference. Short, hard-edged
+   snap consistent with the design's sharp, no-easing aesthetic. */
+.dojo-shake {
+  animation: dojo-shake 320ms ease-in-out;
+}
+
+@keyframes dojo-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+}
+
+/* --- Scan overlay sweep line ---
+   Ported verbatim from .scanframe .sweep / @keyframes dojo-scan. */
+.dojo-scanframe {
+  position: relative;
+  width: 74%;
+  max-width: 260px;
+  aspect-ratio: 660 / 921;
+  background: var(--color-dojo-raised);
+  border: 1px solid var(--color-dojo-stroke);
+  margin: 0 auto;
+}
+
+.dojo-scanframe .dojo-corner {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+}
+
+.dojo-scanframe .dojo-corner.tl {
+  top: 0;
+  left: 0;
+  border-top: 2px solid var(--color-dojo-gold);
+  border-left: 2px solid var(--color-dojo-gold);
+}
+
+.dojo-scanframe .dojo-corner.tr {
+  top: 0;
+  right: 0;
+  border-top: 2px solid var(--color-dojo-gold);
+  border-right: 2px solid var(--color-dojo-gold);
+}
+
+.dojo-scanframe .dojo-corner.bl {
+  bottom: 0;
+  left: 0;
+  border-bottom: 2px solid var(--color-dojo-gold);
+  border-left: 2px solid var(--color-dojo-gold);
+}
+
+.dojo-scanframe .dojo-corner.br {
+  bottom: 0;
+  right: 0;
+  border-bottom: 2px solid var(--color-dojo-gold);
+  border-right: 2px solid var(--color-dojo-gold);
+}
+
+.dojo-scanframe .dojo-sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--color-dojo-gold);
+  animation: dojo-scan 1.8s ease-in-out infinite;
+}
+
+@keyframes dojo-scan {
+  0% {
+    top: 0;
+  }
+  50% {
+    top: calc(100% - 2px);
+  }
+  100% {
+    top: 0;
+  }
+}
+
+/* --- Skeleton pulse ---
+   Fixes a pre-existing bug: search/page.tsx referenced
+   "pulse 1.5s ease-in-out infinite" but no @keyframes pulse
+   was ever defined, making the animation a no-op. */
+@keyframes dojo-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* --- Card grid fade-up (new; reference grid never animates) --- */
+@keyframes dojo-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --- Chart line draw-in (new technique borrowed from .mark) --- */
+@keyframes dojo-draw-line {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* --- Count-up number transition helper --- */
+.dojo-count-up {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Avatar flip-in (profile screen) ---
+   New: the reference's flipAvatar interaction has no CSS transition
+   (a hard scaleX snap despite the name). We animate it for real. */
+.dojo-avatar-flip-in {
+  animation: dojo-avatar-flip 200ms ease-out;
+}
+
+@keyframes dojo-avatar-flip {
+  from {
+    transform: scaleX(0) ;
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* --- Bottom tab bar: active-tab glow ---
+   Ported verbatim from dojo-prototype/styles.css:
+     .tabbar button.on{color:#fff}
+     .tabbar button.on svg{filter:drop-shadow(0 0 3px rgba(255,255,255,.55))}
+     .tabbar button.on::before{ ...glowing gradient bar above the icon... }
+   This was missing from dashboard-client-shell.tsx entirely — the active
+   nav item only got a plain gold top border, no glow. Fixed here. */
+.dojo-tab-icon-glow {
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.55));
+}
+
+.dojo-tab-glow-bar {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80%;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.1),
+    rgba(255, 255, 255, 0.95),
+    rgba(255, 255, 255, 0.1)
+  );
+  box-shadow: 0 0 8px 1px rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+/* ============================================================
+   ACCESSIBILITY — respect reduced-motion preference
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

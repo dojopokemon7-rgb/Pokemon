@@ -1,0 +1,77 @@
+version: "3.9"
+
+# =============================================================
+# TCG Collection PWA — Docker Compose
+# Services: app (Next.js) | redis | caddy
+# PostgreSQL is REMOTE (Supabase) — not managed here.
+# =============================================================
+
+services:
+  # -----------------------------------------------------------
+  # Redis 7 — Session cache, rate-limiting, OTP store
+  # -----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: tcg_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------
+  # Next.js App — Built from ./Dockerfile
+  # -----------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tcg_app
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Override REDIS_URL to use the Docker service name
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # -----------------------------------------------------------
+  # Caddy 2 — Automatic HTTPS, reverse proxy
+  # -----------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: tcg_caddy
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  redis_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local

@@ -1,0 +1,191 @@
+// =============================================================
+// Prisma Schema — TCG Collection PWA
+// Provider: PostgreSQL (Supabase, remote)
+// =============================================================
+// ARCHITECTURE NOTES:
+// - `url`         → pooled PgBouncer connection (runtime queries)
+// - `directUrl`   → direct Postgres connection (migrations only)
+//   This is required when using Supabase's PgBouncer in Transaction
+//   mode because PgBouncer does not support prepared statements used
+//   by Prisma's migration engine.
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =============================================================
+// BETTER AUTH MODELS
+// These are the EXACT models required by Better Auth + Prisma adapter.
+// DO NOT rename fields — Better Auth expects these exact names.
+// Ref: https://www.better-auth.com/docs/adapters/prisma
+// =============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Extended field for Mobile OTP (Better Auth phoneNumber plugin)
+  // Populated when a user links/verifies their phone number.
+  phoneNumber         String?  @unique
+  phoneNumberVerified Boolean? @default(false)
+
+  // Relations
+  sessions    Session[]
+  accounts    Account[]
+  collections UserCollection[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+
+  // Relation back to User
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime? @default(now())
+  updatedAt  DateTime? @updatedAt
+
+  @@map("verification")
+}
+
+// =============================================================
+// TCG DOMAIN MODELS
+// =============================================================
+
+// Represents a TCG product set/expansion (e.g., "Scarlet & Violet Base Set")
+model CardSet {
+  id           String   @id @default(cuid())
+  externalId   String   @unique // ID from the external TCG API (e.g., Pokemon TCG API)
+  name         String
+  series       String?
+  printedTotal Int?     // Number of cards printed in the set
+  total        Int?     // Total cards including secret rares
+  releaseDate  DateTime?
+  symbolUrl    String?
+  logoUrl      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cards Card[]
+
+  @@map("card_set")
+}
+
+// Represents an individual TCG card
+model Card {
+  id         String  @id @default(cuid())
+  externalId String  @unique // ID from the external TCG API
+  name       String
+  number     String  // Card number within the set (e.g., "001/165")
+  rarity     String?
+  types      String[] // Comma-separated or JSON array (e.g., ["Fire", "Normal"])
+  imageUrl   String?
+  imageUrlHi String? // High-res image URL
+
+  // Pricing snapshot (latest market price cache)
+  marketPrice Float?
+  lastPricedAt DateTime?
+
+  // Relations
+  setId String
+  set   CardSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+
+  userCollections UserCollection[]
+  pricingHistory  PricingHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([setId])
+  @@index([name])
+  @@map("card")
+}
+
+// Represents a user's card collection entry (one row per card owned)
+model UserCollection {
+  id       String @id @default(cuid())
+  userId   String
+  cardId   String
+  quantity Int    @default(1) // How many copies the user owns
+  condition String? // e.g., "Near Mint", "Lightly Played"
+  notes    String?
+  isFoil   Boolean @default(false)
+  // Price the user actually paid per copy, captured at add-time. Distinct
+  // from Card.marketPrice (the live/cached market value) — this is what
+  // "Paid" / "Realized" / "Unrealized" stats on the dashboard are computed
+  // against. Nullable because a user can add a card without recording a
+  // purchase price (defaults to the card's market price at add-time).
+  purchasePrice Float?
+  addedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cardId, isFoil]) // One entry per card+variant per user
+  @@index([userId])
+  @@index([cardId])
+  @@map("user_collection")
+}
+
+// Historical pricing data for market trend analysis
+model PricingHistory {
+  id        String   @id @default(cuid())
+  cardId    String
+  price     Float
+  source    String   // e.g., "tcgplayer", "cardmarket", "ebay"
+  currency  String   @default("USD")
+  recordedAt DateTime @default(now())
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, recordedAt])
+  @@map("pricing_history")
+}

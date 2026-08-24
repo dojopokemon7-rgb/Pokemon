@@ -1,0 +1,44 @@
+# Dependencies
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Next.js build output
+.next
+out
+
+# Environment files — never bake secrets into the image
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Prisma migrations (applied externally to Supabase)
+# Keep schema but exclude migration history from image
+# prisma/migrations
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Misc
+README.md
+SETUP.md
+*.md

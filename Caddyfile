@@ -1,0 +1,43 @@
+# =============================================================
+# Caddyfile — TCG Collection PWA
+# =============================================================
+#
+# LOCAL DEVELOPMENT:
+#   Port 80 only — no TLS. Routes all traffic to Next.js app.
+#
+# PRODUCTION (Week 4+):
+#   Replace `:80` with your domain, e.g.:
+#     your-domain.com {
+#       reverse_proxy app:3000
+#     }
+#   Caddy will automatically provision and renew TLS certificates
+#   via Let's Encrypt when a real domain is used.
+#
+# =============================================================
+
+:80 {
+    # Proxy all requests to the Next.js app container
+    reverse_proxy app:3000 {
+        # Forward original host header so Next.js sees the real host
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Compress responses
+    encode gzip
+
+    # Basic security headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+}
