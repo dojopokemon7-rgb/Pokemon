@@ -60,14 +60,16 @@ function ScanIcon() {
   );
 }
 
-// Ported verbatim from the reference's TAB_ICONS.explore path data
-// (dojo-prototype/app.js) — a magnifying glass, not a people/users icon.
-// Matches the Dojo Icon Library's tabFloor glyph (circle + diagonal handle).
+// Client feedback (Phase 1): Explore uses a users/people icon (community
+// feel) — not the reference's magnifying-glass glyph. Ported from the
+// standard "users" icon in the design system.
 function ExploreIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <circle cx="11" cy="11" r="6" />
-      <line x1="15.5" y1="15.5" x2="20" y2="20" />
+      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 00-3-3.87" />
+      <path d="M16 3.13a4 4 0 010 7.75" />
     </svg>
   );
 }
@@ -262,7 +264,7 @@ export default function DashboardClientShell({
         }}
         aria-label="Main navigation"
       >
-        {/* Home */}
+        {/* Home + Portfolio (active state is gold per client feedback) */}
         {NAV_ITEMS.slice(0, 2).map(({ href, label, Icon }) => {
           const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
           return (
@@ -278,7 +280,7 @@ export default function DashboardClientShell({
                 gap: "5px",
                 padding: "12px 0 10px",
                 textDecoration: "none",
-                color: active ? "#fff" : "var(--color-dojo-faint)",
+                color: active ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
               }}
               aria-current={active ? "page" : undefined}
             >
@@ -331,7 +333,7 @@ export default function DashboardClientShell({
           </Link>
         </div>
 
-        {/* Explore + You */}
+        {/* Explore + You (active state is gold per client feedback) */}
         {NAV_ITEMS.slice(2).map(({ href, label, Icon }) => {
           const active = pathname === href || pathname.startsWith(href + "/");
           return (
@@ -347,7 +349,7 @@ export default function DashboardClientShell({
                 gap: "5px",
                 padding: "12px 0 10px",
                 textDecoration: "none",
-                color: active ? "#fff" : "var(--color-dojo-faint)",
+                color: active ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
               }}
               aria-current={active ? "page" : undefined}
             >

@@ -961,14 +961,11 @@ body {
 }
 
 /* --- Bottom tab bar: active-tab glow ---
-   Ported verbatim from dojo-prototype/styles.css:
-     .tabbar button.on{color:#fff}
-     .tabbar button.on svg{filter:drop-shadow(0 0 3px rgba(255,255,255,.55))}
-     .tabbar button.on::before{ ...glowing gradient bar above the icon... }
-   This was missing from dashboard-client-shell.tsx entirely — the active
-   nav item only got a plain gold top border, no glow. Fixed here. */
+   Client feedback (Phase 1): active state should be gold-highlighted,
+   not the reference's white glow. Changed the icon drop-shadow and
+   top gradient bar from white to Dojo gold. */
 .dojo-tab-icon-glow {
-  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.55));
+  filter: drop-shadow(0 0 3px rgba(233, 180, 59, 0.65));
 }
 
 .dojo-tab-glow-bar {
@@ -981,11 +978,11 @@ body {
   height: 2px;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.1),
-    rgba(255, 255, 255, 0.95),
-    rgba(255, 255, 255, 0.1)
+    rgba(233, 180, 59, 0.1),
+    rgba(233, 180, 59, 0.95),
+    rgba(233, 180, 59, 0.1)
   );
-  box-shadow: 0 0 8px 1px rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 8px 1px rgba(233, 180, 59, 0.5);
   pointer-events: none;
 }
 

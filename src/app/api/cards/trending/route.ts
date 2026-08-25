@@ -49,6 +49,9 @@ import { prisma } from "@/lib/db";
 const TrendingQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
   cursor: z.string().trim().min(1).optional(),
+  // Client feedback fix: game filter so the Pokémon / One Piece tabs
+  // don't leak cards from the other game (e.g. Charizard on One Piece).
+  game: z.enum(["pokemon", "onepiece"]).optional(),
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -56,6 +59,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   const parsed = TrendingQuerySchema.safeParse({
     limit: searchParams.get("limit") ?? undefined,
     cursor: searchParams.get("cursor") ?? undefined,
+    game: searchParams.get("game") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -70,12 +74,23 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { limit, cursor } = parsed.data;
+  const { limit, cursor, game } = parsed.data;
 
   try {
+    // Game filter: prisma/seed.ts prefixes each CardSet.externalId with
+    // `${game}-` (e.g. "pokemon-base-set-1st-edition" / "onepiece-op-01"),
+    // so we filter by that prefix on the joined CardSet row. Cards added
+    // by users via /api/users/me/collection use "user-added-*" and are
+    // excluded from the game-filtered feed — that's fine, this endpoint
+    // powers the "Trending" grid off the seeded catalog only.
+    const gameFilter = game
+      ? { set: { externalId: { startsWith: `${game}-` } } }
+      : {};
+
     const rows = await prisma.card.findMany({
       take: limit + 1, // fetch one extra to know if there's a next page
       ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      where: gameFilter,
       orderBy: { updatedAt: "desc" },
       include: { set: { select: { name: true } } },
     });

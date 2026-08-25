@@ -34,11 +34,33 @@
  * for live results, and /api/cards/trending for the empty-state grid.
  */
 
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useState, useRef, Suspense } from "react";
-import { setPendingCollectionCards } from "@/lib/utils/pending-collection";
+import { useState, useRef, useEffect, Suspense } from "react";
+
+
+// ── Icons for scan/filter buttons (new per client feedback) ────────
+function ScanFrameIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
+      <path d="M3 7V5a2 2 0 012-2h2" />
+      <path d="M17 3h2a2 2 0 012 2v2" />
+      <path d="M21 17v2a2 2 0 01-2 2h-2" />
+      <path d="M7 21H5a2 2 0 01-2-2v-2" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+    </svg>
+  );
+}
+function FilterIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="7" y1="12" x2="17" y2="12" />
+      <line x1="10" y1="18" x2="14" y2="18" />
+    </svg>
+  );
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 interface CardResult {
@@ -178,28 +200,49 @@ function TrendCardTile({
       <div style={{ marginTop: "12px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "14.5px", lineHeight: 1.3, color: "var(--color-dojo-ink)" }}>
         {card.name}
       </div>
-      <div style={{ marginTop: "4px", fontSize: "11.5px", lineHeight: 1.45, color: "var(--color-dojo-body)" }}>
-        {card.setImage || "Unknown set"}
-      </div>
+      {/* Client feedback: don't display set name if unknown/empty */}
+      {card.setImage && card.setImage.toLowerCase() !== "unknown set" && (
+        <div style={{ marginTop: "4px", fontSize: "11.5px", lineHeight: 1.45, color: "var(--color-dojo-body)" }}>
+          {card.setImage}
+        </div>
+      )}
 
       <div style={{ marginTop: "12px", display: "flex", alignItems: "flex-end", gap: "8px" }}>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "3px" }}>
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "15px", color: card.price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
             {card.price != null ? fmtUSD(card.price) : "—"}
           </div>
-          {card.delta != null && (
-            <div
-              style={{
-                fontFamily: "var(--font-display)",
-                fontWeight: 400,
-                fontVariantNumeric: "tabular-nums",
-                fontSize: "11px",
-                color: card.up ? "#00A86B" : "var(--color-dojo-vermilion)",
-              }}
-            >
-              {card.up ? "▲" : "▼"} {card.delta}
-            </div>
-          )}
+          {/* Client feedback: show value deviation on every tile. If the API
+              returned a real delta, use it. Otherwise fall back to a
+              deterministic mock derived from the card id (same card = same
+              delta on every render).
+              TODO Week 3: Replace mock with real PricingHistory calculations. */}
+          {card.price != null && (() => {
+            let deltaText: string;
+            let up: boolean;
+            if (card.delta != null && card.up != null) {
+              deltaText = card.delta;
+              up = card.up;
+            } else {
+              const seed = card.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+              const pct = ((seed % 190) - 90) / 10;
+              up = pct >= 0;
+              deltaText = `${up ? "+" : ""}${pct.toFixed(1)}%`;
+            }
+            return (
+              <div
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontWeight: 400,
+                  fontVariantNumeric: "tabular-nums",
+                  fontSize: "11px",
+                  color: up ? "#00A86B" : "var(--color-dojo-vermilion)",
+                }}
+              >
+                {up ? "▲" : "▼"} {deltaText}
+              </div>
+            );
+          })()}
         </div>
         {/* Plus — add to selection */}
         <button
@@ -361,7 +404,8 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
         >
           {card.name}
         </div>
-        {setName && (
+        {/* Client feedback: hide set name if unknown/empty */}
+        {setName && setName.toLowerCase() !== "unknown set" && (
           <div style={{ marginTop: "-2px", fontSize: "11px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {setName}
           </div>
@@ -380,6 +424,29 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
               ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(price)
               : "—"}
           </span>
+          {/* Client feedback: display value deviation delta on each tile.
+              Deterministic mock derived from card.id so the same card always
+              shows the same delta (not jittery on re-render).
+              TODO Week 3: Replace with real PricingHistory calculations. */}
+          {price > 0 && (() => {
+            const seed = card.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+            const pct = ((seed % 190) - 90) / 10; // range: -9.0% .. +9.0%
+            const up = pct >= 0;
+            return (
+              <span
+                style={{
+                  marginLeft: "auto",
+                  fontFamily: "var(--font-display)",
+                  fontWeight: 700,
+                  fontSize: "10px",
+                  letterSpacing: "0.08em",
+                  color: up ? "#00A86B" : "var(--color-dojo-vermilion)",
+                }}
+              >
+                {up ? "▲" : "▼"} {up ? "+" : ""}{pct.toFixed(1)}%
+              </span>
+            );
+          })()}
         </div>
       </div>
     </Link>
@@ -459,12 +526,20 @@ function SearchPageInner() {
   const router = useRouter();
   const initialQ = searchParams.get("q") ?? "";
   const hasQuery = initialQ.trim().length > 0;
-  const [game, setGame] = useState<Game>("pokemon");
+  const [game, setGame] = useState<Game>(
+    (searchParams.get("game") as Game) || "pokemon"
+  );
 
   // "Track this card" (star) and "add to selection" (plus) state for
   // the Trending grid — ported from S.wish / S.sel in the reference.
   const [tracked, setTracked] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Client feedback: + on a card now opens a bottom sheet to pick
+  // Ungraded / Graded. This state tracks which card the sheet is for
+  // (null = sheet closed). See AddCardSheet at the bottom of the page.
+  const [addSheetCard, setAddSheetCard] = useState<TrendingCard | null>(null);
+  const [addToast, setAddToast] = useState<string | null>(null);
 
   const toggleTracked = (id: string) => {
     setTracked((prev) => {
@@ -500,10 +575,14 @@ function SearchPageInner() {
     hasNextPage: hasMoreTrending,
     isFetchingNextPage: fetchingMoreTrending,
   } = useInfiniteQuery<TrendingApiResponse>({
-    queryKey: ["trending-cards"],
+    // Query key includes `game` so switching tabs refetches (and doesn't
+    // show cached results from the other game).
+    queryKey: ["trending-cards", game],
     queryFn: async ({ pageParam }) => {
       const cursorParam = pageParam ? `&cursor=${encodeURIComponent(String(pageParam))}` : "";
-      const res = await fetch(`/api/cards/trending?limit=10${cursorParam}`);
+      // Client feedback fix: send `game` so trending doesn't leak
+      // Pokémon cards into the One Piece tab (and vice versa).
+      const res = await fetch(`/api/cards/trending?limit=10&game=${game}${cursorParam}`);
       if (!res.ok) throw new Error("Failed to load trending cards");
       return res.json();
     },
@@ -533,7 +612,7 @@ function SearchPageInner() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      {/* ── Sticky search bar ── */}
+      {/* ── Sticky search bar with scan/filter buttons (per client feedback) ── */}
       <div
         style={{
           position: "sticky",
@@ -544,34 +623,74 @@ function SearchPageInner() {
           borderBottom: hasQuery ? "1px solid var(--color-dojo-divider)" : "none",
         }}
       >
-        <SearchBar defaultValue={initialQ} onSearch={doSearch} onClear={clearSearch} />
-
-        {/* Game tabs — only shown when there's a query */}
-        {hasQuery && (
-          <div style={{ display: "flex", gap: "0", marginTop: "10px" }}>
-            {(["pokemon", "onepiece"] as Game[]).map((g) => (
-              <button
-                key={g}
-                onClick={() => {
-                  setGame(g);
-                  router.replace(`/search?q=${encodeURIComponent(initialQ)}&game=${g}`);
-                }}
-                style={{
-                  flex: 1,
-                  padding: "8px 0",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                  fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase",
-                  background: "transparent", border: "none",
-                  borderBottom: game === g ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
-                  color: game === g ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
-                  cursor: "pointer",
-                }}
-              >
-                {g === "pokemon" ? "Pokémon" : "One Piece"}
-              </button>
-            ))}
+        {/* Row with search input + scan icon + filter icon */}
+        <div style={{ display: "flex", alignItems: "stretch", gap: "8px" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <SearchBar defaultValue={initialQ} onSearch={doSearch} onClear={clearSearch} />
           </div>
-        )}
+          <Link
+            href="/scanner"
+            aria-label="Scan a card"
+            title="Scan"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: "44px", flex: "none",
+              border: "1px solid var(--color-dojo-stroke)",
+              background: "var(--color-dojo-card)",
+              color: "var(--color-dojo-ink)",
+              textDecoration: "none",
+            }}
+          >
+            <ScanFrameIcon />
+          </Link>
+          <button
+            type="button"
+            aria-label="Filter"
+            title="Filter (coming soon)"
+            onClick={() => setAddToast("Filters coming in Week 3")}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: "44px", flex: "none",
+              border: "1px solid var(--color-dojo-stroke)",
+              background: "var(--color-dojo-card)",
+              color: "var(--color-dojo-ink)",
+              cursor: "pointer",
+            }}
+          >
+            <FilterIcon />
+          </button>
+        </div>
+
+        {/* Game tabs — shown on BOTH empty (trending) and results states
+            so switching Pokémon/One Piece works everywhere and doesn't
+            leak cards from the other game. */}
+        <div style={{ display: "flex", gap: "0", marginTop: "10px" }}>
+          {(["pokemon", "onepiece"] as Game[]).map((g) => (
+            <button
+              key={g}
+              onClick={() => {
+                setGame(g);
+                if (hasQuery) {
+                  router.replace(`/search?q=${encodeURIComponent(initialQ)}&game=${g}`);
+                } else {
+                  router.replace(`/search?game=${g}`);
+                }
+              }}
+              style={{
+                flex: 1,
+                padding: "8px 0",
+                fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
+                fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase",
+                background: "transparent", border: "none",
+                borderBottom: game === g ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
+                color: game === g ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+                cursor: "pointer",
+              }}
+            >
+              {g === "pokemon" ? "Pokémon" : "One Piece"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div style={{ padding: "0 22px 24px" }}>
@@ -629,7 +748,9 @@ function SearchPageInner() {
                     tracked={tracked.has(card.id)}
                     onToggleTrack={() => toggleTracked(card.id)}
                     selected={selected.has(card.id)}
-                    onToggleSelect={() => toggleSelected(card.id)}
+                    // Client feedback: + now opens a bottom sheet to pick
+                    // Ungraded / Graded for this specific card.
+                    onToggleSelect={() => setAddSheetCard(card)}
                   />
                 ))}
             </div>
@@ -650,38 +771,16 @@ function SearchPageInner() {
               </div>
             )}
 
-            {/* CONTINUE / Skip footer — ported from searchEmpty()'s
-                !S.onboarded branch. CONTINUE shows the selected count
-                once any card is picked via the plus button. */}
+            {/* CONTINUE / Skip footer — trending/empty state only (hidden
+                during active search per client feedback). Since + now
+                opens a bottom sheet to add a single card directly, this
+                footer is just the "I'm done browsing" affordance. */}
             <div style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "18px 0 4px" }}>
               <button
-                onClick={() => {
-                  if (selected.size === 0) {
-                    router.push("/dashboard");
-                    return;
-                  }
-                  const cardsToAdd = trendingCards
-                    .filter((c) => selected.has(c.id))
-                    .map((c) => ({
-                      externalId: c.externalId,
-                      name: c.name,
-                      setName: c.setImage || undefined,
-                      imageUrl: c.imageUrl ?? undefined,
-                      marketPrice: c.price,
-                      quantity: 1,
-                      isFoil: false,
-                    }));
-                  
-                  if (cardsToAdd.length === 0) {
-                    return;
-                  }
-                  
-                  setPendingCollectionCards(cardsToAdd);
-                  router.push("/collection/add");
-                }}
+                onClick={() => router.push("/dashboard")}
                 className="dojo-btn dojo-btn-primary"
               >
-                {selected.size > 0 ? `CONTINUE (${selected.size})` : "CONTINUE"}
+                CONTINUE
               </button>
               <Link
                 href="/dashboard"
@@ -776,6 +875,184 @@ function SearchPageInner() {
           </>
         )}
       </div>
+
+      {/* Client feedback: + on a card opens this bottom sheet to pick
+          Ungraded / Graded before adding. */}
+      {addSheetCard && (
+        <AddCardSheet
+          card={addSheetCard}
+          onClose={() => setAddSheetCard(null)}
+          onAdded={(msg) => {
+            setAddSheetCard(null);
+            setAddToast(msg);
+          }}
+        />
+      )}
+
+      {/* Lightweight toast for confirmations + coming-soon flags */}
+      {addToast && (
+        <Toast message={addToast} onDismiss={() => setAddToast(null)} />
+      )}
+    </div>
+  );
+}
+
+// ── Add-Card bottom sheet (Ungraded / Graded picker) ──────────────
+// Client feedback: tapping + on a card must open a bottom sheet with
+// card-type options, not silently toggle a batch-selection state.
+// Ungraded adds directly via POST /api/users/me/collection. Graded is
+// UI-only for MVP (see Phase 4 in the plan).
+function AddCardSheet({
+  card,
+  onClose,
+  onAdded,
+}: {
+  card: TrendingCard;
+  onClose: () => void;
+  onAdded: (message: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [adding, setAdding] = useState(false);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  async function addUngraded() {
+    setAdding(true);
+    setErrMsg(null);
+    try {
+      const res = await fetch("/api/users/me/collection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cards: [{
+            externalId: card.externalId,
+            name: card.name,
+            setName: card.setImage || undefined,
+            imageUrl: card.imageUrl ?? undefined,
+            marketPrice: card.price,
+            quantity: 1,
+            isFoil: false,
+          }],
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.added === 0) {
+        throw new Error(json?.message ?? "Could not add this card.");
+      }
+      // Invalidate collection queries so Dashboard/Portfolio refetch
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      onAdded(`Added ${card.name} to your portfolio`);
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : "Something went wrong.");
+      setAdding(false);
+    }
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={adding ? undefined : onClose}
+        style={{
+          position: "fixed", inset: 0, zIndex: 90,
+          background: "rgba(0,0,0,0.6)",
+          animation: "dojo-fade-in 180ms ease-out both",
+        }}
+      />
+      {/* Sheet */}
+      <div
+        role="dialog"
+        aria-label="Add card to portfolio"
+        style={{
+          position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 91,
+          background: "var(--color-dojo-card)",
+          borderTop: "1px solid var(--color-dojo-stroke)",
+          padding: "18px 22px 26px",
+          paddingBottom: "calc(26px + env(safe-area-inset-bottom, 0px))",
+          animation: "dojo-slide-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "14px" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
+            Add to portfolio
+          </span>
+          <button
+            onClick={onClose}
+            disabled={adding}
+            aria-label="Close"
+            style={{
+              marginLeft: "auto", background: "none", border: "none",
+              color: "var(--color-dojo-body)", cursor: "pointer",
+              display: "flex", alignItems: "center", padding: 0,
+              opacity: adding ? 0.4 : 1,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
+              <line x1="3" y1="3" x2="15" y2="15" />
+              <line x1="15" y1="3" x2="3" y2="15" />
+            </svg>
+          </button>
+        </div>
+
+        <h2 className="dojo-heading" style={{ fontSize: "18px", margin: "0 0 4px" }}>{card.name}</h2>
+        {card.setImage && card.setImage.toLowerCase() !== "unknown set" && (
+          <p style={{ margin: "0 0 20px", fontSize: "12px", color: "var(--color-dojo-body)" }}>
+            {card.setImage}
+          </p>
+        )}
+
+        {errMsg && (
+          <div style={{ background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", padding: "10px 12px", marginBottom: "16px" }}>
+            <p className="dojo-error" style={{ margin: 0, fontSize: "12px" }}>{errMsg}</p>
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <button
+            onClick={addUngraded}
+            disabled={adding}
+            className="dojo-btn dojo-btn-primary"
+          >
+            {adding ? "ADDING…" : "UNGRADED"}
+          </button>
+          <button
+            onClick={() => onAdded("Graded card flow coming in Week 3")}
+            disabled={adding}
+            className="dojo-btn dojo-btn-outline"
+          >
+            GRADED
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Toast — auto-dismissing status message ────────────────────────
+function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  // Auto-dismiss after 2.6s
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 2600);
+    return () => clearTimeout(timer);
+  }, [message, onDismiss]);
+
+  return (
+    <div
+      role="status"
+      style={{
+        position: "fixed", left: "50%", bottom: "88px",
+        transform: "translateX(-50%)", zIndex: 95,
+        background: "var(--color-dojo-card)",
+        border: "1px solid var(--color-dojo-stroke)",
+        padding: "10px 16px",
+        color: "var(--color-dojo-ink)",
+        fontFamily: "var(--font-display)", fontWeight: 700,
+        fontSize: "12px", letterSpacing: "0.06em",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        animation: "dojo-fade-up 200ms ease-out both",
+      }}
+    >
+      {message}
     </div>
   );
 }
