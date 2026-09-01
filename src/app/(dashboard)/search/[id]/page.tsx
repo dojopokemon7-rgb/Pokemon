@@ -28,6 +28,28 @@
 
 import { useState, useMemo, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import {
+  evaluateDeal,
+  averageEbayPrice,
+} from "@/lib/utils/price-comparison";
+import { FindOnEbayLink } from "@/components/FindOnEbayLink";
+
+// Response shape of GET /api/ebay/search — the route already normalises
+// eBay's raw payload, so this stays lean.
+interface EbaySearchResponse {
+  listings?: Array<{
+    itemId: string;
+    title: string;
+    price: number;
+    currency: string | null;
+    imageUrl: string | null;
+    itemWebUrl: string;
+  }>;
+  fallback?: boolean;
+  error?: string;
+  source?: "cache" | "live";
+}
 
 // ── Icons ──────────────────────────────────────────────────────────
 function ChevronLeft() {
@@ -305,6 +327,9 @@ function CardDetailInner() {
           </button>
         </div>
 
+        {/* ── Price Comparison (eBay Deal Finder) ── */}
+        <PriceComparisonSection cardName={name} setName={setName} marketPrice={price} />
+
         <div style={{ height: "1px", background: "var(--color-dojo-divider)", margin: "20px -22px 0" }} />
 
         {/* ── Price history ── */}
@@ -443,6 +468,187 @@ function CardDetailInner() {
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", cursor: "pointer" }}>View</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Price Comparison — the "Deal Finder" section ───────────────────
+//
+// Hits GET /api/ebay/search?q=<cardName> via React Query, then compares
+// the mean of the returned listing prices against the card's recorded
+// market price via evaluateDeal(). Renders one of four states:
+//
+//   1. Loading   — "Checking eBay…" placeholder on the eBay side.
+//   2. Live data — Market Value (gold) alongside eBay Avg. (blue),
+//                  plus a "🔥 Good Deal" badge (jade) when the eBay
+//                  average is ≥10% below market.
+//   3. Empty     — Sandbox/no-listings fallback with a "View real
+//                  results on eBay ›" deep link into eBay's public
+//                  HTML search.
+//   4. Error     — Same as Empty (graceful degradation), because a
+//                  broken eBay call should never break the UI. The API
+//                  route already returns { fallback: true } for us.
+//
+// The React Query cache key includes the card name only — eBay's
+// Browse API doesn't know about "sets", so keying by name matches how
+// the search endpoint keys its own 24h Redis entry.
+function PriceComparisonSection({
+  cardName,
+  setName,
+  marketPrice,
+}: {
+  cardName: string;
+  setName: string;
+  marketPrice: number;
+}) {
+  const { data, isLoading, isError } = useQuery<EbaySearchResponse>({
+    queryKey: ["ebay-search", cardName.toLowerCase()],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/ebay/search?q=${encodeURIComponent(cardName)}`
+      );
+      if (!res.ok) throw new Error(`Bad status ${res.status}`);
+      return res.json();
+    },
+    // Give it one retry — sandbox 429s and cold-start timeouts should
+    // not immediately fall through to the "unavailable" state.
+    retry: 1,
+    // Once fetched, keep it in-memory for the full session; the API
+    // route caches upstream for 24h so refetching on every mount is
+    // wasteful.
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const listings = data?.listings ?? [];
+  const ebayAvg = averageEbayPrice(listings.map((l) => l.price));
+  const deal = ebayAvg != null ? evaluateDeal(marketPrice, ebayAvg) : null;
+
+  // Empty when: hard error, explicit fallback flag, or the API just
+  // returned zero listings (sandbox default). All three collapse to
+  // the same graceful UI.
+  const isEmpty =
+    isError ||
+    Boolean(data?.fallback) ||
+    (data != null && listings.length === 0);
+
+  return (
+    <div style={{ marginTop: "20px" }}>
+      <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
+        Price comparison
+      </div>
+
+      <div
+        style={{
+          marginTop: "12px",
+          display: "flex",
+          gap: "12px",
+          alignItems: "stretch",
+        }}
+      >
+        {/* Market value tile — always populated from our DB. */}
+        <div
+          style={{
+            flex: 1,
+            padding: "12px 14px",
+            border: "1px solid var(--color-dojo-stroke)",
+            background: "rgba(233,180,59,0.06)",
+          }}
+        >
+          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            Market Value
+          </div>
+          <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-gold)" }}>
+            {fmtUSD(marketPrice)}
+          </div>
+        </div>
+
+        {/* eBay tile — loading / live avg / sandbox fallback. */}
+        <div
+          style={{
+            flex: 1,
+            padding: "12px 14px",
+            border: "1px solid var(--color-dojo-stroke)",
+            background: "rgba(45,127,249,0.06)",
+          }}
+        >
+          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            eBay Avg. Sold
+          </div>
+          <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "#2D7FF9" }}>
+            {isLoading ? (
+              <span style={{ fontSize: "13px", color: "var(--color-dojo-body)", fontWeight: 400 }}>
+                Checking eBay…
+              </span>
+            ) : ebayAvg != null ? (
+              fmtUSD(ebayAvg)
+            ) : (
+              <span style={{ fontSize: "13px", color: "var(--color-dojo-faint)", fontWeight: 400 }}>
+                —
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Good Deal badge — jade bg + white text + sharp 0px radius
+          per client style spec. Rendered only when the live eBay
+          average is ≥10% below the recorded market value. */}
+      {deal?.isGoodDeal && (
+        <div
+          style={{
+            marginTop: "12px",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "8px 14px",
+            background: "#00A86B",
+            color: "#FFFFFF",
+            fontFamily: "var(--font-display)",
+            fontWeight: 800,
+            fontSize: "11px",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            borderRadius: 0,
+          }}
+        >
+          🔥 Good Deal — Save {fmtUSD(deal.savings)} ({(deal.savingsPct * 100).toFixed(1)}% off)
+        </div>
+      )}
+
+      {/* Sandbox / no-listings fallback — a plain, honest note plus
+          a deep-link that ALWAYS lands the user on real eBay results,
+          even when our sandbox-mode Browse API returned zero items. */}
+      {isEmpty && !isLoading && (
+        <div
+          style={{
+            marginTop: "12px",
+            padding: "10px 14px",
+            border: "1px solid var(--color-dojo-stroke)",
+            background: "var(--color-dojo-card)",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0, fontSize: "12px", color: "var(--color-dojo-body)", lineHeight: 1.4 }}>
+            Sandbox mode — no live listings.
+          </span>
+          <FindOnEbayLink
+            name={cardName}
+            setName={setName || undefined}
+            variant="inline"
+          />
+        </div>
+      )}
+
+      {/* When we DID get live listings, show a small link out so the
+          user can dig deeper on eBay from the same context. */}
+      {!isEmpty && !isLoading && listings.length > 0 && (
+        <div style={{ marginTop: "10px", textAlign: "right" }}>
+          <FindOnEbayLink name={cardName} setName={setName || undefined} />
+        </div>
+      )}
     </div>
   );
 }

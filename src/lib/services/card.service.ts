@@ -128,11 +128,15 @@ export async function searchPokemonCards(
 export async function searchOnePieceCards(
   query: string
 ): Promise<NormalizedSearchResponse> {
-  // One Piece chain updated: Original spec APIs were non-functional. Using TCGdex v2 + Mock fallback for MVP reliability.
+  // One Piece chain (real data only — client explicitly rejected mocks):
+  //   1. apitcg.com/api/one-piece  — real Bandai catalogue, needs APITCG_API_KEY.
+  //   2. Cardmarket                 — public metadata search fallback.
+  // The former `mock-onepiece` fallback was removed; if both real sources
+  // fail, the search legitimately returns 0 results rather than fabricating
+  // Luffy/Zoro/Law/Ace/Shanks for every query.
   return executeWithFallback([
-    { name: "tcgdex-onepiece", task: () => fetchTcgdexOnePiece(query) },
+    { name: "apitcg-onepiece",     task: () => fetchApiTcgOnePiece(query) },
     { name: "cardmarket-onepiece", task: () => fetchCardmarketOnePiece(query) },
-    { name: "mock-onepiece", task: () => fetchMockOnePiece(query) },
   ]);
 }
 
@@ -375,38 +379,193 @@ interface ScrydexCard {
 // =============================================================
 
 /**
- * TCGdex v2 (One Piece) — Primary task attempt.
+ * apitcg.com (One Piece) — the real Bandai catalogue via TCGplayer.
+ *
+ * Endpoint     GET https://api.apitcg.com/api/products?tcg=one-piece&name=<query>
+ * Auth         `x-api-key: <APITCG_API_KEY>` HTTP header.
+ * Docs         https://apitcg.com/platform (dashboard → API Key section)
+ *
+ * Response shape (confirmed empirically against the live endpoint):
+ *   {
+ *     success: true,
+ *     data: [{
+ *       _id: 5876,                                 // numeric internal id
+ *       type: "card" | "sealed",                   // filter to "card"
+ *       name: "Ace & Sabo & Luffy",
+ *       code: "OP13-007",                          // Bandai card code
+ *       set: { _id, name: "Carrying On His Will", code: "OP13", … },
+ *       images: [{ small, medium, large }],
+ *       markets: {
+ *         tcgplayer: {
+ *           id: "657260",
+ *           url: "…",
+ *           prices: { low, mid, high, market }     // real USD prices
+ *         }
+ *       },
+ *       attributes: {
+ *         Rarity: "SR" | "L" | "SEC" | "R" | "UC" | "C" | "P",
+ *         Color: "Red" | "Blue" | …,
+ *         CardType: "Character" | "Leader" | "Event" | "Stage",
+ *         Power: "1000",                            // string, may be absent
+ *         Cost: "1", Counterplus: "2000",
+ *         Subtypes: "Goa Kingdom",                  // "/"-separated tags
+ *         Attribute: "Strike" | "Slash" | …,
+ *         Description, Artist, Number
+ *       }
+ *     }, …]
+ *   }
+ *
+ * A single `products` call returns a mix of playing cards AND sealed
+ * products (booster boxes, precon decks). We keep only `type === "card"`
+ * so the search grid never shows a booster-box tile alongside real cards.
+ *
+ * Image URLs live on `tcgplayer-cdn.tcgplayer.com` which sends normal
+ * CORS-permissive headers — the browser can embed them directly. The
+ * legacy `/api/one-piece-img/[cardId]` proxy is no longer needed for
+ * this source (it still exists for defensive rewrites of any stray
+ * Bandai-hosted URL — see `rewriteOnePieceImage` below).
  */
-async function fetchTcgdexOnePiece(
+async function fetchApiTcgOnePiece(
   query: string
 ): Promise<NormalizedSearchResponse> {
-  const url = `https://api.tcgdex.net/v2/en/cards?name=${encodeURIComponent(
+  const apiKey = process.env.APITCG_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "APITCG_API_KEY is not set — cannot query apitcg-onepiece"
+    );
+  }
+
+  const url = `https://api.apitcg.com/api/products?tcg=one-piece&name=${encodeURIComponent(
     query
   )}`;
-  const payload = (await fetchJson(url)) as Array<{
-    id?: string;
-    name?: string;
-    image?: string;
-    set?: { id?: string; name?: string };
-    rarity?: string;
-    hp?: number | string;
-    types?: string[];
-  }>;
+  const res = await fetch(url, {
+    headers: { ...FETCH_HEADERS, "x-api-key": apiKey },
+  });
+  if (!res.ok) {
+    throw new Error(`apitcg-onepiece HTTP ${res.status} ${res.statusText}`);
+  }
 
-  const list = Array.isArray(payload) ? payload : [];
+  const payload = (await res.json()) as ApiTcgProductsResponse;
+  if (payload?.success === false) {
+    throw new Error(
+      `apitcg-onepiece error: ${payload?.error ?? "unknown"}`
+    );
+  }
+  const list = Array.isArray(payload?.data) ? payload.data : [];
+
   const cards = list
-    .filter((c) => !!c.image)
-    .map((c) => ({
-      id: c.id ?? "",
-      name: c.name ?? query,
-      setImage: c.set?.name ?? c.set?.id ?? "One Piece TCG",
-      rarity: c.rarity ?? "Unknown",
-      hp: c.hp != null ? String(c.hp) : null,
-      types: c.types ?? [],
-      imageUrl: `${c.image}/high.webp`,
-    }));
+    // Only real playing cards — drop booster boxes, precon decks, etc.
+    .filter((p) => p.type === "card")
+    .map((p) => {
+      const attrs = p.attributes ?? {};
+      const img = p.images?.[0];
+      const rawImageUrl =
+        img?.large ?? img?.medium ?? img?.small ?? "";
+      // Prefer the Bandai card code (e.g. "OP13-007") as our stable id so
+      // upsert-by-externalId is stable across seeds. Fall back to the
+      // numeric apitcg internal `_id` if code is somehow missing.
+      const id = p.code ?? (p._id != null ? String(p._id) : "");
+      return {
+        id,
+        name: p.name ?? query,
+        setImage:
+          p.set?.name ??
+          p.set?.code ??
+          "One Piece TCG",
+        rarity: attrs.Rarity ?? "Unknown",
+        // Power on Character/Leader cards, absent on Events/Stages.
+        // We surface it as `hp` since our schema doesn't have a dedicated
+        // Power field and the UI treats hp/power as interchangeable.
+        hp: attrs.Power ?? null,
+        types: parseOnePieceAttrs(attrs),
+        imageUrl: rewriteOnePieceImage(id, rawImageUrl),
+        // Real TCGplayer market price — no fabrication.
+        marketPrice: p.markets?.tcgplayer?.prices?.market ?? null,
+      };
+    })
+    // Drop cards without a usable id or image — Zod would drop them
+    // anyway, but this keeps the "dropped invalid card" log clean.
+    .filter((c) => c.id && c.imageUrl);
 
-  return buildResponse("tcgdex-onepiece", cards);
+  return buildResponse("apitcg-onepiece", cards);
+}
+
+interface ApiTcgProductsResponse {
+  success?: boolean;
+  error?: string;
+  data?: ApiTcgProduct[];
+}
+interface ApiTcgProduct {
+  _id?: number;
+  type?: "card" | "sealed" | string;
+  name?: string;
+  code?: string;
+  set?: { _id?: string; name?: string; code?: string };
+  images?: Array<{ small?: string; medium?: string; large?: string }>;
+  markets?: {
+    tcgplayer?: {
+      prices?: {
+        low?: number;
+        mid?: number;
+        high?: number;
+        market?: number;
+      };
+    };
+  };
+  attributes?: {
+    Rarity?: string;
+    Color?: string;
+    CardType?: string;
+    Cost?: string;
+    Power?: string;
+    Counterplus?: string;
+    Subtypes?: string;
+    Attribute?: string;
+    Artist?: string;
+    Number?: string;
+    Description?: string;
+  };
+}
+
+/**
+ * Turns apitcg's `attributes.*` tags into a single flat `types` array.
+ * `Subtypes` is a "/"-separated multi-tag string (families like "Straw
+ * Hat Crew/Supernovas"). `CardType`, `Color`, `Attribute` are single
+ * values. All are collapsed into one Set for the normalized card shape.
+ */
+function parseOnePieceAttrs(
+  attrs: NonNullable<ApiTcgProduct["attributes"]>
+): string[] {
+  const out = new Set<string>();
+  if (attrs.CardType) out.add(attrs.CardType);
+  if (attrs.Color) out.add(attrs.Color);
+  if (attrs.Attribute) out.add(attrs.Attribute);
+  if (attrs.Subtypes) {
+    for (const tag of attrs.Subtypes.split(/[/,]/)) {
+      const trimmed = tag.trim();
+      if (trimmed) out.add(trimmed);
+    }
+  }
+  return Array.from(out);
+}
+
+/**
+ * Safety net: if any upstream response somehow returns a Bandai-hosted
+ * card URL (`en.onepiece-cardgame.com`, which sends
+ * `Cross-Origin-Resource-Policy: same-site`), rewrite it to flow
+ * through our same-origin proxy at `/api/one-piece-img/[cardId]`.
+ * TCGplayer CDN URLs from apitcg pass through unchanged.
+ */
+function rewriteOnePieceImage(cardId: string, rawUrl: string): string {
+  if (!rawUrl) return "";
+  if (rawUrl.startsWith("/api/one-piece-img/")) return rawUrl;
+  if (
+    /onepiece-cardgame\.com/i.test(rawUrl) &&
+    /^(OP|ST|EB|PRB)\d{0,2}-\d{3}$/.test(cardId)
+  ) {
+    return `/api/one-piece-img/${cardId}`;
+  }
+  return rawUrl;
 }
 
 /**
@@ -441,90 +600,13 @@ async function fetchCardmarketOnePiece(
   return buildResponse("cardmarket-onepiece", cards);
 }
 
-/**
- * Base URL used to build absolute image URLs for locally-bundled mock
- * assets (see MOCK_ONEPIECE_CARDS below). NormalizedCardSchema requires
- * `imageUrl` to be a full URL (z.string().url()), so a bare "/cards/..."
- * path would fail validation and get silently dropped. Mirrors the same
- * env var used for metadataBase/auth-client's baseURL elsewhere.
- */
-const APP_BASE_URL = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-
-/**
- * Realistic Mock One Piece Adapter — Fallback 2 for MVP Reliability.
- * Ensures the application always resolves a valid, normalized response array.
- *
- * IMAGE URLS: these previously pointed at `assets.tcgdex.net/en/op/...`,
- * which 404s for every path — TCGdex only hosts Pokémon TCG series (base,
- * gym, neo, ex, bw, sv, tcgp, etc; confirmed via GET /v2/en/series), it
- * has never indexed One Piece card art. We point these at locally
- * bundled placeholder art in `public/cards/` instead (guaranteed to
- * resolve, since it's served by this app) rather than a broken external
- * URL — built as an absolute URL via APP_BASE_URL since the schema
- * requires a real URL, not a bare path.
- */
-const MOCK_ONEPIECE_CARDS = [
-  {
-    id: "OP01-001",
-    name: "Monkey.D.Luffy",
-    setImage: "Romance Dawn (OP-01)",
-    rarity: "Leader (L)",
-    hp: "5000",
-    types: ["Straw Hat Crew", "Supernovas"],
-    imageUrl: `${APP_BASE_URL}/cards/luffy.webp`,
-  },
-  {
-    id: "OP01-025",
-    name: "Roronoa Zoro",
-    setImage: "Romance Dawn (OP-01)",
-    rarity: "Super Rare (SR)",
-    hp: "6000",
-    types: ["Straw Hat Crew"],
-    imageUrl: `${APP_BASE_URL}/cards/zoro.webp`,
-  },
-  {
-    id: "OP01-047",
-    name: "Trafalgar Law",
-    setImage: "Romance Dawn (OP-01)",
-    rarity: "Super Rare (SR)",
-    hp: "5000",
-    types: ["Heart Pirates", "Supernovas"],
-    imageUrl: `${APP_BASE_URL}/cards/card-front.webp`,
-  },
-  {
-    id: "OP02-013",
-    name: "Portgas.D.Ace",
-    setImage: "Paramount War (OP-02)",
-    rarity: "Secret Rare (SEC)",
-    hp: "7000",
-    types: ["Whitebeard Pirates"],
-    imageUrl: `${APP_BASE_URL}/cards/card-front.webp`,
-  },
-  {
-    id: "OP01-120",
-    name: "Shanks",
-    setImage: "Romance Dawn (OP-01)",
-    rarity: "Secret Rare (SEC)",
-    hp: "10000",
-    types: ["Red-Haired Pirates"],
-    imageUrl: `${APP_BASE_URL}/cards/card-front.webp`,
-  },
-];
-
-async function fetchMockOnePiece(
-  query: string
-): Promise<NormalizedSearchResponse> {
-  const q = query.toLowerCase().trim();
-  const filtered = MOCK_ONEPIECE_CARDS.filter(
-    (c) =>
-      c.name.toLowerCase().includes(q) ||
-      c.id.toLowerCase().includes(q) ||
-      c.types.some((t) => t.toLowerCase().includes(q))
-  );
-
-  const list = filtered.length > 0 ? filtered : MOCK_ONEPIECE_CARDS;
-  return buildResponse("mock-onepiece", list);
-}
+// The One Piece mock adapter and MOCK_ONEPIECE_CARDS constant were
+// removed per client feedback ("we do not want fake data"). Real data
+// now flows exclusively through fetchApiTcgOnePiece + Cardmarket
+// fallback. The same-origin Bandai image proxy at
+// /api/one-piece-img/[cardId] still exists — it's referenced by
+// rewriteOnePieceImage() above for the rare case an upstream returns a
+// Bandai-hosted URL that the browser would otherwise block by CORP.
 
 // =============================================================
 // Re-exports for the route layer

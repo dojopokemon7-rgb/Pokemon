@@ -51,20 +51,66 @@ const TABS: { id: TabId; label: string }[] = [
 const RANGES = ["1D", "7D", "1M", "3M", "6M", "MAX"] as const;
 type RangeId = (typeof RANGES)[number];
 
-// Mock chart data — 30 points with general upward trend (visual only for MVP)
-// TODO Week 3: Replace with real PricingHistory data
-function generateMockChartData(baseValue: number): { value: number }[] {
-  const points: { value: number }[] = [];
-  let value = baseValue * 0.7; // Start at 70% of current value
-  for (let i = 0; i < 30; i++) {
-    // Add some variance but trend upward
-    const change = (Math.random() - 0.35) * (baseValue * 0.03);
-    value = Math.max(value * 0.5, value + change);
-    points.push({ value: Math.round(value * 100) / 100 });
+// Per-range mock chart shape.
+//   startFraction  — how far below current value the series starts,
+//                    so a bigger range implies more room for growth
+//   volatility     — random-walk step size as a fraction of baseValue
+//   trend          — deterministic drift per step (positive = upward),
+//                    also as a fraction of baseValue
+//   points         — number of samples on the x-axis
+//
+// Each range produces a visually distinct silhouette on the AreaChart:
+//   1D  small intraday jitter, ~flat
+//   7D  choppier week with a mild upward tilt
+//   1M  clearer monthly climb (this is the shape from the reference)
+//   3M  smoother quarterly trend, denser
+//   6M  half-year climb with heavier volatility
+//   MAX steepest growth curve, densest series
+// TODO Week 3: Replace with real PricingHistory data from Postgres.
+const RANGE_SHAPES: Record<
+  RangeId,
+  { startFraction: number; volatility: number; trend: number; points: number; seed: number }
+> = {
+  "1D": { startFraction: 0.98, volatility: 0.006, trend: 0.0004, points: 24, seed: 11 },
+  "7D": { startFraction: 0.92, volatility: 0.015, trend: 0.002,  points: 28, seed: 23 },
+  "1M": { startFraction: 0.78, volatility: 0.020, trend: 0.008,  points: 30, seed: 47 },
+  "3M": { startFraction: 0.68, volatility: 0.017, trend: 0.005,  points: 45, seed: 71 },
+  "6M": { startFraction: 0.55, volatility: 0.022, trend: 0.004,  points: 60, seed: 97 },
+  "MAX": { startFraction: 0.30, volatility: 0.025, trend: 0.006, points: 80, seed: 131 },
+};
+
+// Small deterministic PRNG so switching ranges shows a stable shape
+// per range (not a fresh random line on every render).
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function generateMockChartData(baseValue: number, range: RangeId): { value: number }[] {
+  const { startFraction, volatility, trend, points, seed } = RANGE_SHAPES[range];
+  const rand = mulberry32(seed);
+  const start = baseValue * startFraction;
+  const step = points > 1 ? (baseValue - start) / (points - 1) : 0;
+  const data: { value: number }[] = [];
+  let value = start;
+  for (let i = 0; i < points; i++) {
+    // Base drift so the series ends near `baseValue`
+    const drift = step * i * (1 + trend * points);
+    // Random walk around the drift line
+    const noise = (rand() - 0.5) * baseValue * volatility * 2;
+    value = Math.max(baseValue * 0.1, start + drift + noise);
+    data.push({ value: Math.round(value * 100) / 100 });
   }
-  // Ensure last point is close to actual value
-  points[points.length - 1] = { value: baseValue };
-  return points;
+  // Pin the last point exactly on baseValue so the visible "market value"
+  // number and the chart's right edge always agree.
+  data[data.length - 1] = { value: baseValue };
+  return data;
 }
 
 // Mock delta generator for MVP — returns a believable % change
@@ -290,15 +336,26 @@ export default function DashboardPage() {
         };
       });
 
-    // Mock chart data based on real portfolio value
-    const chartData = generateMockChartData(marketValue);
-    
+    // Client feedback: chart shape must differ per range. Recompute
+    // when either the underlying value or the selected range changes.
+    const chartData = generateMockChartData(marketValue, activeRange);
+
     // Mock overall delta (visual only for MVP)
-    const overallPct = 9.6; // Matches prototype
+    // Different ranges show different % gain magnitudes to match the
+    // different chart shapes above (1D almost flat, MAX steepest).
+    const OVERALL_PCT_BY_RANGE: Record<RangeId, number> = {
+      "1D": 0.4,
+      "7D": 2.1,
+      "1M": 9.6,
+      "3M": 14.3,
+      "6M": 22.7,
+      "MAX": 41.8,
+    };
+    const overallPct = OVERALL_PCT_BY_RANGE[activeRange];
     const overallDelta = marketValue * (overallPct / 100);
 
     return { marketValue, paid, unrealized, mostValuable, collections, gainers, losers, chartData, overallPct, overallDelta };
-  }, [collectionData]);
+  }, [collectionData, activeRange]);
 
   // Get rows for the active tab
   const getActiveRows = () => {

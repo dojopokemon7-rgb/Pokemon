@@ -13,35 +13,20 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
+import { Toast, useTimeoutToast } from "@/components/Toast";
+import { ArrowRight } from "@/components/ArrowRight";
 
 // ── SVG icons ──────────────────────────────────────────────────
-function ArrowRight() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" />
-    </svg>
-  );
-}
+// ArrowRight is imported above — the single shared CTA arrow used
+// on every primary button across the app. Do not re-declare locally.
 
+// Matches the design system's "back" navigation glyph — a slightly
+// longer left-pointing chevron than the previous 12x12 icon, aligned
+// with the reference's `.back` row and the profile page's ArrowRight.
 function ChevronLeft() {
   return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-      <path d="M8 2L4 6l4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function EyeIcon({ off }: { off?: boolean }) {
-  return off ? (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
-      <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
-      <line x1="1" y1="1" x2="23" y2="23" />
-    </svg>
-  ) : (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-      <circle cx="12" cy="12" r="3" />
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <path d="M12 7H2M6 3L2 7l4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" strokeLinejoin="miter" />
     </svg>
   );
 }
@@ -71,6 +56,13 @@ export default function SignUpPage() {
   const [showPw, setShowPw]       = useState(false);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState<string | null>(null);
+
+  // Client feedback: show a "Try again" snackbar if sign-up hangs
+  // for more than 3s. Auto-clears when `loading` flips back to false.
+  const [timeoutMsg, setTimeoutMsg] = useTimeoutToast(
+    loading,
+    "Still working… try again in a moment."
+  );
 
   // Live-validate password only once the user has started typing
   const pwHint = password.length > 0 ? validatePassword(password) : null;
@@ -167,43 +159,34 @@ export default function SignUpPage() {
           />
         </div>
 
-        {/* Password */}
+        {/* Password — SHOW/HIDE text toggle at label (client feedback:
+            no more eye-icon-in-input; visibility is a text button that
+            controls both password fields since they share `showPw`). */}
         <div className="dojo-input-wrap">
-          <label htmlFor="signup-password" className="dojo-label">Password</label>
-          <div style={{ position: "relative" }}>
-            <input
-              id="signup-password"
-              type={showPw ? "text" : "password"}
-              autoComplete="new-password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              disabled={loading}
-              className="dojo-input"
-              style={{ paddingRight: "48px" }}
-            />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <label htmlFor="signup-password" className="dojo-label">Password</label>
             <button
               type="button"
               onClick={() => setShowPw((v) => !v)}
-              aria-label={showPw ? "Hide password" : "Show password"}
-              style={{
-                position: "absolute",
-                right: "14px",
-                top: "50%",
-                transform: "translateY(-50%)",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "var(--color-dojo-faint)",
-                padding: "4px",
-                display: "flex",
-                alignItems: "center",
-              }}
+              className="dojo-link"
+              aria-pressed={showPw}
+              suppressHydrationWarning
             >
-              <EyeIcon off={showPw} />
+              {showPw ? "HIDE" : "SHOW"}
             </button>
           </div>
+          <input
+            id="signup-password"
+            type={showPw ? "text" : "password"}
+            autoComplete="new-password"
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            disabled={loading}
+            className="dojo-input"
+            suppressHydrationWarning
+          />
           {/* Password hint — always visible, turns red on violation */}
           <p
             className={pwHint ? "dojo-error" : "dojo-faint"}
@@ -213,10 +196,9 @@ export default function SignUpPage() {
           </p>
         </div>
 
-        {/* Confirm password — ported from app.js SCREENS.signup:
-            field('Confirm password', 'suPw2', 'type it again', 'password')
-            plus the suMismatch/suMatched messages. This field and its
-            validation state were entirely missing before. */}
+        {/* Confirm password — shares the SHOW/HIDE toggle with the
+            password field above (both read `showPw`). Green check
+            appears inline when the two match. */}
         <div className="dojo-input-wrap">
           <label htmlFor="signup-password2" className="dojo-label">Confirm password</label>
           <div style={{ position: "relative" }}>
@@ -230,13 +212,14 @@ export default function SignUpPage() {
               required
               disabled={loading}
               className="dojo-input"
-              style={{ paddingRight: pwMatched ? "48px" : "16px" }}
+              style={{ paddingRight: pwMatched ? "40px" : undefined }}
+              suppressHydrationWarning
             />
             {pwMatched && (
               <span
                 style={{
                   position: "absolute",
-                  right: "16px",
+                  right: "14px",
                   top: "50%",
                   transform: "translateY(-50%)",
                   display: "flex",
@@ -309,6 +292,10 @@ export default function SignUpPage() {
           NEED HELP?
         </button>
       </div>
+
+      {timeoutMsg && (
+        <Toast message={timeoutMsg} onDismiss={() => setTimeoutMsg(null)} tone="error" duration={3200} />
+      )}
     </div>
   );
 }

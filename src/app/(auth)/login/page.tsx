@@ -13,30 +13,14 @@ import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
+import { Toast, useTimeoutToast } from "@/components/Toast";
+import { ArrowRight } from "@/components/ArrowRight";
 
 // ── SVG icons ──────────────────────────────────────────────────
-function ArrowRight() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" />
-    </svg>
-  );
-}
-
-function EyeIcon({ off }: { off?: boolean }) {
-  return off ? (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
-      <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
-      <line x1="1" y1="1" x2="23" y2="23" />
-    </svg>
-  ) : (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
+// Note: ArrowRight is imported above from @/components/ArrowRight, the
+// SINGLE canonical arrow used on every primary CTA in the app. Never
+// re-implement it locally — if the arrow needs to change, edit that
+// one component so every button stays visually in sync.
 
 function CheckIcon() {
   return (
@@ -108,6 +92,18 @@ function LoginContent() {
   const [showPw, setShowPw]     = useState(false);
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
+
+  // Client feedback: show a "Try again" snackbar if sign-in hangs for
+  // more than 3s. The hook auto-clears the toast when `loading` flips
+  // back to false so users don't see stale messages after success.
+  const [timeoutMsg, setTimeoutMsg] = useTimeoutToast(
+    loading,
+    "Still working… try again in a moment."
+  );
+
+  // OAuth stubs — Google/Meta credentials aren't wired up yet; showing
+  // a toast is more honest than fake buttons that silently do nothing.
+  const [oauthToast, setOauthToast] = useState<string | null>(null);
 
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
@@ -186,7 +182,9 @@ function LoginContent() {
           />
         </div>
 
-        {/* Password */}
+        {/* Password — SHOW/HIDE text toggle only (client feedback: no
+            more eye icon inside the input, per the design system's
+            text-only visibility toggle at the top-right of the label). */}
         <div className="dojo-input-wrap">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <label htmlFor="login-password" className="dojo-label">Password</label>
@@ -194,44 +192,24 @@ function LoginContent() {
               type="button"
               onClick={() => setShowPw((v) => !v)}
               className="dojo-link"
-              style={{ fontSize: "9.5px", letterSpacing: "0.14em" }}
+              aria-pressed={showPw}
+              suppressHydrationWarning
             >
               {showPw ? "HIDE" : "SHOW"}
             </button>
           </div>
-          <div style={{ position: "relative" }}>
-            <input
-              id="login-password"
-              type={showPw ? "text" : "password"}
-              autoComplete="current-password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              disabled={loading}
-              className="dojo-input"
-              style={{ paddingRight: "40px" }}
-            />
-            <button
-              type="button"
-              onClick={() => setShowPw((v) => !v)}
-              style={{
-                position: "absolute",
-                right: "12px",
-                top: "50%",
-                transform: "translateY(-50%)",
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "var(--color-dojo-body)",
-                display: "flex",
-                padding: 0,
-              }}
-              aria-label={showPw ? "Hide password" : "Show password"}
-            >
-              <EyeIcon off={showPw} />
-            </button>
-          </div>
+          <input
+            id="login-password"
+            type={showPw ? "text" : "password"}
+            autoComplete="current-password"
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            disabled={loading}
+            className="dojo-input"
+            suppressHydrationWarning
+          />
         </div>
 
         {/* Forgot password — ported from app.js SCREENS.signin:
@@ -274,13 +252,14 @@ function LoginContent() {
 
       {/* OTP sign-in disabled for MVP — re-enable in Week 4 with SMS provider */}
 
-      {/* Social buttons */}
+      {/* Social buttons — OAuth providers aren't hooked up yet. Clicking
+          shows a "coming in Week 4" toast per client feedback. */}
       <div style={{ display: "flex", gap: "12px" }}>
         <button
           id="btn-google"
           type="button"
           className="dojo-btn dojo-btn-outline"
-          title="Sign in with Google (coming soon)"
+          onClick={() => setOauthToast("Google login coming in Week 4")}
         >
           <GoogleIcon />
           GOOGLE
@@ -289,7 +268,7 @@ function LoginContent() {
           id="btn-facebook"
           type="button"
           className="dojo-btn dojo-btn-outline"
-          title="Sign in with Facebook (coming soon)"
+          onClick={() => setOauthToast("Meta login coming in Week 4")}
         >
           <FacebookIcon />
           FACEBOOK
@@ -323,6 +302,14 @@ function LoginContent() {
           NEED HELP?
         </button>
       </div>
+
+      {/* Timeout + OAuth-stub toasts (single component slot, one wins) */}
+      {timeoutMsg && (
+        <Toast message={timeoutMsg} onDismiss={() => setTimeoutMsg(null)} tone="error" duration={3200} />
+      )}
+      {oauthToast && (
+        <Toast message={oauthToast} onDismiss={() => setOauthToast(null)} />
+      )}
     </div>
   );
 }

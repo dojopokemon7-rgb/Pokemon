@@ -17,6 +17,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/lib/auth-client";
+import { ArrowRight } from "@/components/ArrowRight";
 
 type Currency = "USD" | "INR";
 
@@ -44,13 +45,8 @@ const CURRENCIES: { code: Currency; label: string }[] = [
   { code: "INR", label: "INR — Indian Rupee" },
 ];
 
-function ArrowRight() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M2 7h10M8 3l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" />
-    </svg>
-  );
-}
+// ArrowRight imported above from @/components/ArrowRight — the single
+// canonical CTA arrow shared across every primary button in the app.
 
 function ChevronDown() {
   return (

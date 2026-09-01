@@ -960,6 +960,28 @@ body {
   }
 }
 
+/* --- Interactive card tile hover state (Phase 3.2) ---
+   Subtle lift + shadow on hover for every clickable card tile
+   (search results, trending grid, portfolio grid/list, dashboard
+   most-valuable rows). Suppressed on touch devices via a media
+   query so tap-highlight doesn't compete with the transform. */
+.dojo-card-tile {
+  cursor: pointer;
+  transition:
+    transform 200ms ease-out,
+    box-shadow 200ms ease-out,
+    border-color 200ms ease-out;
+  will-change: transform;
+}
+
+@media (hover: hover) {
+  .dojo-card-tile:hover {
+    transform: scale(1.02);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+    border-color: var(--color-dojo-gold);
+  }
+}
+
 /* --- Bottom tab bar: active-tab glow ---
    Client feedback (Phase 1): active state should be gold-highlighted,
    not the reference's white glow. Changed the icon drop-shadow and

@@ -38,6 +38,9 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState, useRef, useEffect, Suspense } from "react";
+import { CardImage, cardInitials } from "@/components/CardImage";
+import { Toast } from "@/components/Toast";
+import { FindOnEbayLink } from "@/components/FindOnEbayLink";
 
 
 // ── Icons for scan/filter buttons (new per client feedback) ────────
@@ -132,10 +135,11 @@ function TrendCardTile({
   selected: boolean;
   onToggleSelect: () => void;
 }) {
-  const initials = getInitials(card.name);
+  const initials = cardInitials(card.name);
 
   return (
     <div
+      className="dojo-card-tile"
       style={{
         position: "relative",
         background: "var(--color-dojo-card)",
@@ -147,7 +151,7 @@ function TrendCardTile({
     >
       {/* Star — track this card */}
       <button
-        onClick={onToggleTrack}
+        onClick={(e) => { e.stopPropagation(); onToggleTrack(); }}
         title="Track this card"
         aria-pressed={tracked}
         style={{
@@ -172,30 +176,16 @@ function TrendCardTile({
         {tracked ? "★" : "☆"}
       </button>
 
-      {card.imageUrl ? (
-        <img
+      {/* Card art — CardImage handles missing/broken src fallbacks to initials */}
+      <div style={{ width: "62%", alignSelf: "center" }}>
+        <CardImage
           src={card.imageUrl}
           alt={card.name}
-          loading="lazy"
-          style={{ width: "62%", alignSelf: "center", aspectRatio: "660 / 921", objectFit: "cover", background: "var(--color-dojo-raised)" }}
+          initials={initials}
+          initialsSize="22px"
+          style={{ background: "var(--color-dojo-raised)", border: "none" }}
         />
-      ) : (
-        <div
-          style={{
-            width: "62%",
-            alignSelf: "center",
-            aspectRatio: "660 / 921",
-            background: "var(--color-dojo-raised)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "22px", letterSpacing: "0.04em", color: "var(--color-dojo-gold)" }}>
-            {initials}
-          </span>
-        </div>
-      )}
+      </div>
 
       <div style={{ marginTop: "12px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "14.5px", lineHeight: 1.3, color: "var(--color-dojo-ink)" }}>
         {card.name}
@@ -269,6 +259,13 @@ function TrendCardTile({
           {selected ? "✓" : "+"}
         </button>
       </div>
+
+      {/* eBay deep-link — opens in a new tab so the user can compare
+          against real live listings even while our backend runs on the
+          Sandbox environment (which returns 0 items for most queries). */}
+      <div style={{ marginTop: "6px", textAlign: "right" }}>
+        <FindOnEbayLink name={card.name} setName={card.setImage} />
+      </div>
     </div>
   );
 }
@@ -303,7 +300,7 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
   const imgSrc = card.imageUrl ?? card.image;
   const price = card.marketPrice ?? card.price ?? 0;
   const setName = card.setName ?? card.set ?? "";
-  const initials = getInitials(card.name);
+  const initials = cardInitials(card.name);
 
   // There is no GET-by-id card API (only /api/cards/search), so the
   // card's own search-result fields are carried forward via query
@@ -321,6 +318,7 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
   return (
     <Link
       href={`/search/${card.id}?${detailParams.toString()}`}
+      className="dojo-card-tile"
       style={{
         background: "var(--color-dojo-card)",
         border: "1px solid var(--color-dojo-stroke)",
@@ -328,43 +326,21 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
         flexDirection: "column",
         overflow: "hidden",
         textDecoration: "none",
-        cursor: "pointer",
         animation: "dojo-fade-up 260ms ease-out both",
         animationDelay: `${Math.min(index, 12) * 35}ms`,
       }}
     >
-      {/* Card image or initials fallback */}
-      <div
-        style={{
-          aspectRatio: "3/4",
-          background: "var(--color-dojo-raised)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          position: "relative",
-          overflow: "hidden",
-        }}
-      >
-        {imgSrc ? (
-          <img
-            src={imgSrc}
-            alt={card.name}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            loading="lazy"
-          />
-        ) : (
-          <span
-            style={{
-              fontFamily: "var(--font-display)",
-              fontWeight: 800,
-              fontSize: "26px",
-              letterSpacing: "0.04em",
-              color: "var(--color-dojo-gold)",
-            }}
-          >
-            {initials}
-          </span>
-        )}
+      {/* Card image via shared CardImage — handles broken URLs by
+          swapping in the gold initials placeholder. */}
+      <div style={{ position: "relative" }}>
+        <CardImage
+          src={imgSrc}
+          alt={card.name}
+          initials={initials}
+          aspectRatio="3/4"
+          initialsSize="26px"
+          style={{ background: "var(--color-dojo-raised)", border: "none" }}
+        />
         {/* Add button overlay */}
         <div
           style={{
@@ -447,6 +423,13 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
               </span>
             );
           })()}
+        </div>
+
+        {/* Find on eBay — same-origin nested button (see FindOnEbayLink
+            docs), opens the eBay search in a new tab without navigating
+            away from the current results page. */}
+        <div style={{ marginTop: "6px" }}>
+          <FindOnEbayLink name={card.name} setName={setName || undefined} />
         </div>
       </div>
     </Link>
@@ -902,6 +885,21 @@ function SearchPageInner() {
 // card-type options, not silently toggle a batch-selection state.
 // Ungraded adds directly via POST /api/users/me/collection. Graded is
 // UI-only for MVP (see Phase 4 in the plan).
+// Options for the graded form dropdowns (Phase 3.4). UI-only; real
+// grading integration is a Week 3 backend feature (schema change to
+// UserCollection + grader-specific fee/turnaround data).
+const GRADERS = ["PSA", "BGS", "CGC", "SGC"] as const;
+const CONDITIONS = [
+  "Gem Mint 10",
+  "Mint 9",
+  "Near Mint 8",
+  "Excellent 7",
+  "Very Good 6",
+  "Good 5",
+  "Fair 3",
+  "Poor 1",
+] as const;
+
 function AddCardSheet({
   card,
   onClose,
@@ -914,6 +912,14 @@ function AddCardSheet({
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  // Phase 3.4: which step of the sheet is showing.
+  //   "picker"  — Ungraded / Graded choice buttons (default)
+  //   "graded"  — Grader/Condition/Grade form (UI stub)
+  const [step, setStep] = useState<"picker" | "graded">("picker");
+  const [grader, setGrader] = useState<(typeof GRADERS)[number]>("PSA");
+  const [condition, setCondition] = useState<(typeof CONDITIONS)[number]>("Gem Mint 10");
+  const [grade, setGrade] = useState("10");
 
   async function addUngraded() {
     setAdding(true);
@@ -1007,55 +1013,97 @@ function AddCardSheet({
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          <button
-            onClick={addUngraded}
-            disabled={adding}
-            className="dojo-btn dojo-btn-primary"
-          >
-            {adding ? "ADDING…" : "UNGRADED"}
-          </button>
-          <button
-            onClick={() => onAdded("Graded card flow coming in Week 3")}
-            disabled={adding}
-            className="dojo-btn dojo-btn-outline"
-          >
-            GRADED
-          </button>
-        </div>
+        {step === "picker" ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            <button
+              onClick={addUngraded}
+              disabled={adding}
+              className="dojo-btn dojo-btn-primary"
+            >
+              {adding ? "ADDING…" : "UNGRADED"}
+            </button>
+            <button
+              onClick={() => setStep("graded")}
+              disabled={adding}
+              className="dojo-btn dojo-btn-outline"
+            >
+              GRADED
+            </button>
+          </div>
+        ) : (
+          /* Phase 3.4: Graded card form — UI stub. Backing schema
+             (grader/grade/cert on UserCollection) doesn't exist yet, so
+             Add just shows a "coming in Week 3" toast.
+             TODO Week 3: Implement real backend for graded cards. */
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div className="dojo-input-wrap">
+              <label className="dojo-label" htmlFor="grader-select">Grader</label>
+              <select
+                id="grader-select"
+                value={grader}
+                onChange={(e) => setGrader(e.target.value as (typeof GRADERS)[number])}
+                className="dojo-select"
+              >
+                {GRADERS.map((g) => (
+                  <option key={g} value={g}>{g}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="dojo-input-wrap">
+              <label className="dojo-label" htmlFor="condition-select">Condition</label>
+              <select
+                id="condition-select"
+                value={condition}
+                onChange={(e) => setCondition(e.target.value as (typeof CONDITIONS)[number])}
+                className="dojo-select"
+              >
+                {CONDITIONS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="dojo-input-wrap">
+              <label className="dojo-label" htmlFor="grade-input">Grade</label>
+              <input
+                id="grade-input"
+                type="text"
+                inputMode="decimal"
+                placeholder="10"
+                value={grade}
+                onChange={(e) => setGrade(e.target.value)}
+                className="dojo-input"
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
+              <button
+                type="button"
+                onClick={() => setStep("picker")}
+                className="dojo-btn dojo-btn-outline"
+                style={{ flex: 1 }}
+              >
+                BACK
+              </button>
+              <button
+                type="button"
+                onClick={() => onAdded("Graded card tracking coming in Week 3")}
+                className="dojo-btn dojo-btn-primary"
+                style={{ flex: 2 }}
+              >
+                ADD
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
 }
 
-// ── Toast — auto-dismissing status message ────────────────────────
-function Toast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  // Auto-dismiss after 2.6s
-  useEffect(() => {
-    const timer = setTimeout(onDismiss, 2600);
-    return () => clearTimeout(timer);
-  }, [message, onDismiss]);
-
-  return (
-    <div
-      role="status"
-      style={{
-        position: "fixed", left: "50%", bottom: "88px",
-        transform: "translateX(-50%)", zIndex: 95,
-        background: "var(--color-dojo-card)",
-        border: "1px solid var(--color-dojo-stroke)",
-        padding: "10px 16px",
-        color: "var(--color-dojo-ink)",
-        fontFamily: "var(--font-display)", fontWeight: 700,
-        fontSize: "12px", letterSpacing: "0.06em",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-        animation: "dojo-fade-up 200ms ease-out both",
-      }}
-    >
-      {message}
-    </div>
-  );
-}
+// Toast is now sourced from src/components/Toast.tsx (shared with auth
+// pages) so the styling and behaviour stay in sync everywhere.
 
 // ── Default export with Suspense boundary ─────────────────────────
 export default function SearchPage() {

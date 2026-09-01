@@ -25,6 +25,7 @@
 import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { CardImage, cardInitials } from "@/components/CardImage";
 
 // ── Real collection item shape — matches GET /api/users/me/collection ──
 interface CollectionItem {
@@ -54,14 +55,8 @@ function fmt(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
+// Initials fallback now provided by the shared @/components/CardImage
+// module (cardInitials). Portfolio tiles pass name through that helper.
 
 // ── Icons ──────────────────────────────────────────────────────────
 function BellIcon() {
@@ -138,37 +133,33 @@ function detailHref(item: CollectionItem): string {
 // ── Card tile — grid view ──────────────────────────────────────────
 function CollectionCardGrid({ item }: { item: CollectionItem }) {
   const price = item.card.marketPrice;
-  const initials = getInitials(item.card.name);
+  const initials = cardInitials(item.card.name);
+  const setName = item.card.set?.name;
+  const showSet = setName && setName.toLowerCase() !== "unknown set";
   return (
     <Link
       href={detailHref(item)}
+      className="dojo-card-tile"
       style={{
         position: "relative",
         background: "var(--color-dojo-card)",
         border: "1px solid var(--color-dojo-stroke)",
         padding: "11px",
-        cursor: "pointer",
         textDecoration: "none",
         display: "block",
       }}
     >
-      {item.card.imageUrl ? (
-        <img
-          src={item.card.imageUrl}
-          alt={item.card.name}
-          loading="lazy"
-          style={{ width: "100%", aspectRatio: "660 / 921", objectFit: "cover", background: "var(--color-dojo-raised)" }}
-        />
-      ) : (
-        <div style={{ width: "100%", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "22px", color: "var(--color-dojo-gold)" }}>{initials}</span>
-        </div>
-      )}
+      <CardImage
+        src={item.card.imageUrl}
+        alt={item.card.name}
+        initials={initials}
+        style={{ background: "var(--color-dojo-raised)", border: "none" }}
+      />
       <div style={{ marginTop: "9px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", lineHeight: 1.3, minHeight: "32px", color: "var(--color-dojo-ink)" }}>
         {item.card.name}
       </div>
       <div style={{ marginTop: "4px", fontSize: "10.5px", color: "var(--color-dojo-body)" }}>
-        {item.card.set?.name ?? "Unknown set"}{item.isFoil ? " · Foil" : ""}
+        {showSet ? setName : ""}{showSet && item.isFoil ? " · " : ""}{item.isFoil ? "Foil" : ""}
       </div>
       <div style={{ display: "flex", alignItems: "baseline", marginTop: "9px", gap: "8px" }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", fontVariantNumeric: "tabular-nums", color: price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
@@ -188,35 +179,35 @@ function CollectionCardGrid({ item }: { item: CollectionItem }) {
 // ── Card row — list view ───────────────────────────────────────────
 function CollectionCardList({ item }: { item: CollectionItem }) {
   const price = item.card.marketPrice;
-  const initials = getInitials(item.card.name);
+  const initials = cardInitials(item.card.name);
+  const setName = item.card.set?.name;
+  const showSet = setName && setName.toLowerCase() !== "unknown set";
   return (
     <Link
       href={detailHref(item)}
+      className="dojo-card-tile"
       style={{
         position: "relative",
         background: "var(--color-dojo-card)",
         border: "1px solid var(--color-dojo-stroke)",
         padding: "12px 13px",
         marginBottom: "10px",
-        cursor: "pointer",
         display: "flex",
         gap: "12px",
         alignItems: "center",
         textDecoration: "none",
       }}
     >
-      {item.card.imageUrl ? (
-        <img
+      <div style={{ width: "40px", flex: "none" }}>
+        <CardImage
           src={item.card.imageUrl}
           alt={item.card.name}
-          loading="lazy"
-          style={{ width: "40px", height: "56px", flex: "none", objectFit: "cover", background: "var(--color-dojo-raised)" }}
+          initials={initials}
+          aspectRatio="40 / 56"
+          initialsSize="12px"
+          style={{ background: "var(--color-dojo-raised)", border: "none" }}
         />
-      ) : (
-        <div style={{ width: "40px", height: "56px", flex: "none", background: "var(--color-dojo-raised)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", color: "var(--color-dojo-gold)" }}>{initials}</span>
-        </div>
-      )}
+      </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -228,7 +219,7 @@ function CollectionCardList({ item }: { item: CollectionItem }) {
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginTop: "6px" }}>
           <div style={{ flex: 1, fontSize: "11px", color: "var(--color-dojo-body)" }}>
-            {item.card.set?.name ?? "Unknown set"}{item.isFoil ? " · Foil" : ""}
+            {showSet ? setName : ""}{showSet && item.isFoil ? " · " : ""}{item.isFoil ? "Foil" : ""}
           </div>
           <GainLossTag item={item} />
         </div>
@@ -238,9 +229,17 @@ function CollectionCardList({ item }: { item: CollectionItem }) {
   );
 }
 
+// Portfolio tabs (Phase 3.5). "sold" is a UI stub — no schema for sold
+// cards yet, so it always renders an empty state.
+// TODO Week 3: Implement real backend for sold-card tracking
+//              (schema: add UserSale table with saleDate, salePrice,
+//              buyer info, marketplace source).
+type PortfolioTab = "my" | "sold";
+
 export default function PortfolioPage() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
+  const [tab, setTab] = useState<PortfolioTab>("my");
 
   const { data, isLoading, isError } = useQuery<CollectionApiResponse>({
     queryKey: ["portfolio-collection"],
@@ -308,46 +307,78 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {/* ── Item count + view toggle ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "22px 0 12px" }}>
-        <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-          My cards
-        </span>
-        <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-          {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
-        </span>
-        <div style={{ display: "flex" }}>
+      {/* ── My cards / Sold tab switcher (Phase 3.5) ── */}
+      <div style={{ display: "flex", gap: "6px", margin: "22px 0 4px" }}>
+        {([
+          { id: "my" as const,   label: "My cards" },
+          { id: "sold" as const, label: "Sold" },
+        ]).map((t) => (
           <button
-            onClick={() => setView("list")}
-            aria-label="List view"
+            key={t.id}
+            onClick={() => setTab(t.id)}
             style={{
-              width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center",
-              cursor: "pointer", border: "none", padding: 0,
-              background: view === "list" ? "var(--color-dojo-gold)" : "transparent",
-              color: view === "list" ? "#0D0D0D" : "var(--color-dojo-faint)",
-              boxShadow: view === "list" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)",
+              flex: "none", padding: "8px 14px", cursor: "pointer",
+              border: "1px solid var(--color-dojo-stroke)",
+              fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px",
+              letterSpacing: "0.14em", textTransform: "uppercase",
+              background: tab === t.id ? "var(--color-dojo-gold)" : "transparent",
+              color: tab === t.id ? "#0D0D0D" : "var(--color-dojo-body)",
             }}
           >
-            <ListIcon />
+            {t.label}
           </button>
-          <button
-            onClick={() => setView("grid")}
-            aria-label="Grid view"
-            style={{
-              width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center",
-              cursor: "pointer", border: "none", padding: 0,
-              background: view === "grid" ? "var(--color-dojo-gold)" : "transparent",
-              color: view === "grid" ? "#0D0D0D" : "var(--color-dojo-faint)",
-              boxShadow: view === "grid" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)",
-            }}
-          >
-            <GridIcon />
-          </button>
-        </div>
+        ))}
       </div>
 
-      {/* ── Card list/grid ── */}
-      {isLoading ? (
+      {/* ── Item count + view toggle (only on My cards tab) ── */}
+      {tab === "my" && (
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "14px 0 12px" }}>
+          <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
+          </span>
+          <div style={{ display: "flex" }}>
+            <button
+              onClick={() => setView("list")}
+              aria-label="List view"
+              style={{
+                width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center",
+                cursor: "pointer", border: "none", padding: 0,
+                background: view === "list" ? "var(--color-dojo-gold)" : "transparent",
+                color: view === "list" ? "#0D0D0D" : "var(--color-dojo-faint)",
+                boxShadow: view === "list" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)",
+              }}
+            >
+              <ListIcon />
+            </button>
+            <button
+              onClick={() => setView("grid")}
+              aria-label="Grid view"
+              style={{
+                width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center",
+                cursor: "pointer", border: "none", padding: 0,
+                background: view === "grid" ? "var(--color-dojo-gold)" : "transparent",
+                color: view === "grid" ? "#0D0D0D" : "var(--color-dojo-faint)",
+                boxShadow: view === "grid" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)",
+              }}
+            >
+              <GridIcon />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sold tab: empty-state stub (Phase 3.5)
+          TODO Week 3: Implement real backend for sold-card tracking. ── */}
+      {tab === "sold" ? (
+        <div style={{ border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "40px 22px", textAlign: "center", marginTop: "18px" }}>
+          <p className="dojo-heading" style={{ fontSize: "20px", margin: 0, color: "var(--color-dojo-gold)" }}>
+            no sold cards yet
+          </p>
+          <p className="dojo-body" style={{ marginTop: "10px", marginBottom: 0, fontSize: "13px", lineHeight: 1.55 }}>
+            cards you sell on the Floor will appear here — with the sale date, price, and total realized gain.
+          </p>
+        </div>
+      ) : isLoading ? (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "11px" }}>

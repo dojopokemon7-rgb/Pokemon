@@ -34,7 +34,12 @@ import { z } from "zod";
  * - `rarity`    Rarity string (e.g. "Rare Holo", "Common"). Falls back to "Unknown".
  * - `hp`        Hit points, or `null` when the API doesn't report one (energy/trainer cards).
  * - `types`     Array of card types (e.g. ["Fire"]). Empty array when unknown.
- * - `imageUrl`  Direct URL to the card image.
+ * - `imageUrl`  URL to the card image. Absolute (`https://…`) for
+ *   externally-hosted art; relative (`/api/…`) for images that must
+ *   route through our same-origin proxy — e.g. One Piece art from
+ *   Bandai, which is served with
+ *   `Cross-Origin-Resource-Policy: same-site` and cannot be embedded
+ *   directly from a different origin.
  * - `marketPrice` Real market price in USD (e.g. TCGplayer "market" price
  *   from the Pokémon TCG API's `tcgplayer.prices` block), or `null` when
  *   the source doesn't report pricing. Never fabricated — UI must render
@@ -47,7 +52,12 @@ export const NormalizedCardSchema = z.object({
   rarity: z.string(),
   hp: z.string().nullable(),
   types: z.array(z.string()),
-  imageUrl: z.string().url(),
+  imageUrl: z
+    .string()
+    .refine(
+      (v) => /^https?:\/\//.test(v) || v.startsWith("/"),
+      "imageUrl must be an absolute URL or a same-origin path starting with '/'"
+    ),
   marketPrice: z.number().nullable().default(null),
 });
 

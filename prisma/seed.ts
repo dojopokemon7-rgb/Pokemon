@@ -43,34 +43,74 @@ import type { NormalizedCard } from "@/lib/validators/card.validator";
 // Seed Data
 // =============================================================
 
+// Pokémon: character-name queries against the Pokémon TCG API's
+// `?q=name:<name>` endpoint. Each name typically returns many print
+// variants (base, holo, ex, V, VMAX, etc.), so a small character list
+// yields hundreds of unique cards after the per-query cap slice.
+// Set names ("Evolving Skies", "Scarlet & Violet", …) are intentionally
+// omitted — the Pokémon TCG API's name filter matches CARD names, not
+// set names, so those searches would return zero results.
 const pokemonQueries = [
-  "Charizard",
-  "Pikachu",
-  "Mewtwo",
-  "Gengar",
-  "Bulbasaur",
-  "Squirtle",
-  "Charmander",
-  "Eevee",
-  "Snorlax",
-  "Rayquaza",
+  // Kanto starters + evolutions + gen-1 icons
+  "Charizard", "Charmander", "Charmeleon",
+  "Blastoise", "Squirtle", "Wartortle",
+  "Venusaur", "Bulbasaur", "Ivysaur",
+  "Pikachu", "Raichu", "Mewtwo", "Mew",
+  "Gengar", "Gastly", "Haunter",
+  "Snorlax", "Dragonite", "Alakazam", "Machamp", "Gyarados",
+  "Lapras", "Vaporeon", "Jolteon", "Flareon", "Ninetales",
+  // Eeveelutions (post-gen 1)
+  "Espeon", "Umbreon", "Leafeon", "Glaceon", "Sylveon", "Eevee",
+  // Legendaries
+  "Lugia", "Ho-Oh", "Celebi",
+  "Kyogre", "Groudon", "Rayquaza", "Deoxys",
+  "Dialga", "Palkia", "Giratina", "Arceus",
+  "Reshiram", "Zekrom", "Kyurem",
+  "Xerneas", "Yveltal", "Zygarde",
+  "Solgaleo", "Lunala", "Necrozma",
+  "Zacian", "Zamazenta", "Eternatus", "Calyrex",
+  "Miraidon", "Koraidon",
+  // Popular non-legendary favorites
+  "Garchomp", "Lucario", "Metagross", "Salamence", "Tyranitar",
+  "Greninja", "Sceptile", "Blaziken", "Swampert",
+  "Rowlet", "Litten", "Popplio",
+  "Grookey", "Scorbunny", "Sobble",
+  "Sprigatito", "Fuecoco", "Quaxly",
 ];
 
+// One Piece: character-name queries against apitcg.com's `?name=<name>`
+// endpoint. Each query returns ~5 real cards (plus ~20 sealed products
+// that our adapter filters out), so this list of ~45 characters yields
+// well over 100 unique cards after upsert deduplication.
 const onePieceQueries = [
-  "Monkey D. Luffy",
-  "Roronoa Zoro",
-  "Trafalgar Law",
-  "Portgas D. Ace",
-  "Shanks",
-  "Nami",
-  "Sanji",
-  "Kaido",
-  "Whitebeard",
-  "Boa Hancock",
+  // Straw Hat Pirates
+  "Monkey D. Luffy", "Roronoa Zoro", "Nami", "Usopp", "Sanji",
+  "Tony Tony Chopper", "Nico Robin", "Franky", "Brook", "Jinbe",
+  // Worst Generation / Supernovas
+  "Trafalgar Law", "Eustass Kid", "Killer", "Basil Hawkins",
+  "Scratchmen Apoo", "X Drake", "Jewelry Bonney", "Capone Bege",
+  "Urouge",
+  // Yonko + top-tier
+  "Shanks", "Kaido", "Charlotte Linlin", "Marshall D. Teach",
+  "Edward Newgate", "Gol D. Roger", "Silvers Rayleigh",
+  // Warlords / Emperors' commanders
+  "Boa Hancock", "Crocodile", "Doflamingo", "Mihawk",
+  "Marco", "Jozu", "Vista", "Portgas D. Ace",
+  // Navy / Marines
+  "Aokiji", "Akainu", "Kizaru", "Smoker", "Tashigi",
+  "Coby", "Helmeppo", "Garp", "Sengoku",
+  // Wano / newer arcs
+  "Yamato", "Oden", "Kin'emon", "Shiryu",
+  // Other iconic
+  "Enel", "Rob Lucci",
 ];
 
-/** Hard cap per query so a single popular name can't dominate the seed. */
-const MAX_CARDS_PER_QUERY = 5;
+/** Hard cap per query — bumped from 5 → 25 so a popular character like
+ * Charizard contributes a full spread of print variants instead of just
+ * the first five. The Pokémon TCG API and apitcg both return 25+ per
+ * page by default, so this is essentially "take everything one page
+ * gave us" without needing to paginate. */
+const MAX_CARDS_PER_QUERY = 25;
 
 /** Small delay between live API calls — polite to upstream sources. */
 const REQUEST_DELAY_MS = 250;
@@ -140,6 +180,17 @@ async function upsertCard(
     stats.setsUpserted += 1;
   }
 
+  // Persist the market price when the adapter returns one (apitcg
+  // includes real TCGplayer market prices, Pokémon TCG API includes
+  // TCGplayer prices for many cards). Before this line was added, the
+  // seed script fetched prices from upstream and then dropped them on
+  // the floor — every card in the DB had marketPrice = null even
+  // though the API responses contained real numbers.
+  const pricingFields =
+    card.marketPrice != null
+      ? { marketPrice: card.marketPrice, lastPricedAt: new Date() }
+      : {};
+
   await prisma.card.upsert({
     where: { externalId: card.id },
     update: {
@@ -149,6 +200,7 @@ async function upsertCard(
       types: card.types,
       imageUrl: card.imageUrl,
       setId: cardSet.id,
+      ...pricingFields,
     },
     create: {
       externalId: card.id,
@@ -158,6 +210,7 @@ async function upsertCard(
       types: card.types,
       imageUrl: card.imageUrl,
       setId: cardSet.id,
+      ...pricingFields,
     },
   });
 

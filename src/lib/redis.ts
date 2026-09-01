@@ -154,4 +154,18 @@ export const RedisKeys = {
    */
   cardSearch: (game: string, query: string): string =>
     `card:search:${game}:${query.toLowerCase().trim()}`,
+
+  /**
+   * eBay Application Access Token (Client Credentials grant).
+   * TTL: 7000 seconds — 200s of safety margin before eBay's 7200s expiry.
+   * Single key, one token per app (no per-user personalisation).
+   */
+  ebayAppToken: "ebay:app-token",
+
+  /**
+   * Cached eBay Browse API search result, keyed by lowercased query.
+   * TTL: 24 hours — protects our client's daily eBay rate limits.
+   */
+  ebaySearch: (query: string): string =>
+    `ebay:search:${query.toLowerCase().trim()}`,
 } as const;
