@@ -328,7 +328,7 @@ function CardDetailInner() {
         </div>
 
         {/* ── Price Comparison (eBay Deal Finder) ── */}
-        <PriceComparisonSection cardName={name} setName={setName} marketPrice={price} />
+        <PriceComparisonSection cardName={name} setName={setName} cardCode={id} marketPrice={price} />
 
         <div style={{ height: "1px", background: "var(--color-dojo-divider)", margin: "20px -22px 0" }} />
 
@@ -495,17 +495,30 @@ function CardDetailInner() {
 function PriceComparisonSection({
   cardName,
   setName,
+  cardCode,
   marketPrice,
 }: {
   cardName: string;
   setName: string;
+  /** Card id from the URL path — used both as an eBay-search modifier
+   *  (for Bandai-style codes) and to key the React Query cache. */
+  cardCode: string;
   marketPrice: number;
 }) {
+  // For One Piece Bandai codes ("OP01-001") we build a more precise
+  // query — sellers include the code verbatim in listing titles so
+  // this dramatically narrows the results. For Pokemon internal ids
+  // ("pl4-1", "base1-4") the code is useless as a search term, so we
+  // send the plain card name and let eBay's own relevance ranking do
+  // the work.
+  const isBandaiCode = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(cardCode);
+  const searchQuery = isBandaiCode ? `${cardName} ${cardCode.toUpperCase()}` : cardName;
+
   const { data, isLoading, isError } = useQuery<EbaySearchResponse>({
-    queryKey: ["ebay-search", cardName.toLowerCase()],
+    queryKey: ["ebay-search", searchQuery.toLowerCase()],
     queryFn: async () => {
       const res = await fetch(
-        `/api/ebay/search?q=${encodeURIComponent(cardName)}`
+        `/api/ebay/search?q=${encodeURIComponent(searchQuery)}`
       );
       if (!res.ok) throw new Error(`Bad status ${res.status}`);
       return res.json();
@@ -637,17 +650,85 @@ function PriceComparisonSection({
           <FindOnEbayLink
             name={cardName}
             setName={setName || undefined}
+            cardCode={cardCode}
             variant="inline"
           />
         </div>
       )}
 
-      {/* When we DID get live listings, show a small link out so the
-          user can dig deeper on eBay from the same context. */}
+      {/* Real live listings — the 3 items that make up the average
+          shown above. Each row is a direct deep-link to THAT specific
+          eBay listing (not a keyword search), so the user gets to the
+          exact card, not eBay's generic 100k-result grid. */}
       {!isEmpty && !isLoading && listings.length > 0 && (
-        <div style={{ marginTop: "10px", textAlign: "right" }}>
-          <FindOnEbayLink name={cardName} setName={setName || undefined} />
-        </div>
+        <>
+          <div style={{ marginTop: "18px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            Live eBay listings
+          </div>
+          <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            {listings.slice(0, 3).map((l) => (
+              <a
+                key={l.itemId}
+                href={l.itemWebUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "12px",
+                  padding: "10px 12px",
+                  border: "1px solid var(--color-dojo-stroke)",
+                  background: "var(--color-dojo-card)",
+                  textDecoration: "none",
+                  cursor: "pointer",
+                }}
+              >
+                {l.imageUrl && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={l.imageUrl}
+                    alt=""
+                    width={44}
+                    height={44}
+                    style={{ width: "44px", height: "44px", flex: "none", objectFit: "cover", background: "var(--color-dojo-raised)" }}
+                  />
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-display)",
+                      fontWeight: 700,
+                      fontSize: "12.5px",
+                      lineHeight: 1.35,
+                      color: "var(--color-dojo-ink)",
+                      overflow: "hidden",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                    }}
+                  >
+                    {l.title}
+                  </div>
+                  <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}>
+                    View on eBay ›
+                  </div>
+                </div>
+                <div style={{ flex: "none", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "14px", fontVariantNumeric: "tabular-nums", color: "#2D7FF9" }}>
+                  {fmtUSD(l.price)}
+                </div>
+              </a>
+            ))}
+          </div>
+
+          {/* Bottom fallback link — searches more listings on eBay */}
+          <div style={{ marginTop: "12px", textAlign: "right" }}>
+            <FindOnEbayLink
+              name={cardName}
+              setName={setName || undefined}
+              cardCode={cardCode}
+            />
+          </div>
+        </>
       )}
     </div>
   );

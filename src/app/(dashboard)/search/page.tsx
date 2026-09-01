@@ -260,11 +260,15 @@ function TrendCardTile({
         </button>
       </div>
 
-      {/* eBay deep-link — opens in a new tab so the user can compare
-          against real live listings even while our backend runs on the
-          Sandbox environment (which returns 0 items for most queries). */}
+      {/* eBay deep-link — passes card.externalId as cardCode so Bandai
+          codes ("OP01-001" etc.) get baked into the eBay query for a
+          targeted search rather than "Luffy" → 100k+ generic hits. */}
       <div style={{ marginTop: "6px", textAlign: "right" }}>
-        <FindOnEbayLink name={card.name} setName={card.setImage} />
+        <FindOnEbayLink
+          name={card.name}
+          setName={card.setImage}
+          cardCode={card.externalId}
+        />
       </div>
     </div>
   );
@@ -425,11 +429,15 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
           })()}
         </div>
 
-        {/* Find on eBay — same-origin nested button (see FindOnEbayLink
-            docs), opens the eBay search in a new tab without navigating
-            away from the current results page. */}
+        {/* Find on eBay — passes card.id as cardCode so Bandai codes
+            like "OP01-001" get used for a targeted search. Pokemon IDs
+            (like "base1-4") fall back to name+set inside buildEbaySearchUrl. */}
         <div style={{ marginTop: "6px" }}>
-          <FindOnEbayLink name={card.name} setName={setName || undefined} />
+          <FindOnEbayLink
+            name={card.name}
+            setName={setName || undefined}
+            cardCode={card.id}
+          />
         </div>
       </div>
     </Link>

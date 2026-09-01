@@ -26,6 +26,9 @@ interface FindOnEbayLinkProps {
   name: string;
   /** Optional set name to disambiguate (e.g. "Base Set"). */
   setName?: string;
+  /** Optional card code (e.g. "OP01-001") — used verbatim when it's
+   *  a Bandai-style code that eBay sellers include in listing titles. */
+  cardCode?: string;
   /** Visual variant — inline is a plain gold text link; button is boxed. */
   variant?: "inline" | "button";
   /** Optional style override for the outer element. */
@@ -35,10 +38,11 @@ interface FindOnEbayLinkProps {
 export function FindOnEbayLink({
   name,
   setName,
+  cardCode,
   variant = "inline",
   style,
 }: FindOnEbayLinkProps) {
-  const href = buildEbaySearchUrl(name, setName);
+  const href = buildEbaySearchUrl(name, setName, cardCode);
 
   const openEbay = (e: React.MouseEvent) => {
     // Don't let the click bubble to a parent <Link> (which would try to

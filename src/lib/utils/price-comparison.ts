@@ -77,17 +77,39 @@ export function averageEbayPrice(prices: number[]): number | null {
   return sum / valid.length;
 }
 
+// Bandai One Piece card code pattern — OP01-001, ST01-005, EB01-023, etc.
+// Sellers include these codes verbatim in listing titles, so appending
+// them to an eBay search DRAMATICALLY narrows results to the exact card
+// (e.g. `Luffy OP01-001` → ~50 hits vs `Luffy` → 100k+ hits).
+const BANDAI_CODE_PATTERN = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i;
+
 /**
- * Builds the direct-to-eBay search URL for a card name (+ optional
- * set name). Used by the "Find on eBay ›" link when we don't have any
- * cached listings, or as a fallback when the eBay API is in sandbox
- * mode and returns 0 results.
+ * Builds a targeted eBay HTML search URL for a card. The narrowing
+ * strategy depends on what identifiers we have available:
  *
- * Uses eBay's classic HTML search endpoint (not the Browse API) since
- * we're linking a real user to a real browser page, not making a
- * programmatic call.
+ *   1. If `cardCode` matches a Bandai One Piece pattern (e.g.
+ *      "OP01-001"), that alone plus the name gives the tightest search.
+ *   2. Otherwise fall back to name + setName, which is decent for
+ *      Pokemon since set names ("Base Set", "Evolving Skies") are
+ *      human-searchable, but does nothing useful for tcgdex-style
+ *      internal ids like `pl4-1` which no seller ever puts in a title.
+ *
+ * @param name      Card name — always included.
+ * @param setName   Optional human-readable set name (e.g. "Base Set").
+ * @param cardCode  Optional card code — included only if it's a
+ *                  Bandai-style code that sellers actually use.
  */
-export function buildEbaySearchUrl(name: string, setName?: string): string {
-  const q = setName ? `${name} ${setName}` : name;
-  return `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q.trim())}`;
+export function buildEbaySearchUrl(
+  name: string,
+  setName?: string,
+  cardCode?: string
+): string {
+  const parts: string[] = [name];
+  if (cardCode && BANDAI_CODE_PATTERN.test(cardCode.trim())) {
+    parts.push(cardCode.trim().toUpperCase());
+  } else if (setName) {
+    parts.push(setName);
+  }
+  const q = parts.join(" ").trim();
+  return `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`;
 }
