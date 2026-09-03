@@ -62,9 +62,9 @@ export function evaluateDeal(
 /**
  * Computes the average price across an array of eBay listings.
  *
- * Useful because the Browse API returns 3 individual listings — a
- * simple mean is a reasonable proxy for "current eBay asking price"
- * without weighting by shipping/condition (which we don't have).
+ * Kept for anywhere that still wants a mean, but the price-comparison
+ * panel itself now uses {@link lowestEbayPrice} — an average across
+ * multiple listings hides the actual purchasable price of the card.
  *
  * @param prices Array of positive listing prices in USD.
  * @returns The arithmetic mean, or `null` when the array is empty or
@@ -75,6 +75,26 @@ export function averageEbayPrice(prices: number[]): number | null {
   if (valid.length === 0) return null;
   const sum = valid.reduce((acc, p) => acc + p, 0);
   return sum / valid.length;
+}
+
+/**
+ * Returns the lowest asking price across the supplied eBay listings.
+ *
+ * This is the number the buyer actually cares about: "what would I pay
+ * for this card on eBay right now?" — not an average, which blends
+ * outliers, and not the highest, which is the worst offer available.
+ *
+ * @param prices Array of listing prices in USD.
+ * @returns The minimum positive finite price, or `null` when the array
+ *   contains no usable prices.
+ */
+export function lowestEbayPrice(prices: number[]): number | null {
+  let min: number | null = null;
+  for (const p of prices) {
+    if (!Number.isFinite(p) || p <= 0) continue;
+    if (min == null || p < min) min = p;
+  }
+  return min;
 }
 
 // Bandai One Piece card code pattern — OP01-001, ST01-005, EB01-023, etc.
@@ -111,5 +131,10 @@ export function buildEbaySearchUrl(
     parts.push(setName);
   }
   const q = parts.join(" ").trim();
-  return `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}`;
+  // `_sacat=2611` = eBay's "CCG Individual Cards" category. Restricting
+  // the HTML search to this category filters out Pokemon GO / TCG
+  // Pocket / digital-trade listings the same way the Browse API call
+  // does — a keyword-only search for "Pikachu" otherwise returns
+  // thousands of unrelated items.
+  return `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}&_sacat=2611`;
 }

@@ -11,6 +11,7 @@
 
 import { getServerSession } from "@/lib/utils/get-server-session";
 import { redirect } from "next/navigation";
+import { prisma } from "@/lib/db";
 import DashboardClientShell from "./dashboard-client-shell";
 
 export default async function DashboardLayout({
@@ -22,6 +23,17 @@ export default async function DashboardLayout({
 
   if (!session) {
     redirect("/login");
+  }
+
+  // Admins live in the admin panel — bounce them there whenever they
+  // land on any /dashboard-group route (login redirect, refresh,
+  // bookmark, deep link, etc.). Non-admins fall through as normal.
+  const dbUser = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { isAdmin: true },
+  });
+  if (dbUser?.isAdmin) {
+    redirect("/admin");
   }
 
   return <DashboardClientShell>{children}</DashboardClientShell>;

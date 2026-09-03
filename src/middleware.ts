@@ -73,7 +73,7 @@ const DEFAULT_AUTHENTICATED_PATH = "/dashboard" as const;
  * Routes that require the user to be authenticated.
  * Any path segment that starts with these prefixes is protected.
  */
-const PROTECTED_PREFIXES: readonly string[] = ["/dashboard"];
+const PROTECTED_PREFIXES: readonly string[] = ["/dashboard", "/admin"];
 
 /**
  * Routes that should only be accessible when NOT authenticated.

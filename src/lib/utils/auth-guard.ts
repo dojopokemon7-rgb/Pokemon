@@ -104,26 +104,49 @@ export async function requireAuth(request: Request): Promise<AuthGuardResult> {
 }
 
 /**
- * Role-aware auth guard for future use (Week 4+ with admin roles).
- * Currently validates session existence. Extend with role checks when needed.
+ * Admin-only auth guard for API routes.
  *
- * @param request - The incoming `Request` object.
- * @param _requiredRole - Placeholder for role-based access control (RBAC).
- *   Reserved for Phase 2 when admin/user roles are introduced.
+ * Validates the session AND re-reads `isAdmin` from the database on
+ * every call. Never trusts the session cookie for authorization —
+ * admin status must be revocable in real time.
+ *
+ * Returns a `401` if unauthenticated, `403` if authenticated but not
+ * an admin. Callers use the same discriminated-union pattern as
+ * {@link requireAuth}.
  *
  * @example
  * ```ts
- * // Future usage (Phase 2):
- * const guard = await requireRole(request, "admin");
- * if (guard.unauthorized) return guard.unauthorized;
+ * export async function PATCH(request: Request) {
+ *   const guard = await requireAdmin(request);
+ *   if (guard.unauthorized) return guard.unauthorized;
+ *   // guard.session.user is a confirmed admin
+ * }
  * ```
  */
-export async function requireRole(
-  request: Request,
-  _requiredRole: string
-): Promise<AuthGuardResult> {
-  // TODO (Phase 2): Implement role-based access control using
-  // Better Auth's `admin` plugin or a custom `role` field on the User model.
-  // For now, this is identical to requireAuth().
-  return requireAuth(request);
+export async function requireAdmin(request: Request): Promise<AuthGuardResult> {
+  const guard = await requireAuth(request);
+  if (guard.unauthorized) return guard;
+
+  // Lazy import — keeps Prisma out of any edge-runtime paths that
+  // don't touch this helper.
+  const { prisma } = await import("@/lib/db");
+  const dbUser = await prisma.user.findUnique({
+    where: { id: guard.session.user.id },
+    select: { isAdmin: true },
+  });
+
+  if (!dbUser?.isAdmin) {
+    return {
+      unauthorized: NextResponse.json(
+        {
+          error: "Forbidden",
+          message: "Admin privileges required.",
+        },
+        { status: 403 }
+      ),
+      session: null,
+    };
+  }
+
+  return guard;
 }

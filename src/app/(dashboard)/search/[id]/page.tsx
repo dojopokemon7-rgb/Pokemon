@@ -31,7 +31,7 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   evaluateDeal,
-  averageEbayPrice,
+  lowestEbayPrice,
 } from "@/lib/utils/price-comparison";
 import { FindOnEbayLink } from "@/components/FindOnEbayLink";
 
@@ -155,6 +155,30 @@ function CardDetailInner() {
   const img = searchParams.get("img") ?? "/cards/card-front.webp";
   const priceParam = Number(searchParams.get("price") ?? 0);
   const price = priceParam > 0 ? priceParam : 246;
+
+  // `game` is passed by the search grid tile (see search/page.tsx).
+  // Older entry points (like the portfolio list) don't include it yet,
+  // so we fall back to inferring from the Bandai code pattern used by
+  // One Piece card ids. Anything else defaults to Pokémon.
+  const gameParam = searchParams.get("game");
+  const game: "pokemon" | "onepiece" =
+    gameParam === "onepiece" || gameParam === "pokemon"
+      ? gameParam
+      : /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(id)
+        ? "onepiece"
+        : "pokemon";
+
+  // The eBay-searchable card number.
+  //
+  //   - One Piece Bandai ids ("OP01-001", "ST12-020", …) appear
+  //     verbatim in seller titles, so we pass the full id as `number`.
+  //   - Pokémon TCG API ids ("base1-4", "swsh4-20") do NOT appear on
+  //     listings (sellers write "4/102", not "base1-4"), so sending
+  //     just the trailing segment would introduce false negatives via
+  //     exact-phrase matching. Better to omit `number` for those and
+  //     let name + set do the work.
+  const isBandaiCode = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(id ?? "");
+  const cardNumber = isBandaiCode ? (id ?? "").toUpperCase() : "";
 
   const [flipped, setFlipped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -328,7 +352,13 @@ function CardDetailInner() {
         </div>
 
         {/* ── Price Comparison (eBay Deal Finder) ── */}
-        <PriceComparisonSection cardName={name} setName={setName} cardCode={id} marketPrice={price} />
+        <PriceComparisonSection
+          cardName={name}
+          setName={setName}
+          cardNumber={cardNumber}
+          game={game}
+          marketPrice={price}
+        />
 
         <div style={{ height: "1px", background: "var(--color-dojo-divider)", margin: "20px -22px 0" }} />
 
@@ -489,37 +519,42 @@ function CardDetailInner() {
 //                  broken eBay call should never break the UI. The API
 //                  route already returns { fallback: true } for us.
 //
-// The React Query cache key includes the card name only — eBay's
-// Browse API doesn't know about "sets", so keying by name matches how
-// the search endpoint keys its own 24h Redis entry.
+// The React Query cache key includes name + set + number + game so
+// two cards that share a character (e.g. Charizard reprints across
+// sets) get distinct entries. This matches the composite cache key
+// used by the API route's Redis layer.
 function PriceComparisonSection({
   cardName,
   setName,
-  cardCode,
+  cardNumber,
+  game,
   marketPrice,
 }: {
   cardName: string;
   setName: string;
-  /** Card id from the URL path — used both as an eBay-search modifier
-   *  (for Bandai-style codes) and to key the React Query cache. */
-  cardCode: string;
+  /** Printed card number or Bandai code (e.g. "OP01-001"). Empty when
+   *  the trailing id segment isn't useful for eBay listings. */
+  cardNumber: string;
+  game: "pokemon" | "onepiece";
   marketPrice: number;
 }) {
-  // For One Piece Bandai codes ("OP01-001") we build a more precise
-  // query — sellers include the code verbatim in listing titles so
-  // this dramatically narrows the results. For Pokemon internal ids
-  // ("pl4-1", "base1-4") the code is useless as a search term, so we
-  // send the plain card name and let eBay's own relevance ranking do
-  // the work.
-  const isBandaiCode = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(cardCode);
-  const searchQuery = isBandaiCode ? `${cardName} ${cardCode.toUpperCase()}` : cardName;
+  // Build the query string with the exact-match params the API now
+  // requires: name, set (optional), number (optional), game.
+  const apiQs = new URLSearchParams({ name: cardName, game });
+  if (setName) apiQs.set("set", setName);
+  if (cardNumber) apiQs.set("number", cardNumber);
+  const apiUrl = `/api/ebay/search?${apiQs.toString()}`;
 
   const { data, isLoading, isError } = useQuery<EbaySearchResponse>({
-    queryKey: ["ebay-search", searchQuery.toLowerCase()],
+    queryKey: [
+      "ebay-search",
+      cardName.toLowerCase(),
+      setName.toLowerCase(),
+      cardNumber.toLowerCase(),
+      game,
+    ],
     queryFn: async () => {
-      const res = await fetch(
-        `/api/ebay/search?q=${encodeURIComponent(searchQuery)}`
-      );
+      const res = await fetch(apiUrl);
       if (!res.ok) throw new Error(`Bad status ${res.status}`);
       return res.json();
     },
@@ -533,8 +568,11 @@ function PriceComparisonSection({
   });
 
   const listings = data?.listings ?? [];
-  const ebayAvg = averageEbayPrice(listings.map((l) => l.price));
-  const deal = ebayAvg != null ? evaluateDeal(marketPrice, ebayAvg) : null;
+  // Show the lowest current asking price — the actual buyable number —
+  // rather than a mean, which hides outliers and masks what a buyer
+  // would really pay for this card on eBay right now.
+  const ebayPrice = lowestEbayPrice(listings.map((l) => l.price));
+  const deal = ebayPrice != null ? evaluateDeal(marketPrice, ebayPrice) : null;
 
   // Empty when: hard error, explicit fallback flag, or the API just
   // returned zero listings (sandbox default). All three collapse to
@@ -585,23 +623,43 @@ function PriceComparisonSection({
           }}
         >
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            eBay Avg. Sold
+            eBay Price
           </div>
           <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "#2D7FF9" }}>
             {isLoading ? (
               <span style={{ fontSize: "13px", color: "var(--color-dojo-body)", fontWeight: 400 }}>
                 Checking eBay…
               </span>
-            ) : ebayAvg != null ? (
-              fmtUSD(ebayAvg)
+            ) : ebayPrice != null ? (
+              fmtUSD(ebayPrice)
             ) : (
               <span style={{ fontSize: "13px", color: "var(--color-dojo-faint)", fontWeight: 400 }}>
                 —
               </span>
             )}
           </div>
+          {/* Transparency: show the exact query used and the pool the
+              price was picked from. "Lowest of N" tells the user this
+              is the cheapest currently buyable copy — not a blended
+              average across variants. */}
+          {!isLoading && ebayPrice != null && (
+            <div style={{ marginTop: "4px", fontSize: "10px", color: "var(--color-dojo-faint)", lineHeight: 1.3 }}>
+              lowest of {listings.length} listing{listings.length !== 1 ? "s" : ""} · &ldquo;{[cardName, setName, cardNumber].filter(Boolean).join(" ")}&rdquo;
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Warn when the eBay price looks too disconnected from our
+          recorded market value. A 60%+ delta usually means the search
+          returned condition variants or unrelated print runs — not a
+          real "deal", just noise. Keeps the Good Deal badge honest. */}
+      {!isLoading && ebayPrice != null && marketPrice > 0 && Math.abs(marketPrice - ebayPrice) / marketPrice > 0.6 && (
+        <div style={{ marginTop: "10px", padding: "8px 12px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", fontSize: "11px", color: "var(--color-dojo-body)", lineHeight: 1.4 }}>
+          ⚠ Big gap between market value and eBay listing — likely a different variant
+          (raw vs graded, print run). Click the listing below to check the exact match.
+        </div>
+      )}
 
       {/* Good Deal badge — jade bg + white text + sharp 0px radius
           per client style spec. Rendered only when the live eBay
@@ -650,7 +708,7 @@ function PriceComparisonSection({
           <FindOnEbayLink
             name={cardName}
             setName={setName || undefined}
-            cardCode={cardCode}
+            cardCode={cardNumber || undefined}
             variant="inline"
           />
         </div>
@@ -725,7 +783,7 @@ function PriceComparisonSection({
             <FindOnEbayLink
               name={cardName}
               setName={setName || undefined}
-              cardCode={cardCode}
+              cardCode={cardNumber || undefined}
             />
           </div>
         </>

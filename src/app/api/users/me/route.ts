@@ -39,6 +39,7 @@ interface PublicUserProfile {
   phoneNumber: string | null;
   phoneNumberVerified: boolean | null;
   image: string | null;
+  isAdmin: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -68,6 +69,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       phoneNumber: true,
       phoneNumberVerified: true,
       image: true,
+      isAdmin: true,
       createdAt: true,
       updatedAt: true,
       // Deliberately NOT selecting: accounts (has hashed passwords),

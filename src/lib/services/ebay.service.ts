@@ -199,34 +199,103 @@ interface EbaySearchResponse {
   errors?: Array<{ errorId?: number; message?: string }>;
 }
 
+export type EbayGame = "pokemon" | "onepiece";
+
+export interface EbaySearchParams {
+  /** Card name — becomes the primary quoted phrase. Required. */
+  name: string;
+  /** Set / expansion name — appended as a quoted phrase if present. */
+  set?: string;
+  /** Printed card number (e.g. "001/165", "OP01-001"). Quoted phrase. */
+  number?: string;
+  /** Which category filter to apply. */
+  game: EbayGame;
+}
+
 /**
- * Searches eBay Browse API for listings matching `query`, returning the
- * top `limit` results normalised for our UI.
+ * eBay category IDs used to filter the search to "actual trading cards"
+ * (as opposed to plushies, video games, sealed boxes, etc.).
+ *
+ * - 183454 → Pokémon Trading Card Game (Individual Cards)
+ * - 261186 → Trading Card Games (One Piece parent category)
+ *
+ * If eBay reorganises these categories we'll need to revisit — the API
+ * silently returns zero results for a stale category rather than
+ * erroring, so drift is invisible without spot-checking.
+ */
+const CATEGORY_IDS: Record<EbayGame, string> = {
+  pokemon: "183454",
+  onepiece: "261186",
+};
+
+/**
+ * Builds the eBay `q` parameter using exact-phrase quoting so we match
+ * this exact card rather than every listing that mentions the character
+ * anywhere in the title. eBay honours double-quoted tokens in `q` as
+ * required phrases.
+ *
+ * Examples:
+ *   { name: "Charizard", set: "Base Set", number: "4/102" }
+ *     → q="Charizard" "Base Set" "4/102"
+ *   { name: "Monkey D. Luffy", number: "OP01-001" }
+ *     → q="Monkey D. Luffy" "OP01-001"
+ *
+ * Empty/whitespace-only optional fields are skipped so we don't emit
+ * `""` bare quotes (which eBay treats as a literal match on nothing).
+ */
+export function buildEbayQuery(params: EbaySearchParams): string {
+  const parts: string[] = [];
+  const push = (v: string | undefined) => {
+    const t = v?.trim();
+    if (t) parts.push(`"${t}"`);
+  };
+  push(params.name);
+  push(params.set);
+  push(params.number);
+  return parts.join(" ");
+}
+
+/**
+ * Searches eBay Browse API for a specific trading card using exact
+ * phrase matching + a trading-card category filter.
  *
  * Route callers should wrap this in Redis-backed caching (see
  * `src/app/api/ebay/search/route.ts`) — this function itself is cache-
  * agnostic so callers stay in control of TTLs and cache keys.
  *
- * @param query Free-text search term (typically a card name).
- * @param limit Number of results to return, capped by the eBay endpoint.
+ * @param params Card identifiers (name is required; set/number optional).
+ * @param limit  Number of results to return, capped by the eBay endpoint.
  * @returns Normalised listing array; empty when eBay had no matches.
  *
  * @throws {Error} on eBay HTTP errors (including 429 rate limits). The
  *   route handler translates these into the graceful fallback JSON.
  */
 export async function searchEbayListings(
-  query: string,
+  params: EbaySearchParams,
   limit: number = 3
 ): Promise<NormalizedEbayListing[]> {
-  const trimmed = query.trim();
-  if (!trimmed) return [];
+  const query = buildEbayQuery(params);
+  if (!query) return [];
 
   const token = await getEbayAccessToken();
   const baseUrl = process.env.EBAY_API_URL ?? DEFAULT_BASE_URL;
 
+  // Category IDs are strictly required by the client spec:
+  //   - Pokémon TCG (Individual Cards): 183454
+  //   - Trading Card Games / One Piece: 261186
+  // These exclude plushies, video games, sealed products, and other
+  // non-card noise that would otherwise drag the eBay average price
+  // toward meaningless values.
+  const categoryId = CATEGORY_IDS[params.game];
+
+  // `filter=buyingOptions:{FIXED_PRICE|AUCTION}` skips classified-ad
+  // listings (which have no price and would break the numeric average).
   const url =
     `${baseUrl}/buy/browse/v1/item_summary/search?` +
-    `q=${encodeURIComponent(trimmed)}&limit=${limit}`;
+    `q=${encodeURIComponent(query)}` +
+    `&category_ids=${categoryId}` +
+    `&filter=${encodeURIComponent("buyingOptions:{FIXED_PRICE|AUCTION}")}` +
+    `&limit=${limit}`;
 
   const res = await fetch(url, {
     headers: {

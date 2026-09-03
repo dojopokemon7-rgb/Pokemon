@@ -41,6 +41,9 @@ model User {
   phoneNumber         String?  @unique
   phoneNumberVerified Boolean? @default(false)
 
+  // Grants access to the internal Admin Panel.
+  isAdmin Boolean @default(false)
+
   // Relations
   sessions    Session[]
   accounts    Account[]
@@ -173,6 +176,31 @@ model UserCollection {
   @@index([userId])
   @@index([cardId])
   @@map("user_collection")
+}
+
+// =============================================================
+// AUDIT LOG
+// =============================================================
+// Records every mutating admin action for security review.
+// Written via a helper from server actions / API routes; read-only
+// from the app itself.
+model AuditLog {
+  id         String   @id @default(cuid())
+  adminId    String   // User.id of the admin who performed the action
+  adminEmail String   // Denormalized so log survives user deletion
+  action     String   // e.g. "card.update_price", "user.ban"
+  targetType String   // "card" | "user" | "listing" | ...
+  targetId   String?
+  details    Json?    // Free-form context: before/after values, reason, etc.
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([adminId])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("audit_log")
 }
 
 // Historical pricing data for market trend analysis

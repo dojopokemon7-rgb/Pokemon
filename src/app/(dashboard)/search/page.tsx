@@ -66,11 +66,16 @@ function FilterIcon() {
 }
 
 // ── Types ──────────────────────────────────────────────────────────
+// Matches NormalizedCardSchema on the server (card.validator.ts).
+// The set NAME is carried in `setImage` despite the name — historical
+// artefact from when the field held a URL. The `set` / `setName`
+// aliases are kept for older callers that pre-dated this file.
 interface CardResult {
   id: string;
   name: string;
   set?: string;
   setName?: string;
+  setImage?: string;
   imageUrl?: string;
   image?: string;
   marketPrice?: number;
@@ -300,10 +305,20 @@ function SkeletonCard() {
 // Fades/slides up on mount, staggered by grid position. The reference
 // prototype's grid never animates (searchResults() inserts static
 // markup) — this is a new addition, documented in ANIMATION_SPECS.md.
-function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
+function CardTile({
+  card,
+  index = 0,
+  game,
+}: {
+  card: CardResult;
+  index?: number;
+  game: Game;
+}) {
   const imgSrc = card.imageUrl ?? card.image;
   const price = card.marketPrice ?? card.price ?? 0;
-  const setName = card.setName ?? card.set ?? "";
+  // NormalizedCard on the server carries the set NAME in `setImage`.
+  // Prefer that; fall back to legacy `setName`/`set` aliases.
+  const setName = card.setImage ?? card.setName ?? card.set ?? "";
   const initials = cardInitials(card.name);
 
   // There is no GET-by-id card API (only /api/cards/search), so the
@@ -312,8 +327,12 @@ function CardTile({ card, index = 0 }: { card: CardResult; index?: number }) {
   // reference's approach in spirit — SCREENS.card reads from a single
   // in-memory CARD object already available to the whole app, not a
   // fresh network fetch per card.
+  //
+  // `game` is threaded through so the detail page's eBay lookup can
+  // apply the correct category filter (Pokémon vs One Piece).
   const detailParams = new URLSearchParams({
     name: card.name,
+    game,
     ...(setName ? { set: setName } : {}),
     ...(imgSrc ? { img: imgSrc } : {}),
     ...(price ? { price: String(price) } : {}),
@@ -846,7 +865,9 @@ function SearchPageInner() {
                     </p>
                   </div>
                 )
-                : cards.map((card, i) => <CardTile key={card.id} card={card} index={i} />)}
+                : cards.map((card, i) => (
+                    <CardTile key={card.id} card={card} index={i} game={game} />
+                  ))}
             </div>
 
             {/* Pull-up hint */}
