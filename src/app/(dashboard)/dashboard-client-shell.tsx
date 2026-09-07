@@ -5,7 +5,7 @@
  *
  * Provides:
  *   - Top header: DOJO wordmark + search + bell icons + log out button
- *   - Fixed bottom nav: Home · Portfolio · [Scan FAB] · Explore · You
+ *   - Fixed bottom nav: Home · Portfolio · Explore · You
  *   - Content area with safe padding above the bottom nav
  *
  * Nav item naming/routing/iconography is ported verbatim from the Dojo
@@ -44,18 +44,6 @@ function LayersIcon() {
       <polygon points="12 2 2 7 12 12 22 7 12 2" />
       <polyline points="2 17 12 22 22 17" />
       <polyline points="2 12 12 17 22 12" />
-    </svg>
-  );
-}
-
-function ScanIcon() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M3 7V5a2 2 0 012-2h2" />
-      <path d="M17 3h2a2 2 0 012 2v2" />
-      <path d="M21 17v2a2 2 0 01-2 2h-2" />
-      <path d="M7 21H5a2 2 0 01-2-2v-2" />
-      <line x1="3" y1="12" x2="21" y2="12" />
     </svg>
   );
 }
@@ -264,9 +252,19 @@ export default function DashboardClientShell({
         }}
         aria-label="Main navigation"
       >
-        {/* Home + Portfolio (active state is gold per client feedback) */}
-        {NAV_ITEMS.slice(0, 2).map(({ href, label, Icon }) => {
-          const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+        {/* Four evenly-spaced tabs. Each item is `flex: 1`, so the row
+            divides cleanly in four regardless of viewport width.
+            The center scan FAB was removed — scanner is still reachable
+            from the search page's toolbar. */}
+        {NAV_ITEMS.map(({ href, label, Icon }) => {
+          // Home only matches exactly (avoid matching every /dashboard/*
+          // subroute that layout might host); every other tab matches
+          // itself or a nested route (e.g. /portfolio/x still lights
+          // "Portfolio" gold).
+          const active =
+            href === "/dashboard"
+              ? pathname === href
+              : pathname === href || pathname.startsWith(href + "/");
           return (
             <Link
               key={href}
@@ -285,77 +283,11 @@ export default function DashboardClientShell({
               aria-current={active ? "page" : undefined}
             >
               {active && <span className="dojo-tab-glow-bar" />}
-              <span className={active ? "dojo-tab-icon-glow" : undefined} style={{ display: "flex" }}>
-                <Icon filled={active} />
-              </span>
               <span
-                style={{
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 700,
-                  fontStretch: "112%",
-                  fontSize: "7.5px",
-                  letterSpacing: "0.18em",
-                  textTransform: "uppercase",
-                }}
+                className={active ? "dojo-tab-icon-glow" : undefined}
+                style={{ display: "flex" }}
               >
-                {label}
-              </span>
-            </Link>
-          );
-        })}
-
-        {/* Centre — Scan FAB */}
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "8px 0",
-          }}
-        >
-          <Link
-            href="/scanner"
-            style={{
-              width: "44px",
-              height: "44px",
-              background: "var(--color-dojo-gold)",
-              boxShadow: "3px 3px 0 0 #806A17",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#0D0D0D",
-              textDecoration: "none",
-            }}
-            aria-label="Scan a card"
-          >
-            <ScanIcon />
-          </Link>
-        </div>
-
-        {/* Explore + You (active state is gold per client feedback) */}
-        {NAV_ITEMS.slice(2).map(({ href, label, Icon }) => {
-          const active = pathname === href || pathname.startsWith(href + "/");
-          return (
-            <Link
-              key={href}
-              href={href}
-              style={{
-                position: "relative",
-                flex: 1,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "5px",
-                padding: "12px 0 10px",
-                textDecoration: "none",
-                color: active ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
-              }}
-              aria-current={active ? "page" : undefined}
-            >
-              {active && <span className="dojo-tab-glow-bar" />}
-              <span className={active ? "dojo-tab-icon-glow" : undefined} style={{ display: "flex" }}>
-                <Icon />
+                <Icon filled={active} />
               </span>
               <span
                 style={{
