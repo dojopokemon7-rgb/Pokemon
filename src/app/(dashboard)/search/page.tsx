@@ -129,22 +129,48 @@ function fmtUSD(n: number): string {
 // CONTINUE/ADD TO COLLECTION flow (bottom-right of the price row). ──
 function TrendCardTile({
   card,
+  game,
   tracked,
   onToggleTrack,
   selected,
   onToggleSelect,
 }: {
   card: TrendingCard;
+  game: Game;
   tracked: boolean;
   onToggleTrack: () => void;
   selected: boolean;
   onToggleSelect: () => void;
 }) {
+  const router = useRouter();
   const initials = cardInitials(card.name);
+
+  // Build the detail URL with everything the detail page needs to
+  // render + hit the exact-match eBay search. `externalId` is used as
+  // the path segment (not the DB id) to match the shape produced by
+  // the search grid — "pl4-1", "OP01-001", etc.
+  const detailHref = ((): string => {
+    const params = new URLSearchParams({ name: card.name, game });
+    if (card.setImage) params.set("set", card.setImage);
+    if (card.imageUrl) params.set("img", card.imageUrl);
+    if (card.price != null) params.set("price", String(card.price));
+    return `/search/${card.externalId}?${params.toString()}`;
+  })();
+
+  const goToDetail = () => router.push(detailHref);
 
   return (
     <div
       className="dojo-card-tile"
+      role="link"
+      tabIndex={0}
+      onClick={goToDetail}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          goToDetail();
+        }
+      }}
       style={{
         position: "relative",
         background: "var(--color-dojo-card)",
@@ -152,6 +178,7 @@ function TrendCardTile({
         padding: "13px",
         display: "flex",
         flexDirection: "column",
+        cursor: "pointer",
       }}
     >
       {/* Star — track this card */}
@@ -241,7 +268,10 @@ function TrendCardTile({
         </div>
         {/* Plus — add to selection */}
         <button
-          onClick={onToggleSelect}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSelect();
+          }}
           aria-pressed={selected}
           title="Add to collection"
           style={{
@@ -267,8 +297,13 @@ function TrendCardTile({
 
       {/* eBay deep-link — passes card.externalId as cardCode so Bandai
           codes ("OP01-001" etc.) get baked into the eBay query for a
-          targeted search rather than "Luffy" → 100k+ generic hits. */}
-      <div style={{ marginTop: "6px", textAlign: "right" }}>
+          targeted search rather than "Luffy" → 100k+ generic hits.
+          stopPropagation so clicking the link opens eBay in a new tab
+          instead of also triggering the tile-level navigation. */}
+      <div
+        style={{ marginTop: "6px", textAlign: "right" }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <FindOnEbayLink
           name={card.name}
           setName={card.setImage}
@@ -755,6 +790,7 @@ function SearchPageInner() {
                   <TrendCardTile
                     key={card.id}
                     card={card}
+                    game={game}
                     tracked={tracked.has(card.id)}
                     onToggleTrack={() => toggleTracked(card.id)}
                     selected={selected.has(card.id)}
