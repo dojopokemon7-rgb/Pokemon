@@ -18,17 +18,37 @@ export async function GET(request: Request): Promise<NextResponse> {
   const userId = session.user.id;
 
   try {
+    // Explicit `select`: `include: { set: true }` was pulling every
+    // CardSet column (symbol/logo URLs, release date, printed totals,
+    // audit timestamps) on every row when the dashboard only reads
+    // set.name. On a 200-card collection that's kilobytes of dead
+    // payload per response.
     const items = await prisma.userCollection.findMany({
       where: { userId },
-      include: {
+      orderBy: { addedAt: "desc" },
+      select: {
+        id: true,
+        cardId: true,
+        quantity: true,
+        condition: true,
+        notes: true,
+        isFoil: true,
+        purchasePrice: true,
+        addedAt: true,
+        updatedAt: true,
         card: {
-          include: {
-            set: true,
+          select: {
+            id: true,
+            externalId: true,
+            name: true,
+            number: true,
+            rarity: true,
+            imageUrl: true,
+            imageUrlHi: true,
+            marketPrice: true,
+            set: { select: { id: true, name: true } },
           },
         },
-      },
-      orderBy: {
-        addedAt: "desc",
       },
     });
 

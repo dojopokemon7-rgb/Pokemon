@@ -148,6 +148,10 @@ model Card {
 
   @@index([setId])
   @@index([name])
+  // Trending endpoint orders by `updatedAt desc` over the whole
+  // catalog; without this index the sync's daily writes force a full
+  // sequential scan on every trending fetch.
+  @@index([updatedAt])
   @@map("card")
 }
 

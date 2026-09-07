@@ -15,7 +15,6 @@
 
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/utils/get-server-session";
-import { prisma } from "@/lib/db";
 import AdminSidebar from "./_components/AdminSidebar";
 
 export default async function AdminLayout({
@@ -26,12 +25,15 @@ export default async function AdminLayout({
   const session = await getServerSession();
   if (!session) redirect("/login");
 
-  const dbUser = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { isAdmin: true },
-  });
-
-  if (!dbUser?.isAdmin) redirect("/dashboard");
+  // `isAdmin` comes from the session directly via Better Auth's
+  // `user.additionalFields` (src/lib/auth.ts). Cookie-cached for 5
+  // minutes, so this layout is zero-DB on the routine path. Removing
+  // an admin's `isAdmin` in the DB takes up to 5 minutes to lock them
+  // out (their next login refreshes the cache). If that's ever too
+  // long, drop the session in `session.token` invalidation instead.
+  if (!(session.user as { isAdmin?: boolean }).isAdmin) {
+    redirect("/dashboard");
+  }
 
   return (
     <div className="min-h-screen bg-[var(--color-dojo-app)] text-[var(--color-dojo-ink)] flex">

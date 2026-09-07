@@ -114,6 +114,31 @@ export const auth = betterAuth({
   }),
 
   // --------------------------------------------------------
+  // User: expose `isAdmin` on the session
+  // --------------------------------------------------------
+  // Without this, every server component that needs to know whether
+  // the current user is an admin would have to do a second Prisma
+  // `findUnique` on top of `getSession()` — which was happening on
+  // every /dashboard and /admin page load. Registering the field
+  // here means it flows through Better Auth's cookie-cached session
+  // (see `session.cookieCache` below, 5-minute TTL), so the routine
+  // path is zero extra DB round-trips.
+  //
+  // The field is `input: false` so it cannot be set via sign-up /
+  // update-user endpoints — admin status is toggled server-side only
+  // (see scripts/create-admin.ts and the admin panel actions).
+  user: {
+    additionalFields: {
+      isAdmin: {
+        type: "boolean",
+        required: false,
+        defaultValue: false,
+        input: false,
+      },
+    },
+  },
+
+  // --------------------------------------------------------
   // Base URL — must match BETTER_AUTH_URL env var
   // --------------------------------------------------------
   baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",

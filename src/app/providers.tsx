@@ -22,6 +22,12 @@ export default function Providers({ children }: { children: React.ReactNode }) {
             gcTime: 5 * 60 * 1000,
             // Retry once on failure (external APIs can be flaky)
             retry: 1,
+            // Don't refetch every time the user tabs back — for a mobile
+            // PWA that fires on every phone unlock. Cache stays fresh via
+            // `staleTime`; explicit invalidations still work.
+            refetchOnWindowFocus: false,
+            // Skip the reconnect refetch storm too — same reasoning.
+            refetchOnReconnect: false,
           },
         },
       })

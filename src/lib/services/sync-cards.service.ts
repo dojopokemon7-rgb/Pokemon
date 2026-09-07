@@ -87,10 +87,18 @@ export interface SyncRunSummary {
 // Config
 // -----------------------------------------------------------------
 
-const MAX_SETS_PER_RUN = 6;
+const MAX_SETS_PER_RUN = 10;
 const STALE_AFTER_DAYS = 7;
 const REQUEST_DELAY_MS = 600;         // between external HTTP calls
-const RUN_BUDGET_MS = 55_000;         // wall-clock cap (Hobby-safe)
+// Wall-clock cap. Vercel Pro allows 300s; we stop at 250s so we finish
+// upserting cards already in flight and return a clean summary rather
+// than getting SIGKILL'd by the platform mid-write.
+const RUN_BUDGET_MS = 250_000;
+// Card upserts are DB round-trips (~50-100ms each over Supabase pooler),
+// so serial upserts made one big set take ~100 seconds. Running them in
+// parallel chunks brings that to single-digit seconds while staying
+// well below Supabase's pooled-connection limit.
+const UPSERT_CONCURRENCY = 10;
 
 // -----------------------------------------------------------------
 // Public entry point
@@ -135,13 +143,15 @@ export async function runCardSync(): Promise<SyncRunSummary> {
   //    starve the other game.
   const queue = interleaveByGame(dueSets).slice(0, MAX_SETS_PER_RUN);
 
+  const deadline = startedAt.getTime() + RUN_BUDGET_MS;
+
   for (const { game, set } of queue) {
-    if (Date.now() - startedAt.getTime() > RUN_BUDGET_MS) {
+    if (Date.now() > deadline) {
       summary.errors.push("Wall-clock budget reached; remaining sets deferred to next run");
       break;
     }
 
-    const setSummary = await syncOneSet(game, set);
+    const setSummary = await syncOneSet(game, set, deadline);
     summary.perSet.push(setSummary);
     if (!setSummary.skipped) {
       summary.setsProcessed += 1;
@@ -211,7 +221,8 @@ function interleaveByGame<T extends { game: Game }>(items: T[]): T[] {
 
 async function syncOneSet(
   game: Game,
-  set: SyncSetInput
+  set: SyncSetInput,
+  deadline: number
 ): Promise<SyncSetSummary> {
   const setStartedAt = Date.now();
   const setExternalId = `${game}-${set.sourceSetId}`;
@@ -224,7 +235,18 @@ async function syncOneSet(
   };
 
   try {
-    // Upsert the parent CardSet FIRST so we have a stable FK target.
+    // Fetch cards from the source FIRST. If this throws (upstream 5xx,
+    // rate limit, network hiccup) we bail before touching any DB row,
+    // which leaves the set looking "missing" to filterSetsDueForSync
+    // and guarantees a retry on the next run. Doing the set-upsert
+    // first would refresh its `updatedAt` and hide the failure behind
+    // the 7-day staleness window.
+    const cards =
+      game === "pokemon"
+        ? await listPokemonCardsInSet(set.sourceSetId)
+        : await listOnePieceCardsInSet(set.sourceSetId);
+
+    // Only now that we have real card data, upsert the parent CardSet.
     const dbSet = await prisma.cardSet.upsert({
       where: { externalId: setExternalId },
       update: {
@@ -249,44 +271,21 @@ async function syncOneSet(
       select: { id: true },
     });
 
-    // Rate-limit the external card fetch as well.
-    await sleep(REQUEST_DELAY_MS);
-    const cards =
-      game === "pokemon"
-        ? await listPokemonCardsInSet(set.sourceSetId)
-        : await listOnePieceCardsInSet(set.sourceSetId);
-
-    // Upsert cards sequentially to avoid connection storms against
-    // Supabase's pooled connection.
-    for (const card of cards) {
-      await prisma.card.upsert({
-        where: { externalId: card.externalId },
-        update: {
-          name: card.name,
-          number: card.number,
-          rarity: card.rarity ?? undefined,
-          types: card.types ?? undefined,
-          imageUrl: card.imageUrl ?? undefined,
-          imageUrlHi: card.imageUrlHi ?? undefined,
-          ...(card.marketPrice != null
-            ? { marketPrice: card.marketPrice, lastPricedAt: new Date() }
-            : {}),
-          setId: dbSet.id,
-        },
-        create: {
-          externalId: card.externalId,
-          name: card.name,
-          number: card.number,
-          rarity: card.rarity ?? null,
-          types: card.types ?? [],
-          imageUrl: card.imageUrl ?? null,
-          imageUrlHi: card.imageUrlHi ?? null,
-          marketPrice: card.marketPrice ?? null,
-          lastPricedAt: card.marketPrice != null ? new Date() : null,
-          setId: dbSet.id,
-        },
-      });
-      base.cardsUpserted += 1;
+    // Upsert cards in parallel chunks. Each upsert is a Supabase round
+    // trip (~50-100ms via the pooler); serial writes made a 120-card
+    // set take ~100 seconds. Concurrency of 10 stays comfortably under
+    // Supabase's pooled connection ceiling while cutting wall time to
+    // single-digit seconds. Between chunks we re-check the wall-clock
+    // budget so a fat set can gracefully hand off remaining cards to
+    // the next run instead of getting SIGKILL'd mid-write.
+    for (let i = 0; i < cards.length; i += UPSERT_CONCURRENCY) {
+      if (Date.now() > deadline) {
+        base.error = `Wall-clock budget reached partway through "${set.name}" (${base.cardsUpserted}/${cards.length} cards). Remainder will be picked up next run.`;
+        break;
+      }
+      const chunk = cards.slice(i, i + UPSERT_CONCURRENCY);
+      await Promise.all(chunk.map((card) => upsertCard(card, dbSet.id)));
+      base.cardsUpserted += chunk.length;
     }
   } catch (err) {
     base.error =
@@ -296,6 +295,37 @@ async function syncOneSet(
 
   base.durationMs = Date.now() - setStartedAt;
   return base;
+}
+
+// Single-card upsert extracted so the parallel chunker stays readable.
+async function upsertCard(card: SyncCardInput, setId: string): Promise<void> {
+  await prisma.card.upsert({
+    where: { externalId: card.externalId },
+    update: {
+      name: card.name,
+      number: card.number,
+      rarity: card.rarity ?? undefined,
+      types: card.types ?? undefined,
+      imageUrl: card.imageUrl ?? undefined,
+      imageUrlHi: card.imageUrlHi ?? undefined,
+      ...(card.marketPrice != null
+        ? { marketPrice: card.marketPrice, lastPricedAt: new Date() }
+        : {}),
+      setId,
+    },
+    create: {
+      externalId: card.externalId,
+      name: card.name,
+      number: card.number,
+      rarity: card.rarity ?? null,
+      types: card.types ?? [],
+      imageUrl: card.imageUrl ?? null,
+      imageUrlHi: card.imageUrlHi ?? null,
+      marketPrice: card.marketPrice ?? null,
+      lastPricedAt: card.marketPrice != null ? new Date() : null,
+      setId,
+    },
+  });
 }
 
 // =================================================================
@@ -431,106 +461,136 @@ function pickTcgplayerMarket(
 }
 
 // =================================================================
-// One Piece adapter — TCGdex
+// One Piece adapter — apitcg.com
 // =================================================================
-// Docs: https://tcgdex.dev/
-// TCGdex covers multiple TCGs including One Piece. Free, no key.
-// The series slug is `op` for One Piece Card Game.
+// Same source we already use for user search (see card.service.ts).
+// TCGdex was tried first but only hosts Pokémon.
 //
-// Sets list :  GET https://api.tcgdex.net/v2/en/series/op
-//   returns { id, name, sets: [{ id, name, cardCount: { total, official } }] }
-// Set detail: GET https://api.tcgdex.net/v2/en/sets/{setId}
-//   returns { id, name, cards: [{ id, localId, name, image }] }
-// Card detail (optional): GET https://api.tcgdex.net/v2/en/cards/{cardId}
+// Auth   : `x-api-key: $APITCG_API_KEY` header (required).
+// Sets   : GET https://api.apitcg.com/api/one-piece/sets
+//          → { success, data: [{ _id, name, code, release_date }] }
+// Cards  : GET https://api.apitcg.com/api/products?tcg=one-piece&set={slug}&limit=500
+//          → { success, data: [{ code, name, images, markets.tcgplayer.prices.market,
+//                                 attributes: { Rarity, Number, Color, CardType, ... } }],
+//              total }
 //
-// TCGdex does NOT expose market prices — cards synced from here will
-// have marketPrice = null. That's fine; the price-comparison feature
-// falls back to eBay lookups anyway.
+// We use `_id` (the slug like "one-piece-romance-dawn") as our
+// sourceSetId — that's what the /products endpoint's `set=` filter
+// expects. `code` ("OP07") is displayed but not used for filtering.
 
-interface TcgdexSeries {
-  id?: string;
+const APITCG_BASE = "https://api.apitcg.com";
+
+interface ApitcgSet {
+  _id?: string;
   name?: string;
-  sets?: Array<{
-    id?: string;
-    name?: string;
-    cardCount?: { total?: number; official?: number };
-    releaseDate?: string;
-    symbol?: string;
-    logo?: string;
-  }>;
+  code?: string;
+  release_date?: string;
+}
+interface ApitcgSetsResponse {
+  success?: boolean;
+  data?: ApitcgSet[];
+}
+interface ApitcgCard {
+  code?: string;
+  name?: string;
+  images?: Array<{ small?: string; medium?: string; large?: string }>;
+  markets?: { tcgplayer?: { prices?: { market?: number } } };
+  attributes?: {
+    Rarity?: string;
+    Number?: string;
+    Color?: string;
+    CardType?: string;
+    Subtypes?: string;
+    Attribute?: string;
+  };
+}
+interface ApitcgCardsResponse {
+  success?: boolean;
+  data?: ApitcgCard[];
+  total?: number;
 }
 
-interface TcgdexSetDetail {
-  id?: string;
-  name?: string;
-  releaseDate?: string;
-  cardCount?: { total?: number; official?: number };
-  symbol?: string;
-  logo?: string;
-  cards?: Array<{
-    id?: string;
-    localId?: string;
-    name?: string;
-    image?: string;
-    rarity?: string;
-  }>;
+function apitcgHeaders(): HeadersInit {
+  const key = process.env.APITCG_API_KEY;
+  if (!key) {
+    throw new Error("APITCG_API_KEY is not set — cannot sync One Piece");
+  }
+  return { "x-api-key": key };
 }
 
 async function listOnePieceSets(): Promise<SyncSetInput[]> {
-  const res = await fetch("https://api.tcgdex.net/v2/en/series/op");
+  const res = await fetch(`${APITCG_BASE}/api/one-piece/sets`, {
+    headers: apitcgHeaders(),
+  });
   if (!res.ok) {
-    // TCGdex may not yet host One Piece under this slug in every env —
-    // fail soft so the Pokemon sync keeps working.
-    throw new Error(`tcgdex /series/op HTTP ${res.status}`);
+    throw new Error(`apitcg /one-piece/sets HTTP ${res.status}`);
   }
-  const payload = (await res.json()) as TcgdexSeries;
-  const sets = payload.sets ?? [];
+  const payload = (await res.json()) as ApitcgSetsResponse;
+  const sets = payload.data ?? [];
   return sets
-    .filter((s): s is NonNullable<typeof s> & { id: string; name: string } =>
-      Boolean(s.id && s.name)
+    .filter(
+      (s): s is ApitcgSet & { _id: string; name: string } =>
+        Boolean(s._id && s.name)
     )
-    .sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""))
+    // Newest first so recent sets sync ahead of old ones.
+    .sort((a, b) =>
+      (b.release_date ?? "").localeCompare(a.release_date ?? "")
+    )
     .map((s) => ({
-      sourceSetId: s.id,
+      sourceSetId: s._id,
       name: s.name,
       series: "One Piece Card Game",
-      printedTotal: s.cardCount?.official ?? null,
-      total: s.cardCount?.total ?? null,
-      releaseDate: s.releaseDate ? new Date(s.releaseDate) : null,
-      symbolUrl: s.symbol ?? null,
-      logoUrl: s.logo ?? null,
+      printedTotal: null,
+      total: null,
+      releaseDate: s.release_date ? new Date(s.release_date) : null,
+      symbolUrl: null,
+      logoUrl: null,
     }));
 }
 
 async function listOnePieceCardsInSet(
   sourceSetId: string
 ): Promise<SyncCardInput[]> {
-  const res = await fetch(
-    `https://api.tcgdex.net/v2/en/sets/${encodeURIComponent(sourceSetId)}`
-  );
+  // limit=500 covers every real-world OP set (OP01 had 163; largest
+  // observed is under 300). If a set grows beyond that we'll switch
+  // to `page=` pagination — for now a single request keeps the code
+  // dead simple.
+  const url =
+    `${APITCG_BASE}/api/products?tcg=one-piece` +
+    `&set=${encodeURIComponent(sourceSetId)}&limit=500`;
+  const res = await fetch(url, { headers: apitcgHeaders() });
   if (!res.ok) {
-    throw new Error(`tcgdex /sets/${sourceSetId} HTTP ${res.status}`);
+    throw new Error(`apitcg /products?set=${sourceSetId} HTTP ${res.status}`);
   }
-  const payload = (await res.json()) as TcgdexSetDetail;
-  const cards = payload.cards ?? [];
+  const payload = (await res.json()) as ApitcgCardsResponse;
+  const cards = payload.data ?? [];
 
   return cards
-    .filter((c): c is NonNullable<typeof c> & { id: string; name: string } =>
-      Boolean(c.id && c.name)
+    .filter((c): c is ApitcgCard & { code: string; name: string } =>
+      Boolean(c.code && c.name)
     )
-    .map((c) => ({
-      externalId: c.id,
-      name: c.name,
-      number: c.localId ?? c.id,
-      rarity: c.rarity ?? null,
-      types: [],
-      // TCGdex image URLs need a suffix for size + format. Their docs
-      // recommend `/high.png` or `/low.png`. Use both slots so callers
-      // can pick.
-      imageUrl: c.image ? `${c.image}/low.webp` : null,
-      imageUrlHi: c.image ? `${c.image}/high.webp` : null,
-      marketPrice: null,
-    }));
+    .map((c) => {
+      const attrs = c.attributes ?? {};
+      // Card type / colour become "types" so the UI filters keep working
+      // — same convention as our existing user search adapter.
+      const types = [attrs.Color, attrs.CardType, attrs.Attribute]
+        .filter((v): v is string => typeof v === "string" && v.length > 0);
+      const image =
+        c.images?.[0]?.large ??
+        c.images?.[0]?.medium ??
+        c.images?.[0]?.small ??
+        null;
+      return {
+        externalId: c.code,                   // e.g. "OP01-064"
+        name: c.name,
+        number: attrs.Number ?? c.code,
+        rarity: attrs.Rarity ?? null,
+        types,
+        imageUrl: c.images?.[0]?.small ?? image,
+        imageUrlHi: c.images?.[0]?.large ?? image,
+        marketPrice: c.markets?.tcgplayer?.prices?.market ?? null,
+      };
+    });
 }
 
 // -----------------------------------------------------------------

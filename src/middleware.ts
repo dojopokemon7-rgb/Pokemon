@@ -165,6 +165,11 @@ export const config = {
      * - /api/health  (Docker health check — always public)
      * - Common static asset extensions
      */
-    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|api/auth|api/health|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf|otf|css|js)$).*)",
+    // Only run middleware on the two protected route groups. Previously
+    // it ran on every non-static path (including the entire /api/*
+    // surface) even though the logic below only guards these two
+    // prefixes — that was a wasted edge invocation per API call.
+    "/dashboard/:path*",
+    "/admin/:path*",
   ],
 };

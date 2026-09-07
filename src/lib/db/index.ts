@@ -21,10 +21,11 @@ const globalForPrisma = globalThis as unknown as {
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log:
-      process.env.NODE_ENV === "development"
-        ? ["query", "error", "warn"]
-        : ["error"],
+    // Quiet by default. The `query` log level fired on every row of
+    // large findMany results (trending, search) which drowned real
+    // errors in noise during dev. Set PRISMA_LOG_QUERY=1 to re-enable
+    // when actively debugging a slow query.
+    log: process.env.PRISMA_LOG_QUERY ? ["query", "error", "warn"] : ["error"],
   });
 
 if (process.env.NODE_ENV !== "production") {

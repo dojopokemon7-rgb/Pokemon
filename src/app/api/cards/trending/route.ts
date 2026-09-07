@@ -45,6 +45,20 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { redis } from "@/lib/redis";
+
+// Trending is the same query for every logged-in user (global feed
+// ordered by updatedAt), so it's cheap to cache. Short TTL because
+// the daily sync updates rows and we want new syncs to surface within
+// a few minutes rather than the next hour.
+const TRENDING_CACHE_SECONDS = 120;
+function trendingCacheKey(
+  game: string | undefined,
+  limit: number,
+  cursor: string | undefined
+): string {
+  return `card:trending:${game ?? "all"}:${limit}:${cursor ?? "-"}`;
+}
 
 const TrendingQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
@@ -75,6 +89,27 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const { limit, cursor, game } = parsed.data;
+
+  const cacheKey = trendingCacheKey(game, limit, cursor);
+  // Best-effort cache lookup. Any Redis error (offline, timeout) falls
+  // through to a live query rather than 500-ing on the user.
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return new NextResponse(cached, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+        },
+      });
+    }
+  } catch (err) {
+    console.warn(
+      "[cards/trending] Redis read failed, falling through:",
+      err instanceof Error ? err.message : err
+    );
+  }
 
   try {
     // Game filter: prisma/seed.ts prefixes each CardSet.externalId with
@@ -120,18 +155,29 @@ export async function GET(request: Request): Promise<NextResponse> {
       up: null as boolean | null,
     }));
 
-    return NextResponse.json(
-      {
-        cards,
-        nextCursor: hasMore ? page[page.length - 1].id : null,
+    const body = JSON.stringify({
+      cards,
+      nextCursor: hasMore ? page[page.length - 1].id : null,
+    });
+
+    // Cache write is best-effort; a Redis outage doesn't invalidate
+    // the fresh query result we're about to return.
+    try {
+      await redis.set(cacheKey, body, "EX", TRENDING_CACHE_SECONDS);
+    } catch (err) {
+      console.warn(
+        "[cards/trending] Redis write failed (non-fatal):",
+        err instanceof Error ? err.message : err
+      );
+    }
+
+    return new NextResponse(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
       },
-      {
-        status: 200,
-        headers: {
-          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
-        },
-      }
-    );
+    });
   } catch (err) {
     console.error(
       "[cards/trending] Failed to load trending cards:",
