@@ -574,6 +574,17 @@ function PriceComparisonSection({
   const ebayPrice = lowestEbayPrice(listings.map((l) => l.price));
   const deal = ebayPrice != null ? evaluateDeal(marketPrice, ebayPrice) : null;
 
+  // Pick the actual listing object with the lowest price so the "Find
+  // on eBay" button on this panel can deep-link straight to it,
+  // instead of dumping the user on a generic search page. Filters out
+  // non-positive prices for safety; sort is stable-enough here.
+  const cheapestListing = listings
+    .filter((l) => Number.isFinite(l.price) && l.price > 0)
+    .reduce<(typeof listings)[number] | null>(
+      (best, l) => (best == null || l.price < best.price ? l : best),
+      null
+    );
+
   // Empty when: hard error, explicit fallback flag, or the API just
   // returned zero listings (sandbox default). All three collapse to
   // the same graceful UI.
@@ -709,6 +720,7 @@ function PriceComparisonSection({
             name={cardName}
             setName={setName || undefined}
             cardCode={cardNumber || undefined}
+            game={game}
             variant="inline"
           />
         </div>
@@ -778,12 +790,18 @@ function PriceComparisonSection({
             ))}
           </div>
 
-          {/* Bottom fallback link — searches more listings on eBay */}
+          {/* Bottom link — deep-links straight to the cheapest live
+              listing so "Find on eBay" lands the user on THAT item's
+              page (buyable), not another eBay search page. Falls back
+              to the search URL only if, for some reason, no positive-
+              priced listing exists in the fetched set. */}
           <div style={{ marginTop: "12px", textAlign: "right" }}>
             <FindOnEbayLink
               name={cardName}
               setName={setName || undefined}
               cardCode={cardNumber || undefined}
+              game={game}
+              directUrl={cheapestListing?.itemWebUrl}
             />
           </div>
         </>

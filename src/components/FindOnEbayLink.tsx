@@ -29,6 +29,14 @@ interface FindOnEbayLinkProps {
   /** Optional card code (e.g. "OP01-001") — used verbatim when it's
    *  a Bandai-style code that eBay sellers include in listing titles. */
   cardCode?: string;
+  /** Game hint — routes the click to the correct eBay category
+   *  (Pokémon TCG vs One Piece), matching the in-app price comparison. */
+  game?: "pokemon" | "onepiece";
+  /** If provided, the click opens THIS URL directly instead of the
+   *  generic search page. Used on the card detail page where we've
+   *  already fetched live listings and know the cheapest one — landing
+   *  the user on that item is far more useful than another search. */
+  directUrl?: string;
   /** Visual variant — inline is a plain gold text link; button is boxed. */
   variant?: "inline" | "button";
   /** Optional style override for the outer element. */
@@ -39,10 +47,13 @@ export function FindOnEbayLink({
   name,
   setName,
   cardCode,
+  game,
+  directUrl,
   variant = "inline",
   style,
 }: FindOnEbayLinkProps) {
-  const href = buildEbaySearchUrl(name, setName, cardCode);
+  // `directUrl` (a specific listing) wins over the generic search URL.
+  const href = directUrl ?? buildEbaySearchUrl(name, setName, cardCode, game);
 
   const openEbay = (e: React.MouseEvent) => {
     // Don't let the click bubble to a parent <Link> (which would try to

@@ -20,8 +20,20 @@
  * handle, verified status) the way the previous version already did.
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useSession, authClient } from "@/lib/auth-client";
+
+// Same shape + query key as the dashboard uses. React Query dedupes
+// by key, so navigating dashboard <-> you reuses the cache — no extra
+// network round-trip.
+interface CollectionItem {
+  quantity: number;
+  isFoil: boolean;
+  condition: string | null;
+  purchasePrice: number | null;
+  card: { marketPrice: number | null };
+}
 
 // ── Icons ──────────────────────────────────────────────────────────
 function SettingsIcon() {
@@ -42,17 +54,6 @@ function LogOutIcon() {
   );
 }
 
-// ── Mock account totals — ported verbatim from data.js
-// ACC_TOTALS / ACC_PAID / ACC_VALUE (fixed demo numbers; no live
-// stats endpoint exists yet). ───────────────────────────────────────
-const ACC_TOTALS = [
-  { label: "Cards", value: "74" },
-  { label: "Sealed", value: "22" },
-  { label: "Graded", value: "6" },
-];
-const ACC_PAID = 9230;
-const ACC_VALUE = 28682.05;
-
 function fmtUSD(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
@@ -68,6 +69,50 @@ export default function YouAccountPage() {
   // true/"Public", matching freshState()'s { coll1: true, coll2: false }).
   const [vis, setVis] = useState<Record<string, boolean>>({ coll1: true, coll2: false });
   const [connected, setConnected] = useState<Record<string, boolean>>({ Google: true, Meta: true });
+
+  // Real collection stats — same query key + fetcher as the dashboard
+  // and portfolio pages so cross-navigation is cache-instant.
+  const { data: items } = useQuery<CollectionItem[]>({
+    queryKey: ["collection"],
+    queryFn: async () => {
+      const res = await fetch("/api/users/me/collection");
+      if (!res.ok) throw new Error("Failed to fetch collection");
+      const json = await res.json();
+      return json.items ?? [];
+    },
+  });
+
+  const stats = useMemo(() => {
+    const rows = items ?? [];
+    // Total cards = sum of quantities (matches how the admin panel and
+    // trending route count "cards owned" — see admin-metrics.ts).
+    const totalCards = rows.reduce((s, r) => s + (r.quantity ?? 0), 0);
+
+    // "Graded" is inferred from the free-text `condition` field until a
+    // proper `grader` / `grade` column lands on UserCollection. Anything
+    // matching a common grading company name counts. Loose but honest —
+    // this matches how a user labels a slabbed card in the add flow.
+    // ponytail: heuristic count (regex on free-text) — upgrade path is
+    // a dedicated grading schema on UserCollection.
+    const gradedRe = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
+    const graded = rows.reduce(
+      (s, r) => s + (r.condition && gradedRe.test(r.condition) ? r.quantity : 0),
+      0
+    );
+    // No schema field for sealed product yet — kept as 0 rather than
+    // faked. Wire when a `isSealed` column exists on UserCollection.
+    const sealed = 0;
+
+    const paid = rows.reduce(
+      (s, r) => s + (r.purchasePrice ?? 0) * (r.quantity ?? 0),
+      0
+    );
+    const value = rows.reduce(
+      (s, r) => s + (r.card.marketPrice ?? 0) * (r.quantity ?? 0),
+      0
+    );
+    return { totalCards, sealed, graded, paid, value };
+  }, [items]);
 
   const user = session?.user;
   const handle = "@" + (user?.name?.toLowerCase().replace(/\s+/g, ".") ?? "kenji.dojo");
@@ -133,9 +178,15 @@ export default function YouAccountPage() {
         </span>
       </div>
 
-      {/* ── Stat grids ── */}
+      {/* ── Stat grids — real data derived from the same
+          /api/users/me/collection response the dashboard + portfolio
+          pages use. ─────────────────────────────────────────────── */}
       <div className="dojo-statgrid" style={{ marginTop: "22px" }}>
-        {ACC_TOTALS.map((t) => (
+        {[
+          { label: "Cards", value: stats.totalCards.toLocaleString() },
+          { label: "Sealed", value: stats.sealed.toLocaleString() },
+          { label: "Graded", value: stats.graded.toLocaleString() },
+        ].map((t) => (
           <div key={t.label} className="cell">
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
               {t.label}
@@ -152,7 +203,7 @@ export default function YouAccountPage() {
             Total paid
           </div>
           <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-            {fmtUSD(ACC_PAID)}
+            {fmtUSD(stats.paid)}
           </div>
         </div>
         <div className="cell" style={{ textAlign: "left" }}>
@@ -160,7 +211,7 @@ export default function YouAccountPage() {
             Total value
           </div>
           <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-            {fmtUSD(ACC_VALUE)}
+            {fmtUSD(stats.value)}
           </div>
         </div>
       </div>

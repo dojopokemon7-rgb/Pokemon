@@ -100,41 +100,67 @@ export function lowestEbayPrice(prices: number[]): number | null {
 // Bandai One Piece card code pattern — OP01-001, ST01-005, EB01-023, etc.
 // Sellers include these codes verbatim in listing titles, so appending
 // them to an eBay search DRAMATICALLY narrows results to the exact card
-// (e.g. `Luffy OP01-001` → ~50 hits vs `Luffy` → 100k+ hits).
+// (e.g. `"Luffy" "OP01-001"` → the specific print, not 100k+ generic hits).
 const BANDAI_CODE_PATTERN = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i;
 
+// eBay category IDs — same ones the Browse API service uses. Keeping
+// them here in sync so the "Find on eBay" click and the in-app eBay
+// price comparison hit the same catalogue subtree.
+//   183454 — Pokémon Trading Card Game · Individual Cards
+//   261186 — Trading Card Games (One Piece parent)
+const CATEGORY_POKEMON = "183454";
+const CATEGORY_ONEPIECE = "261186";
+// Fallback when the caller doesn't know the game — eBay's "Collectible
+// Card Games → CCG Individual Cards" umbrella. Still filters out
+// plushies, video games, and sealed product.
+const CATEGORY_CCG_FALLBACK = "2611";
+
 /**
- * Builds a targeted eBay HTML search URL for a card. The narrowing
- * strategy depends on what identifiers we have available:
+ * Builds a targeted eBay HTML search URL for a card using exact-phrase
+ * quoting (double quotes) so eBay treats each token as required.
  *
- *   1. If `cardCode` matches a Bandai One Piece pattern (e.g.
- *      "OP01-001"), that alone plus the name gives the tightest search.
- *   2. Otherwise fall back to name + setName, which is decent for
- *      Pokemon since set names ("Base Set", "Evolving Skies") are
- *      human-searchable, but does nothing useful for tcgdex-style
- *      internal ids like `pl4-1` which no seller ever puts in a title.
+ * The link mirrors the strategy used by the in-app eBay Browse API
+ * search (`/api/ebay/search`): quoted phrases for name/set/code + a
+ * game-specific category filter, so the "Find on eBay" button lands
+ * the user on the same slice of eBay we compute our price comparison
+ * against.
  *
- * @param name      Card name — always included.
- * @param setName   Optional human-readable set name (e.g. "Base Set").
- * @param cardCode  Optional card code — included only if it's a
- *                  Bandai-style code that sellers actually use.
+ * @param name      Card name — always included as a quoted phrase.
+ * @param setName   Optional human-readable set name (e.g. "Base Set"),
+ *                  added as a quoted phrase for reprints disambiguation.
+ * @param cardCode  Optional card code — used verbatim when it matches
+ *                  a Bandai-style One Piece pattern that sellers put
+ *                  in listing titles. Pokémon internal ids like
+ *                  "pl4-1" are ignored (they never appear on eBay).
+ * @param game      Optional game hint — picks the right category id.
+ *                  When omitted, we fall back to a general CCG bucket
+ *                  and infer One Piece from the Bandai code pattern.
  */
 export function buildEbaySearchUrl(
   name: string,
   setName?: string,
-  cardCode?: string
+  cardCode?: string,
+  game?: "pokemon" | "onepiece"
 ): string {
-  const parts: string[] = [name];
-  if (cardCode && BANDAI_CODE_PATTERN.test(cardCode.trim())) {
-    parts.push(cardCode.trim().toUpperCase());
-  } else if (setName) {
-    parts.push(setName);
-  }
-  const q = parts.join(" ").trim();
-  // `_sacat=2611` = eBay's "CCG Individual Cards" category. Restricting
-  // the HTML search to this category filters out Pokemon GO / TCG
-  // Pocket / digital-trade listings the same way the Browse API call
-  // does — a keyword-only search for "Pikachu" otherwise returns
-  // thousands of unrelated items.
-  return `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}&_sacat=2611`;
+  const parts: string[] = [];
+  const quote = (v: string) => `"${v.trim()}"`;
+  if (name?.trim()) parts.push(quote(name));
+  if (setName?.trim()) parts.push(quote(setName));
+
+  const trimmedCode = cardCode?.trim();
+  const isBandai = trimmedCode && BANDAI_CODE_PATTERN.test(trimmedCode);
+  if (isBandai) parts.push(quote(trimmedCode.toUpperCase()));
+
+  const q = parts.join(" ");
+
+  // Resolve category: explicit `game` wins, then Bandai-code inference,
+  // then the CCG fallback.
+  const category =
+    game === "pokemon"
+      ? CATEGORY_POKEMON
+      : game === "onepiece" || isBandai
+        ? CATEGORY_ONEPIECE
+        : CATEGORY_CCG_FALLBACK;
+
+  return `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}&_sacat=${category}`;
 }

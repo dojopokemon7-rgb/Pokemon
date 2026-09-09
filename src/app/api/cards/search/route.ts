@@ -30,6 +30,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAuth } from "@/lib/utils/auth-guard";
+import { CardSortEnum, orderByForCardSort } from "@/lib/utils/card-sort";
 import type { NormalizedCard } from "@/lib/validators/card.validator";
 
 /** Flip to `true` to gate search behind a valid Better Auth session. */
@@ -45,6 +46,7 @@ const SearchQuerySchema = z.object({
     .trim()
     .min(1, "query must not be empty")
     .max(100, "query is too long"),
+  sort: CardSortEnum.default("market_desc"),
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -57,6 +59,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   const parsed = SearchQuerySchema.safeParse({
     game: searchParams.get("game") ?? undefined,
     query: searchParams.get("query") ?? undefined,
+    sort: searchParams.get("sort") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -71,7 +74,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query } = parsed.data;
+  const { game, query, sort } = parsed.data;
 
   // ---------------------------------------------------------------
   // Local catalog query
@@ -86,10 +89,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       set: { externalId: { startsWith: `${game}-` } },
     },
     take: RESULT_LIMIT,
-    orderBy: [
-      { marketPrice: { sort: "desc", nulls: "last" } },
-      { name: "asc" },
-    ],
+    orderBy: orderByForCardSort(sort),
     select: {
       externalId: true,
       name: true,

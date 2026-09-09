@@ -46,6 +46,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
+import { CardSortEnum, orderByForCardSort, type CardSortKey } from "@/lib/utils/card-sort";
 
 // Trending is the same query for every logged-in user (global feed
 // ordered by updatedAt), so it's cheap to cache. Short TTL because
@@ -55,9 +56,10 @@ const TRENDING_CACHE_SECONDS = 120;
 function trendingCacheKey(
   game: string | undefined,
   limit: number,
-  cursor: string | undefined
+  cursor: string | undefined,
+  sort: CardSortKey
 ): string {
-  return `card:trending:${game ?? "all"}:${limit}:${cursor ?? "-"}`;
+  return `card:trending:${game ?? "all"}:${sort}:${limit}:${cursor ?? "-"}`;
 }
 
 const TrendingQuerySchema = z.object({
@@ -66,6 +68,10 @@ const TrendingQuerySchema = z.object({
   // Client feedback fix: game filter so the Pokémon / One Piece tabs
   // don't leak cards from the other game (e.g. Charizard on One Piece).
   game: z.enum(["pokemon", "onepiece"]).optional(),
+  // Shared with /api/cards/search — the client's filter sheet uses
+  // one enum for both routes. Default "recent" keeps the historical
+  // trending behaviour (most recently synced first) unchanged.
+  sort: CardSortEnum.default("recent"),
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -74,6 +80,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     limit: searchParams.get("limit") ?? undefined,
     cursor: searchParams.get("cursor") ?? undefined,
     game: searchParams.get("game") ?? undefined,
+    sort: searchParams.get("sort") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -88,9 +95,15 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { limit, cursor, game } = parsed.data;
+  const { limit, cursor, game, sort } = parsed.data;
 
-  const cacheKey = trendingCacheKey(game, limit, cursor);
+  // Cursor pagination is keyset-on-`id`, which is only meaningful for
+  // the default `updatedAt DESC` ordering. When the client picks any
+  // other sort, ignore the cursor and return a fresh page 1 under the
+  // new ordering — the filter sheet is meant for reordering the top of
+  // the feed, not for scrolling deep into a resorted infinite list.
+  const effectiveCursor = sort === "recent" ? cursor : undefined;
+  const cacheKey = trendingCacheKey(game, limit, effectiveCursor, sort);
   // Best-effort cache lookup. Any Redis error (offline, timeout) falls
   // through to a live query rather than 500-ing on the user.
   try {
@@ -124,9 +137,9 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     const rows = await prisma.card.findMany({
       take: limit + 1, // fetch one extra to know if there's a next page
-      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      ...(effectiveCursor ? { skip: 1, cursor: { id: effectiveCursor } } : {}),
       where: gameFilter,
-      orderBy: { updatedAt: "desc" },
+      orderBy: orderByForCardSort(sort),
       include: { set: { select: { name: true } } },
     });
 

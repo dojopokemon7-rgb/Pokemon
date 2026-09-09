@@ -110,6 +110,15 @@ interface TrendingApiResponse {
 
 // ── Helpers ────────────────────────────────────────────────────────
 type Game = "pokemon" | "onepiece";
+// Must match the SortEnum in /api/cards/search/route.ts. If you add a
+// new sort mode there, add it here too.
+type SortKey = "market_desc" | "market_asc" | "name_asc" | "recent";
+const SORT_LABELS: Record<SortKey, string> = {
+  market_desc: "Price · High to Low",
+  market_asc: "Price · Low to High",
+  name_asc: "Name · A to Z",
+  recent: "Recently Added",
+};
 
 function getInitials(name: string): string {
   return name
@@ -308,9 +317,100 @@ function TrendCardTile({
           name={card.name}
           setName={card.setImage}
           cardCode={card.externalId}
+          game={game}
         />
       </div>
     </div>
+  );
+}
+
+// ── Filter / Sort bottom sheet ─────────────────────────────────────
+// TODO: Price range and Set dropdown — both need extra API surface
+// (price range: min/max on search route) and UI (multi-select dropdown
+// with the actual set list). Skipped for the shortest useful diff;
+// sort is the highest-leverage filter for a card catalogue.
+function FilterSheet({
+  currentSort,
+  onSelect,
+  onClose,
+}: {
+  currentSort: SortKey;
+  onSelect: (next: SortKey) => void;
+  onClose: () => void;
+}) {
+  const options: { key: SortKey; label: string }[] = [
+    { key: "market_desc", label: SORT_LABELS.market_desc },
+    { key: "market_asc", label: SORT_LABELS.market_asc },
+    { key: "name_asc", label: SORT_LABELS.name_asc },
+    { key: "recent", label: SORT_LABELS.recent },
+  ];
+  return (
+    <>
+      {/* Scrim */}
+      <button
+        type="button"
+        aria-label="Close filters"
+        onClick={onClose}
+        style={{
+          position: "fixed", inset: 0, zIndex: 90,
+          background: "rgba(0,0,0,0.55)", border: "none", cursor: "pointer",
+        }}
+      />
+      {/* Sheet */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Filter and sort"
+        style={{
+          position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 91,
+          background: "var(--color-dojo-card)",
+          borderTop: "1px solid var(--color-dojo-stroke)",
+          padding: "18px 22px 26px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "14px" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
+            Sort by
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              marginLeft: "auto", background: "none", border: "none",
+              color: "var(--color-dojo-body)", fontSize: "18px", cursor: "pointer",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          {options.map((o) => {
+            const active = o.key === currentSort;
+            return (
+              <button
+                key={o.key}
+                type="button"
+                onClick={() => onSelect(o.key)}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "14px 14px",
+                  border: "1px solid " + (active ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+                  background: active ? "rgba(233,180,59,0.08)" : "var(--color-dojo-app)",
+                  color: active ? "var(--color-dojo-gold)" : "var(--color-dojo-ink)",
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px",
+                  letterSpacing: "0.10em", textTransform: "uppercase",
+                  cursor: "pointer",
+                }}
+              >
+                <span>{o.label}</span>
+                {active && <span aria-hidden>✓</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -491,6 +591,7 @@ function CardTile({
             name={card.name}
             setName={setName || undefined}
             cardCode={card.id}
+            game={game}
           />
         </div>
       </div>
@@ -575,6 +676,15 @@ function SearchPageInner() {
     (searchParams.get("game") as Game) || "pokemon"
   );
 
+  // Sort state — persisted only in memory. Query keys below include
+  // `sort` so switching the filter sheet triggers a refetch without a
+  // URL bounce. Default `recent` matches the trending route's own
+  // default so the grid opens the way users expect (most recently
+  // synced first) and the filter chip only appears once they've
+  // actively re-sorted.
+  const [sort, setSort] = useState<SortKey>("recent");
+  const [filterOpen, setFilterOpen] = useState(false);
+
   // "Track this card" (star) and "add to selection" (plus) state for
   // the Trending grid — ported from S.wish / S.sel in the reference.
   const [tracked, setTracked] = useState<Set<string>>(new Set());
@@ -620,14 +730,14 @@ function SearchPageInner() {
     hasNextPage: hasMoreTrending,
     isFetchingNextPage: fetchingMoreTrending,
   } = useInfiniteQuery<TrendingApiResponse>({
-    // Query key includes `game` so switching tabs refetches (and doesn't
-    // show cached results from the other game).
-    queryKey: ["trending-cards", game],
+    // Query key includes `game` + `sort` so switching either refetches
+    // (and doesn't reuse cache from the other game / previous order).
+    queryKey: ["trending-cards", game, sort],
     queryFn: async ({ pageParam }) => {
       const cursorParam = pageParam ? `&cursor=${encodeURIComponent(String(pageParam))}` : "";
-      // Client feedback fix: send `game` so trending doesn't leak
-      // Pokémon cards into the One Piece tab (and vice versa).
-      const res = await fetch(`/api/cards/trending?limit=10&game=${game}${cursorParam}`);
+      const res = await fetch(
+        `/api/cards/trending?limit=10&game=${game}&sort=${sort}${cursorParam}`
+      );
       if (!res.ok) throw new Error("Failed to load trending cards");
       return res.json();
     },
@@ -639,10 +749,10 @@ function SearchPageInner() {
   const trendingCards = trendingPages?.pages.flatMap((p) => p.cards) ?? [];
 
   const { data, isFetching, isError } = useQuery<SearchApiResponse>({
-    queryKey: ["card-search", game, initialQ],
+    queryKey: ["card-search", game, initialQ, sort],
     queryFn: async () => {
       const res = await fetch(
-        `/api/cards/search?game=${game}&query=${encodeURIComponent(initialQ)}`
+        `/api/cards/search?game=${game}&query=${encodeURIComponent(initialQ)}&sort=${sort}`
       );
       if (!res.ok) {
         if (res.status === 404) return { cards: [] };
@@ -691,18 +801,22 @@ function SearchPageInner() {
           <button
             type="button"
             aria-label="Filter"
-            title="Filter (coming soon)"
-            onClick={() => setAddToast("Filters coming in Week 3")}
+            title="Filter & sort"
+            onClick={() => setFilterOpen(true)}
             style={{
+              position: "relative",
               display: "flex", alignItems: "center", justifyContent: "center",
               width: "44px", flex: "none",
-              border: "1px solid var(--color-dojo-stroke)",
+              border: "1px solid " + (sort !== "recent" ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
               background: "var(--color-dojo-card)",
-              color: "var(--color-dojo-ink)",
+              color: sort !== "recent" ? "var(--color-dojo-gold)" : "var(--color-dojo-ink)",
               cursor: "pointer",
             }}
           >
             <FilterIcon />
+            {sort !== "recent" && (
+              <span aria-hidden style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, background: "var(--color-dojo-gold)" }} />
+            )}
           </button>
         </div>
 
@@ -861,6 +975,25 @@ function SearchPageInner() {
                   ? "Error"
                   : `${cards.length} result${cards.length !== 1 ? "s" : ""}`}
               </span>
+              {sort !== "recent" && (
+                <button
+                  type="button"
+                  onClick={() => setSort("recent")}
+                  title="Clear sort"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: "6px",
+                    background: "rgba(233,180,59,0.10)",
+                    border: "1px solid var(--color-dojo-gold)",
+                    color: "var(--color-dojo-gold)",
+                    padding: "4px 8px",
+                    fontFamily: "var(--font-display)", fontWeight: 700,
+                    fontSize: "9.5px", letterSpacing: "0.10em", textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  {SORT_LABELS[sort]} ✕
+                </button>
+              )}
               <div style={{ marginLeft: "auto" }}>
                 <Link
                   href={`/search/multi?q=${encodeURIComponent(initialQ)}&game=${game}`}
@@ -940,6 +1073,21 @@ function SearchPageInner() {
       {/* Lightweight toast for confirmations + coming-soon flags */}
       {addToast && (
         <Toast message={addToast} onDismiss={() => setAddToast(null)} />
+      )}
+
+      {/* Filter / sort bottom sheet — opened by the funnel icon in the
+          search bar. Ships sort options; price-range + set-dropdown
+          filters are deliberately deferred (need extra UI + API surface
+          for marginal wins). */}
+      {filterOpen && (
+        <FilterSheet
+          currentSort={sort}
+          onSelect={(next) => {
+            setSort(next);
+            setFilterOpen(false);
+          }}
+          onClose={() => setFilterOpen(false)}
+        />
       )}
     </div>
   );
