@@ -10,24 +10,50 @@ export default function ScannerPage() {
   const router = useRouter();
 
   return (
-    <div style={{ padding: "24px 22px", color: "var(--color-dojo-ink)" }}>
+    // Scanner is a fixed, non-scrolling viewport — it previews the
+    // eventual full-screen camera view, so it must never scroll
+    // (Phase 3 QA: overflow-hidden, not scrollable).
+    <div
+      style={{
+        position: "relative",
+        height: "100%",
+        minHeight: "100%",
+        overflow: "hidden",
+        padding: "24px 22px",
+        color: "var(--color-dojo-ink)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      {/* Close (X) — replaces the old "‹ Back" text control (Phase 3 QA).
+          Sits top-right like a modal dismiss; still calls router.back(). */}
       <button
         onClick={() => router.back()}
+        aria-label="Close scanner"
+        title="Close"
         style={{
-          background: "none",
-          border: "none",
-          color: "var(--color-dojo-gold)",
-          fontFamily: "var(--font-display)",
-          fontWeight: 700,
-          fontSize: "12px",
+          position: "absolute",
+          top: "18px",
+          right: "22px",
+          zIndex: 2,
+          width: "38px",
+          height: "38px",
+          border: "1px solid var(--color-dojo-stroke)",
+          background: "var(--color-dojo-card)",
+          color: "var(--color-dojo-ink)",
           cursor: "pointer",
-          marginBottom: "20px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
         }}
       >
-        ‹ Back
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
+          <line x1="3" y1="3" x2="15" y2="15" />
+          <line x1="15" y1="3" x2="3" y2="15" />
+        </svg>
       </button>
 
-      <h1 className="dojo-heading" style={{ fontSize: "24px", marginBottom: "8px" }}>
+      <h1 className="dojo-heading" style={{ fontSize: "24px", marginBottom: "8px", paddingRight: "48px" }}>
         Card Scanner
       </h1>
       <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", marginBottom: "24px" }}>

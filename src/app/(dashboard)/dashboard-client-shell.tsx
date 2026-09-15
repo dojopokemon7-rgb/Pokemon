@@ -132,7 +132,10 @@ export default function DashboardClientShell({
   return (
     <div
       style={{
-        minHeight: "100dvh",
+        /* Fixed to the viewport height so the shell itself never
+           scrolls — only <main> below does (Phase 2 QA: hide scroll). */
+        height: "100dvh",
+        overflow: "hidden",
         backgroundColor: "var(--color-dojo-app)",
         display: "flex",
         flexDirection: "column",
@@ -220,11 +223,16 @@ export default function DashboardClientShell({
         </button>
       </header>
 
-      {/* ── Scrollable content ── */}
+      {/* ── Scrollable content ──
+          Only region that scrolls; scrollbar hidden via
+          .dojo-scroll-hidden. `overscrollBehavior: contain` keeps the
+          scroll from chaining to the (now locked) body. */}
       <main
+        className="dojo-scroll-hidden"
         style={{
           flex: 1,
           overflowY: "auto",
+          overscrollBehavior: "contain",
           /* Reserve space for the fixed bottom nav (64px nav + 16px safe area) */
           paddingBottom: "80px",
         }}
@@ -237,7 +245,11 @@ export default function DashboardClientShell({
           border-top lives on the bar itself (not per-button), and the
           active state is a white icon glow (drop-shadow) + a glowing
           gradient bar above the icon — not a gold top border, which is
-          what this used to render instead. */}
+          what this used to render instead.
+          `prefetch` is set so every tab's RSC payload is fetched while
+          the shell is idle — tab switches then render instantly instead
+          of waiting on a router round-trip (Phase 1 QA: tab switching
+          delay). */}
       <nav
         style={{
           position: "fixed",
@@ -269,6 +281,7 @@ export default function DashboardClientShell({
             <Link
               key={href}
               href={href}
+              prefetch
               style={{
                 position: "relative",
                 flex: 1,

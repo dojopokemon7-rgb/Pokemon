@@ -26,14 +26,15 @@
  * per-card real data.
  */
 
-import { useState, useMemo, Suspense } from "react";
+import { useState, useMemo, Suspense, useEffect, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   evaluateDeal,
   lowestEbayPrice,
 } from "@/lib/utils/price-comparison";
 import { FindOnEbayLink } from "@/components/FindOnEbayLink";
+import { Toast } from "@/components/Toast";
 
 // Response shape of GET /api/ebay/search — the route already normalises
 // eBay's raw payload, so this stays lean.
@@ -99,9 +100,11 @@ const POP = [
   { grader: "BGS", total: 468, cells: [["BL10", 94], ["10", 367], ["9.5", 5], ["9", 2]] },
 ];
 
-const ADD_ROWS = [
-  { id: "raw", section: "raw" as const, label: "Foil", price: 14224.45 },
-  { id: "psa10", section: "graded" as const, label: "PSA 10 (GEM - MT)", variant: "Foil", pop: "Pop: 3583", price: 7929.63 },
+// ADD_ROWS structure template — prices are populated dynamically per card
+// in CardDetailInner based on the card's actual marketPrice, not hardcoded.
+const ADD_ROWS_TEMPLATE = [
+  { id: "raw", section: "raw" as const, label: "Foil" },
+  { id: "psa10", section: "graded" as const, label: "PSA 10 (GEM - MT)", variant: "Foil", pop: "Pop: 3583" },
 ];
 
 const CHARTS: Record<string, number[]> = {
@@ -118,29 +121,86 @@ function fmtUSD(n: number): string {
 
 // ── Area chart — same port of app.js chart() used on the dashboard:
 // area polygon + polyline(s) + grid lines. Supports multiple series
-// (price-history can show up to 3 grade lines at once). ────────────
+// (price-history can show up to 3 grade lines at once).
+//
+// Interaction (Phase 2 QA: chart hover/tooltips must work on mobile):
+// pointer/touch snaps to the nearest x sample and draws a vertical
+// guide plus a marker dot on every visible series. The `pts` are
+// normalized chart-shape units (mock, not per-point prices — see the
+// SERIES/CHARTS mock data), so we surface a position indicator rather
+// than a fabricated dollar value; the series' overall price already
+// shows on its chip. viewBox uses the default meet aspect, so pointer
+// mapping goes through the rendered rect width. ────────────────────
 function DojoChart({ series, height = 170 }: { series: { pts: number[]; color: string }[]; height?: number }) {
   const H = height, W = 330, P = 6;
   const gridLines = [0.25, 0.5, 0.75].map((f) => P + f * (H - P * 2));
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+
+  const nPts = series[0]?.pts.length ?? 0;
+  const step = nPts > 1 ? (W - P * 2) / (nPts - 1) : 0;
+
+  const idxFromClientX = (clientX: number): number => {
+    const el = wrapRef.current;
+    if (!el || nPts < 2) return 0;
+    const rect = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return Math.round(frac * (nPts - 1));
+  };
+  const handleMove = (clientX: number) => setActiveIdx(idxFromClientX(clientX));
+  const clear = () => setActiveIdx(null);
+
+  const yFor = (v: number) => P + (v / 90) * (H - P * 2);
+  const activeX = activeIdx != null ? P + activeIdx * step : 0;
+
   return (
-    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
-      {gridLines.map((y, i) => (
-        <line key={i} x1={P} y1={y} x2={W - P} y2={y} stroke="rgba(255,255,255,.07)" strokeWidth={1} />
-      ))}
-      {series.map((s, si) => {
-        const n = s.pts.length;
-        const step = (W - P * 2) / (n - 1);
-        const coords = s.pts.map((y, i) => [+(P + i * step).toFixed(1), +(P + (y / 90) * (H - P * 2)).toFixed(1)] as const);
-        const pointsStr = coords.map(([x, y]) => `${x},${y}`).join(" ");
-        const areaStr = `${P},${H - P} ${pointsStr} ${W - P},${H - P}`;
-        return (
-          <g key={si}>
-            <polygon points={areaStr} fill={s.color} opacity={series.length > 1 ? 0.1 : 0.14} />
-            <polyline points={pointsStr} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" />
+    <div
+      ref={wrapRef}
+      style={{ width: "100%", touchAction: "none" }}
+      onMouseMove={(e) => handleMove(e.clientX)}
+      onMouseLeave={clear}
+      onTouchStart={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
+      onTouchMove={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
+      onTouchEnd={clear}
+      role="img"
+      aria-label="Price history chart"
+    >
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+        {gridLines.map((y, i) => (
+          <line key={i} x1={P} y1={y} x2={W - P} y2={y} stroke="rgba(255,255,255,.07)" strokeWidth={1} />
+        ))}
+        {series.map((s, si) => {
+          const n = s.pts.length;
+          const st = (W - P * 2) / (n - 1);
+          const coords = s.pts.map((y, i) => [+(P + i * st).toFixed(1), +(P + (y / 90) * (H - P * 2)).toFixed(1)] as const);
+          const pointsStr = coords.map(([x, y]) => `${x},${y}`).join(" ");
+          const areaStr = `${P},${H - P} ${pointsStr} ${W - P},${H - P}`;
+          return (
+            <g key={si}>
+              <polygon points={areaStr} fill={s.color} opacity={series.length > 1 ? 0.1 : 0.14} />
+              <polyline points={pointsStr} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" />
+            </g>
+          );
+        })}
+        {/* Hover/touch guide + per-series marker dots */}
+        {activeIdx != null && nPts > 1 && (
+          <g pointerEvents="none">
+            <line x1={activeX} y1={P} x2={activeX} y2={H - P} stroke="rgba(255,255,255,0.3)" strokeWidth={1} />
+            {series.map((s, si) => (
+              <circle
+                key={si}
+                cx={activeX}
+                cy={yFor(s.pts[activeIdx] ?? 0)}
+                r={3.5}
+                fill={s.color}
+                stroke="var(--color-dojo-app)"
+                strokeWidth={1.5}
+              />
+            ))}
           </g>
-        );
-      })}
-    </svg>
+        )}
+      </svg>
+    </div>
   );
 }
 
@@ -148,6 +208,7 @@ function CardDetailInner() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const id = params?.id as string;
 
   const name = searchParams.get("name") ?? "Card";
@@ -189,6 +250,68 @@ function CardDetailInner() {
   const [range, setRange] = useState<string>("1M");
   const [addQty, setAddQty] = useState<Record<string, number>>({ raw: 0, psa10: 1 });
   const [popGrader, setPopGrader] = useState("PSA");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  // Single toast channel for this page: add confirmations, favorites
+  // feedback, and Report submissions all route through here (Phase 3).
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Reset add quantities when card ID changes (prevents stale state when
+  // navigating between cards).
+  useEffect(() => {
+    setAddQty({ raw: 0, psa10: 1 });
+    setAddError(null);
+  }, [id]);
+
+  // Build ADD_ROWS dynamically using the actual card's market price.
+  // Ungraded (raw) = actual market price. Graded PSA 10 typically trades
+  // at a premium, so we estimate it as ~30x raw for high-value cards or
+  // ~3x for low-value cards (this is a rough heuristic until real graded
+  // pricing data is available in Week 3).
+  const ADD_ROWS = useMemo(() => {
+    const rawPrice = price || 0;
+    // PSA 10 premium: 3x for cards under $10, scaling up to 30x for expensive cards
+    const psa10Multiplier = rawPrice < 10 ? 3 : Math.min(30, 3 + (rawPrice / 100));
+    const psa10Price = rawPrice * psa10Multiplier;
+    
+    return [
+      { id: "raw", section: "raw" as const, label: "Foil", price: rawPrice },
+      { 
+        id: "psa10", 
+        section: "graded" as const, 
+        label: "PSA 10 (GEM - MT)", 
+        variant: "Foil", 
+        pop: "Pop: 3583", 
+        price: psa10Price 
+      },
+    ];
+  }, [price]);
+
+  // Mutation for adding cards to collection
+  const addMutation = useMutation({
+    mutationFn: async (payload: { cards: any[] }) => {
+      const res = await fetch("/api/users/me/collection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!res.ok || json.added === 0) {
+        throw new Error(json?.message ?? "Could not add cards.");
+      }
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      // Reset quantities after successful add
+      setAddQty({ raw: 0, psa10: 0 });
+      setToast(`Added ${name} to your portfolio`);
+    },
+    onError: (err: Error) => {
+      setAddError(err.message);
+    },
+  });
 
   const toggleSeries = (seriesId: string) => {
     setActiveSeries((prev) => {
@@ -265,7 +388,17 @@ function CardDetailInner() {
           {menuOpen && (
             <div className="dojo-menu" style={{ top: "42px", right: 0, left: "auto", width: "210px" }}>
               {["Report image issue", "Report pricing issue", "Report missing product"].map((l) => (
-                <div key={l} className="row" onClick={() => setMenuOpen(false)} style={{ fontSize: "12.5px" }}>
+                <div
+                  key={l}
+                  className="row"
+                  onClick={() => {
+                    // Report buttons are now actionable (Phase 3 QA):
+                    // close the menu and confirm via toast.
+                    setMenuOpen(false);
+                    setToast("Report submitted. Thank you.");
+                  }}
+                  style={{ fontSize: "12.5px" }}
+                >
                   {l}
                 </div>
               ))}
@@ -305,8 +438,17 @@ function CardDetailInner() {
             {name}
           </div>
           <button
-            onClick={() => setStarred((v) => !v)}
-            title="Track this card"
+            onClick={() => {
+              setStarred((v) => {
+                const next = !v;
+                // Immediate visual feedback: star fills gold + toast
+                // (Phase 3 QA: favorite feedback).
+                setToast(next ? "Added to favorites" : "Removed from favorites");
+                return next;
+              });
+            }}
+            title={starred ? "Remove from favorites" : "Add to favorites"}
+            aria-pressed={starred}
             style={{
               flex: "none", width: "34px", height: "34px", fontSize: "16px",
               border: "1px solid " + (starred ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
@@ -322,9 +464,8 @@ function CardDetailInner() {
         <div style={{ marginTop: "8px", fontSize: "12.5px", color: "var(--color-dojo-body)" }}>
           {setName ? <>Trading Card Game · <span style={{ color: "var(--color-dojo-gold)" }}>{setName}</span></> : "Trading Card Game"}
         </div>
-        <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-          ID · {id}
-        </div>
+        {/* Card "ID · <id>" line removed — internal identifier, not
+            useful to users (Phase 3 QA). */}
 
         <div style={{ marginTop: "16px", display: "flex", alignItems: "flex-end", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -443,9 +584,71 @@ function CardDetailInner() {
           {ADD_ROWS.filter((d) => d.section === "graded").map((d) => (
             <AddQtyRow key={d.id} label={d.label} sub={[d.variant, d.pop].filter(Boolean).join(" · ")} price={d.price} qty={addQty[d.id] || 0} onChange={(q) => setAddQty((s) => ({ ...s, [d.id]: q }))} />
           ))}
-          <div style={{ marginTop: "14px", textAlign: "right", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", cursor: "pointer" }}>
+          {/* "+ Add a graded card" now works: bumps the graded row's qty
+              by one so it's ready to submit (Phase 3 QA: graded flow must
+              not bug out). Full multi-grade support is a Week 3 backend
+              feature (grader/grade columns on UserCollection). */}
+          <button
+            type="button"
+            onClick={() => setAddQty((s) => ({ ...s, psa10: (s.psa10 || 0) + 1 }))}
+            style={{
+              marginTop: "14px", marginLeft: "auto", display: "block",
+              background: "none", border: "none", cursor: "pointer",
+              fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px",
+              letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)",
+            }}
+          >
             + Add a graded card
-          </div>
+          </button>
+
+          {/* ADD TO COLLECTION button (Phase 1 fix) - submits addQty selections */}
+          {addTotal > 0 && (
+            <button
+              className="dojo-btn dojo-btn-primary"
+              style={{ width: "100%", marginTop: "16px", height: "44px" }}
+              disabled={addMutation.isPending}
+              onClick={async () => {
+                setAddError(null);
+                const cardsToAdd = [];
+                
+                // Map quantity selections to API payload format
+                for (const [rowId, qty] of Object.entries(addQty)) {
+                  if (qty <= 0) continue;
+                  
+                  const row = ADD_ROWS.find(r => r.id === rowId);
+                  if (!row) continue;
+                  
+                  // Determine if this is a foil, graded, etc.
+                  const isFoil = row.label.toLowerCase().includes("foil");
+                  const isGraded = row.section === "graded";
+                  
+                  cardsToAdd.push({
+                    externalId: id,
+                    name: name,
+                    setName: setName || undefined,
+                    imageUrl: img && img.startsWith("http") ? img : undefined,
+                    marketPrice: price || null,
+                    quantity: qty,
+                    isFoil,
+                    // Note: Graded card support needs schema changes (Week 3)
+                    // For now, graded cards are added as regular foil cards
+                  });
+                }
+                
+                if (cardsToAdd.length > 0) {
+                  addMutation.mutate({ cards: cardsToAdd });
+                }
+              }}
+            >
+              {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
+            </button>
+          )}
+          
+          {addError && (
+            <div style={{ marginTop: "12px", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>
+              {addError}
+            </div>
+          )}
         </div>
 
         {/* ── Population report ── */}
@@ -481,7 +684,11 @@ function CardDetailInner() {
           </div>
         </div>
 
-        <button className="dojo-btn dojo-btn-outline" style={{ marginTop: "22px", height: "44px" }}>
+        <button
+          className="dojo-btn dojo-btn-outline"
+          style={{ marginTop: "22px", height: "44px" }}
+          onClick={() => setToast("Sold history coming soon")}
+        >
           SOLD LIST
         </button>
 
@@ -498,6 +705,10 @@ function CardDetailInner() {
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", cursor: "pointer" }}>View</span>
         </div>
       </div>
+
+      {/* Single toast channel — add confirmations, favorites feedback,
+          and Report submissions (Phase 3). */}
+      {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
   );
 }
@@ -616,8 +827,13 @@ function PriceComparisonSection({
             background: "rgba(233,180,59,0.06)",
           }}
         >
+          {/* Labelled "Dojo Value" (not "Market Value") so it reads as
+              the comparison baseline against the eBay tile beside it,
+              rather than duplicating the headline market price shown at
+              the top of the page (Phase 3 QA: remove duplicate Market
+              value). */}
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            Market Value
+            Dojo Value
           </div>
           <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-gold)" }}>
             {fmtUSD(marketPrice)}

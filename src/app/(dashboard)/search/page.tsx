@@ -40,7 +40,6 @@ import Link from "next/link";
 import { useState, useRef, useEffect, Suspense } from "react";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
-import { FindOnEbayLink } from "@/components/FindOnEbayLink";
 
 
 // ── Icons for scan/filter buttons (new per client feedback) ────────
@@ -55,12 +54,16 @@ function ScanFrameIcon() {
     </svg>
   );
 }
-function FilterIcon() {
+// Sort icon (up/down arrows) — replaces the old funnel/filter glyph so
+// the control reads as "sort", which is what the sheet actually does
+// (Phase 2 QA: change Filter icon to a Sort icon).
+function SortIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <line x1="4" y1="6" x2="20" y2="6" />
-      <line x1="7" y1="12" x2="17" y2="12" />
-      <line x1="10" y1="18" x2="14" y2="18" />
+      <path d="M7 4v16" />
+      <path d="M4 8l3-4 3 4" />
+      <path d="M17 20V4" />
+      <path d="M14 16l3 4 3-4" />
     </svg>
   );
 }
@@ -113,11 +116,14 @@ type Game = "pokemon" | "onepiece";
 // Must match the SortEnum in /api/cards/search/route.ts. If you add a
 // new sort mode there, add it here too.
 type SortKey = "market_desc" | "market_asc" | "name_asc" | "recent";
+// `recent` is the trending order (most recently synced first — see
+// /api/cards/trending), so it's labelled "Trending" on the explore
+// surface where it's the default (Phase 2 QA: add Trending as a sort).
 const SORT_LABELS: Record<SortKey, string> = {
   market_desc: "Price · High to Low",
   market_asc: "Price · Low to High",
   name_asc: "Name · A to Z",
-  recent: "Recently Added",
+  recent: "Trending",
 };
 
 function getInitials(name: string): string {
@@ -267,7 +273,7 @@ function TrendCardTile({
                   fontWeight: 400,
                   fontVariantNumeric: "tabular-nums",
                   fontSize: "11px",
-                  color: up ? "#00A86B" : "var(--color-dojo-vermilion)",
+                  color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
                 }}
               >
                 {up ? "▲" : "▼"} {deltaText}
@@ -303,23 +309,8 @@ function TrendCardTile({
           {selected ? "✓" : "+"}
         </button>
       </div>
-
-      {/* eBay deep-link — passes card.externalId as cardCode so Bandai
-          codes ("OP01-001" etc.) get baked into the eBay query for a
-          targeted search rather than "Luffy" → 100k+ generic hits.
-          stopPropagation so clicking the link opens eBay in a new tab
-          instead of also triggering the tile-level navigation. */}
-      <div
-        style={{ marginTop: "6px", textAlign: "right" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <FindOnEbayLink
-          name={card.name}
-          setName={card.setImage}
-          cardCode={card.externalId}
-          game={game}
-        />
-      </div>
+      {/* "Find on eBay" removed per client feedback — keep users in the
+          app. The eBay deal-finder still lives on the card detail page. */}
     </div>
   );
 }
@@ -338,11 +329,13 @@ function FilterSheet({
   onSelect: (next: SortKey) => void;
   onClose: () => void;
 }) {
+  // "Trending" (recent) first — it's the default order and the primary
+  // sort on the explore surface (Phase 2 QA: add Trending as a sort).
   const options: { key: SortKey; label: string }[] = [
+    { key: "recent", label: SORT_LABELS.recent },
     { key: "market_desc", label: SORT_LABELS.market_desc },
     { key: "market_asc", label: SORT_LABELS.market_asc },
     { key: "name_asc", label: SORT_LABELS.name_asc },
-    { key: "recent", label: SORT_LABELS.recent },
   ];
   return (
     <>
@@ -372,17 +365,8 @@ function FilterSheet({
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
             Sort by
           </span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            style={{
-              marginLeft: "auto", background: "none", border: "none",
-              color: "var(--color-dojo-body)", fontSize: "18px", cursor: "pointer",
-            }}
-          >
-            ✕
-          </button>
+          {/* Scrim already provides the close affordance — no separate X
+              button in the header (removed duplicate close icon, Phase 1). */}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {options.map((o) => {
@@ -444,10 +428,16 @@ function CardTile({
   card,
   index = 0,
   game,
+  onAdd,
+  tracked,
+  onToggleTrack,
 }: {
   card: CardResult;
   index?: number;
   game: Game;
+  onAdd: (card: CardResult) => void;
+  tracked: boolean;
+  onToggleTrack: () => void;
 }) {
   const imgSrc = card.imageUrl ?? card.image;
   const price = card.marketPrice ?? card.price ?? 0;
@@ -499,27 +489,67 @@ function CardTile({
           initialsSize="26px"
           style={{ background: "var(--color-dojo-raised)", border: "none" }}
         />
-        {/* Add button overlay */}
-        <div
+        {/* Star — track this card (favorites). Added so the search-results
+            tile matches the trending tile exactly (Phase 2 QA: favorites
+            button was missing / card design differed after search). */}
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleTrack(); }}
+          title="Track this card"
+          aria-pressed={tracked}
           style={{
             position: "absolute",
             top: "8px",
             right: "8px",
+            zIndex: 2,
+            width: "30px",
+            height: "30px",
+            border: "1px solid " + (tracked ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+            background: tracked ? "var(--color-dojo-gold)" : "var(--color-dojo-app)",
+            color: tracked ? "#0D0D0D" : "var(--color-dojo-body)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: "15px",
+            lineHeight: 1,
+            transition: "all 150ms",
+          }}
+        >
+          {tracked ? "★" : "☆"}
+        </button>
+        {/* Add button overlay — functional (Phase 1 fix). Opens the
+            AddCardSheet to pick Ungraded/Graded before adding. Moved to
+            the top-left so it never collides with the star, keeping the
+            tile identical to the trending grid (Phase 2 QA). */}
+        <button
+          type="button"
+          aria-label={`Add ${card.name} to portfolio`}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onAdd(card);
+          }}
+          style={{
+            position: "absolute",
+            top: "8px",
+            left: "8px",
             width: "24px",
             height: "24px",
             border: "1px solid var(--color-dojo-stroke)",
             background: "var(--color-dojo-card)",
+            color: "var(--color-dojo-body)",
+            cursor: "pointer",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            color: "var(--color-dojo-body)",
           }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <line x1="6" y1="1" x2="6" y2="11" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" />
             <line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" />
           </svg>
-        </div>
+        </button>
       </div>
 
       {/* Card info */}
@@ -574,7 +604,7 @@ function CardTile({
                   fontWeight: 700,
                   fontSize: "10px",
                   letterSpacing: "0.08em",
-                  color: up ? "#00A86B" : "var(--color-dojo-vermilion)",
+                  color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
                 }}
               >
                 {up ? "▲" : "▼"} {up ? "+" : ""}{pct.toFixed(1)}%
@@ -582,18 +612,8 @@ function CardTile({
             );
           })()}
         </div>
-
-        {/* Find on eBay — passes card.id as cardCode so Bandai codes
-            like "OP01-001" get used for a targeted search. Pokemon IDs
-            (like "base1-4") fall back to name+set inside buildEbaySearchUrl. */}
-        <div style={{ marginTop: "6px" }}>
-          <FindOnEbayLink
-            name={card.name}
-            setName={setName || undefined}
-            cardCode={card.id}
-            game={game}
-          />
-        </div>
+        {/* "Find on eBay" removed per client feedback — keep users in the
+            app. The eBay deal-finder still lives on the card detail page. */}
       </div>
     </Link>
   );
@@ -629,13 +649,16 @@ function SearchBar({ defaultValue, onSearch, onClear }: {
         <circle cx="11" cy="11" r="8" />
         <line x1="21" y1="21" x2="16.65" y2="16.65" />
       </svg>
+      {/* No autoFocus — the explore page must not pop the mobile
+          keyboard on mount; it opens only when the user taps the field
+          (Phase 2 QA: prevent keyboard auto-trigger on Explore). */}
       <input
         ref={inputRef}
         type="search"
+        className="dojo-search-input"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="charizard"
-        autoFocus={!defaultValue}
         style={{
           flex: 1,
           background: "transparent",
@@ -649,19 +672,6 @@ function SearchBar({ defaultValue, onSearch, onClear }: {
         }}
         aria-label="Search cards"
       />
-      {value && (
-        <button
-          type="button"
-          onClick={() => { setValue(""); onClear?.(); inputRef.current?.focus(); }}
-          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-body)", display: "flex", alignItems: "center", padding: 0 }}
-          aria-label="Clear search"
-        >
-          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-            <line x1="2" y1="2" x2="13" y2="13" />
-            <line x1="13" y1="2" x2="2" y2="13" />
-          </svg>
-        </button>
-      )}
     </form>
   );
 }
@@ -693,7 +703,9 @@ function SearchPageInner() {
   // Client feedback: + on a card now opens a bottom sheet to pick
   // Ungraded / Graded. This state tracks which card the sheet is for
   // (null = sheet closed). See AddCardSheet at the bottom of the page.
-  const [addSheetCard, setAddSheetCard] = useState<TrendingCard | null>(null);
+  // Union type: the trending grid passes TrendingCard, the results grid
+  // passes CardResult — both are handled by AddCardSheet.
+  const [addSheetCard, setAddSheetCard] = useState<TrendingCard | CardResult | null>(null);
   const [addToast, setAddToast] = useState<string | null>(null);
 
   const toggleTracked = (id: string) => {
@@ -800,8 +812,8 @@ function SearchPageInner() {
           </Link>
           <button
             type="button"
-            aria-label="Filter"
-            title="Filter & sort"
+            aria-label="Sort"
+            title="Sort"
             onClick={() => setFilterOpen(true)}
             style={{
               position: "relative",
@@ -813,7 +825,7 @@ function SearchPageInner() {
               cursor: "pointer",
             }}
           >
-            <FilterIcon />
+            <SortIcon />
             {sort !== "recent" && (
               <span aria-hidden style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, background: "var(--color-dojo-gold)" }} />
             )}
@@ -868,16 +880,6 @@ function SearchPageInner() {
                 }}
               >
                 Trending this week
-              </span>
-              <span
-                style={{
-                  marginLeft: "auto",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                  fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase",
-                  color: "var(--color-dojo-faint)",
-                }}
-              >
-                Tap + to add
               </span>
             </div>
 
@@ -1035,7 +1037,15 @@ function SearchPageInner() {
                   </div>
                 )
                 : cards.map((card, i) => (
-                    <CardTile key={card.id} card={card} index={i} game={game} />
+                    <CardTile
+                      key={card.id}
+                      card={card}
+                      index={i}
+                      game={game}
+                      onAdd={setAddSheetCard}
+                      tracked={tracked.has(card.id)}
+                      onToggleTrack={() => toggleTracked(card.id)}
+                    />
                   ))}
             </div>
 
@@ -1118,7 +1128,7 @@ function AddCardSheet({
   onClose,
   onAdded,
 }: {
-  card: TrendingCard;
+  card: TrendingCard | CardResult;
   onClose: () => void;
   onAdded: (message: string) => void;
 }) {
@@ -1134,30 +1144,43 @@ function AddCardSheet({
   const [condition, setCondition] = useState<(typeof CONDITIONS)[number]>("Gem Mint 10");
   const [grade, setGrade] = useState("10");
 
+  // `id` is the internal DB id for TrendingCard, but the *search*
+  // API returns `id` as the externalId (see api/cards/search/route.ts).
+  // Use externalId when available (trending), else fall back to id (search).
+  const externalId = "externalId" in card ? card.externalId : card.id;
+  // Price may live on `price` (trending) or `marketPrice`/`price` (search).
+  const marketPrice = "marketPrice" in card ? (card.marketPrice ?? card.price ?? null) : (card.price ?? null);
+
   async function addUngraded() {
     setAdding(true);
     setErrMsg(null);
     try {
+      // Build the payload, ensuring imageUrl is only included if it's a valid URL string
+      const cardPayload: any = {
+        externalId,
+        name: card.name,
+        setName: (card as any).setName ?? (card as any).setImage ?? undefined,
+        marketPrice,
+        quantity: 1,
+        isFoil: false,
+      };
+      // Only include imageUrl if it's a non-empty string (Zod requires URL format)
+      const imgUrl = (card as any).imageUrl;
+      if (imgUrl && typeof imgUrl === "string" && imgUrl.trim().length > 0) {
+        cardPayload.imageUrl = imgUrl;
+      }
+
       const res = await fetch("/api/users/me/collection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cards: [{
-            externalId: card.externalId,
-            name: card.name,
-            setName: card.setImage || undefined,
-            imageUrl: card.imageUrl ?? undefined,
-            marketPrice: card.price,
-            quantity: 1,
-            isFoil: false,
-          }],
-        }),
+        body: JSON.stringify({ cards: [cardPayload] }),
       });
       const json = await res.json();
       if (!res.ok || json.added === 0) {
         throw new Error(json?.message ?? "Could not add this card.");
       }
       // Invalidate collection queries so Dashboard/Portfolio refetch
+      // immediately (Phase 1 fix for "card addition not working").
       queryClient.invalidateQueries({ queryKey: ["collection"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       onAdded(`Added ${card.name} to your portfolio`);

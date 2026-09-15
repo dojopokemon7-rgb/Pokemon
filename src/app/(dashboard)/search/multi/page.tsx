@@ -313,75 +313,79 @@ function SearchMultiInner() {
         )}
       </div>
 
-      {/* ── Fixed Bottom Selection Bar ── */}
-      <div
-        style={{
-          position: "fixed",
-          bottom: "70px",
-          left: 0,
-          right: 0,
-          padding: "0 22px",
-          zIndex: 45,
-          pointerEvents: selectedIds.size > 0 ? "auto" : "none",
-        }}
-      >
+      {/* ── Fixed Bottom Selection Bar ──
+          Only rendered once at least one card is selected — previously
+          this bar was always mounted at 40% opacity, so the bottom of
+          the list sat behind a dark translucent strip even when nothing
+          was selected (Phase 1 QA: multi-selection screen overlay).
+          Solid card background + z-index below the shell's nav (50). */}
+      {selectedIds.size > 0 && (
         <div
           style={{
-            background: "var(--color-dojo-card)",
-            border: "1px solid var(--color-dojo-stroke)",
-            boxShadow: "4px 4px 0 0 #000",
-            padding: "14px 16px",
-            display: "flex",
-            alignItems: "center",
-            gap: "14px",
-            opacity: selectedIds.size > 0 ? 1 : 0.4,
-            transform: selectedIds.size > 0 ? "translateY(0)" : "translateY(6px)",
-            transition: "opacity 0.2s ease, transform 0.2s ease",
+            position: "fixed",
+            bottom: "70px",
+            left: 0,
+            right: 0,
+            padding: "0 22px",
+            zIndex: 45,
           }}
         >
-          <div>
-            <div
-              style={{
-                fontFamily: "var(--font-display)",
-                fontWeight: 700,
-                fontStretch: "112%",
-                fontSize: "10px",
-                letterSpacing: "0.14em",
-                textTransform: "uppercase",
-                color: "var(--color-dojo-ink)",
-              }}
-            >
-              {selectedIds.size} selected
+          <div
+            style={{
+              background: "var(--color-dojo-card)",
+              border: "1px solid var(--color-dojo-stroke)",
+              boxShadow: "4px 4px 0 0 #000",
+              padding: "14px 16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "14px",
+              animation: "dojo-fade-up 200ms ease-out both",
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontWeight: 700,
+                  fontStretch: "112%",
+                  fontSize: "10px",
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "var(--color-dojo-ink)",
+                }}
+              >
+                {selectedIds.size} selected
+              </div>
+              <div
+                style={{
+                  marginTop: "3px",
+                  fontFamily: "var(--font-display)",
+                  fontWeight: 800,
+                  fontSize: "14px",
+                  fontVariantNumeric: "tabular-nums",
+                  color: "var(--color-dojo-gold)",
+                }}
+              >
+                {new Intl.NumberFormat("en-US", {
+                  style: "currency",
+                  currency: "USD",
+                }).format(selectedTotal)}
+              </div>
             </div>
-            <div
-              style={{
-                marginTop: "3px",
-                fontFamily: "var(--font-display)",
-                fontWeight: 800,
-                fontSize: "14px",
-                fontVariantNumeric: "tabular-nums",
-                color: "var(--color-dojo-gold)",
-              }}
-            >
-              {new Intl.NumberFormat("en-US", {
-                style: "currency",
-                currency: "USD",
-              }).format(selectedTotal)}
-            </div>
-          </div>
 
-          <div style={{ marginLeft: "auto" }}>
-            <button
-              onClick={handleAdd}
-              disabled={selectedIds.size === 0}
-              className="dojo-btn dojo-btn-primary"
-              style={{ padding: "10px 16px", fontSize: "11px", width: "auto" }}
-            >
-              ADD TO COLLECTION →
-            </button>
+            <div style={{ marginLeft: "auto" }}>
+              <button
+                onClick={handleAdd}
+                disabled={selectedIds.size === 0}
+                className="dojo-btn dojo-btn-primary"
+                style={{ padding: "10px 16px", fontSize: "11px", width: "auto" }}
+              >
+                ADD TO COLLECTION →
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -19,7 +19,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 
 // ── Types ──────────────────────────────────────────────────────────
 export interface CollectionItem {
@@ -40,7 +40,7 @@ type TabId = "mv" | "coll" | "gain" | "lose";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "mv", label: "Most valuable" },
-  { id: "coll", label: "Collections" },
+  { id: "coll", label: "By set" },
   { id: "gain", label: "Gainers" },
   { id: "lose", label: "Losers" },
 ];
@@ -174,7 +174,23 @@ function fmt(n: number): string {
 // the container size — same fluid resize behaviour recharts gave us,
 // without shipping d3-scale / d3-shape / d3-array / d3-color to the
 // browser.
-function MiniAreaChart({ data }: { data: readonly { value: number }[] }) {
+//
+// Interaction (Phase 2 QA: chart tooltips/hover must work on mobile):
+// a pointer/touch anywhere over the chart snaps to the nearest data
+// point and shows a vertical guide, a marker dot, and a value tooltip.
+// Because the viewBox is stretched (preserveAspectRatio="none"), we map
+// the pointer to a data index from the container's real pixel width via
+// the pointer event's offset fraction — no d3, no scale math needed.
+function MiniAreaChart({
+  data,
+  formatValue,
+}: {
+  data: readonly { value: number }[];
+  formatValue?: (v: number) => string;
+}) {
+  const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
   if (data.length < 2) return <div style={{ height: "100%" }} />;
 
   const W = 400;
@@ -195,29 +211,118 @@ function MiniAreaChart({ data }: { data: readonly { value: number }[] }) {
     data.map((d, i) => `${i * step},${y(d.value)}`).join(" L") +
     ` L${W},${H} Z`;
 
+  // Map a client X coordinate to the nearest data index using the real
+  // rendered width (viewBox X is meaningless here — it's stretched).
+  const idxFromClientX = (clientX: number): number => {
+    const el = wrapRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return Math.round(frac * (data.length - 1));
+  };
+
+  const handleMove = (clientX: number) => setActiveIdx(idxFromClientX(clientX));
+  const clear = () => setActiveIdx(null);
+
+  const active = activeIdx != null ? data[activeIdx] : null;
+  const activeXFrac = activeIdx != null ? activeIdx / (data.length - 1) : 0;
+  const fmtV = formatValue ?? ((v: number) => String(Math.round(v)));
+
   return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="none"
-      width="100%"
-      height="100%"
-      aria-hidden="true"
+    <div
+      ref={wrapRef}
+      style={{ position: "relative", width: "100%", height: "100%", touchAction: "none" }}
+      onMouseMove={(e) => handleMove(e.clientX)}
+      onMouseLeave={clear}
+      onTouchStart={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
+      onTouchMove={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
+      onTouchEnd={clear}
+      role="img"
+      aria-label="Portfolio value trend chart"
     >
-      <defs>
-        <linearGradient id="dojoGold" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#E9B43B" stopOpacity={0.3} />
-          <stop offset="100%" stopColor="#E9B43B" stopOpacity={0.05} />
-        </linearGradient>
-      </defs>
-      <path d={areaPath} fill="url(#dojoGold)" />
-      <polyline
-        points={linePoints}
-        fill="none"
-        stroke="#E9B43B"
-        strokeWidth={2}
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        width="100%"
+        height="100%"
+        aria-hidden="true"
+      >
+        <defs>
+          <linearGradient id="dojoGold" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#E9B43B" stopOpacity={0.3} />
+            <stop offset="100%" stopColor="#E9B43B" stopOpacity={0.05} />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill="url(#dojoGold)" />
+        <polyline
+          points={linePoints}
+          fill="none"
+          stroke="#E9B43B"
+          strokeWidth={2}
+          vectorEffect="non-scaling-stroke"
+        />
+        {/* Vertical guide line at the active point. drawn in viewBox
+            space; x uses the same `step` mapping as the polyline. */}
+        {activeIdx != null && (
+          <line
+            x1={activeIdx * step}
+            y1={0}
+            x2={activeIdx * step}
+            y2={H}
+            stroke="rgba(255,255,255,0.25)"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+      </svg>
+
+      {/* Marker dot — positioned with CSS percentages against the real
+          container box so it lands correctly despite the stretched
+          viewBox. */}
+      {active != null && (
+        <span
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: `${activeXFrac * 100}%`,
+            top: `${(y(active.value) / H) * 100}%`,
+            width: 9,
+            height: 9,
+            marginLeft: -4.5,
+            marginTop: -4.5,
+            borderRadius: "50%",
+            background: "#E9B43B",
+            boxShadow: "0 0 0 3px rgba(233,180,59,0.25)",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
+      {/* Value tooltip — follows the active x, clamped from the edges so
+          it never overflows the chart. */}
+      {active != null && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${Math.min(88, Math.max(12, activeXFrac * 100))}%`,
+            top: 4,
+            transform: "translateX(-50%)",
+            background: "var(--color-dojo-overlay)",
+            border: "1px solid var(--color-dojo-stroke)",
+            padding: "4px 8px",
+            fontFamily: "var(--font-display)",
+            fontWeight: 700,
+            fontSize: "11px",
+            fontVariantNumeric: "tabular-nums",
+            color: "var(--color-dojo-ink)",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+          }}
+        >
+          {fmtV(active.value)}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -228,7 +333,7 @@ function DeltaTag({ delta, up }: { delta: string; up: boolean }) {
       style={{
         fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px",
         letterSpacing: "0.14em", textTransform: "uppercase",
-        color: up ? "#00A86B" : "var(--color-dojo-vermilion)",
+        color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
       }}
     >
       {up ? "▲" : "▼"} {delta}
@@ -436,7 +541,10 @@ export default function DashboardClient({
   const getTabTitle = () => {
     switch (activeTab) {
       case "mv": return "Most valuable cards";
-      case "coll": return "My collections";
+      // Grouped by set, not a card list — title says so explicitly to
+      // avoid the "set name where a card name is expected" confusion
+      // (Phase 2 QA). The CollectionRow rows are deliberately set names.
+      case "coll": return "Grouped by set";
       case "gain": return "Top gainers this week";
       case "lose": return "Top losers this week";
     }
@@ -466,10 +574,10 @@ export default function DashboardClient({
             </div>
           </div>
 
-          {/* ── Market value + eye toggle ── */}
+          {/* ── Portfolio value + eye toggle ── */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "16px" }}>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%", fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-              Market value
+              Portfolio value
             </span>
             <button
               onClick={() => setHidden((v) => !v)}
@@ -485,13 +593,12 @@ export default function DashboardClient({
             <div style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "38px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
               {hidden ? `$ ${mask}${mask}` : fmt(stats.marketValue)}
             </div>
+            {/* Only the % delta here — the active period is already shown
+                (and highlighted) by the range-tab row directly below, so
+                repeating it caused the "1M 1M" duplication (Phase 2 QA). */}
             <div style={{ flex: "none", paddingBottom: "6px", display: "flex", alignItems: "baseline", gap: "7px" }}>
-              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#00A86B" }}>
-                ▲ {hidden ? mask : `+${fmt(stats.overallDelta)}`}
-              </span>
-              <span style={{ color: "var(--color-dojo-faint)" }}>·</span>
-              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-ink)" }}>
-                {activeRange}
+              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
+                ▲ {hidden ? mask : `+${fmt(stats.overallDelta)}`} · {stats.overallPct}%
               </span>
             </div>
           </div>
@@ -502,10 +609,10 @@ export default function DashboardClient({
               Paid <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: "var(--color-dojo-ink)" }}>{hidden ? mask : fmt(stats.paid)}</span>
             </span>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Realized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: "#00A86B" }}>{hidden ? mask : `+${fmt(0)}`}</span>
+              Realized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: "var(--color-dojo-jade)" }}>{hidden ? mask : `+${fmt(0)}`}</span>
             </span>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: stats.unrealized >= 0 ? "#00A86B" : "var(--color-dojo-vermilion)" }}>{hidden ? mask : `${stats.unrealized >= 0 ? "+" : ""}${fmt(stats.unrealized)}`}</span>
+              Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: stats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{hidden ? mask : `${stats.unrealized >= 0 ? "+" : ""}${fmt(stats.unrealized)}`}</span>
             </span>
           </div>
 
@@ -517,7 +624,10 @@ export default function DashboardClient({
               the query result — everything below already takes an
               array of `{ value: number }`. */}
           <div style={{ margin: "16px -22px 0", height: "200px" }}>
-            <MiniAreaChart data={stats.chartData} />
+            <MiniAreaChart
+              data={stats.chartData}
+              formatValue={(v) => (hidden ? `$ ${mask}` : fmt(v))}
+            />
           </div>
 
           {/* ── Range selector tabs ── */}

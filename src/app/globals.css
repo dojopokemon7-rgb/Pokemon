@@ -155,6 +155,17 @@ body {
   cursor: not-allowed;
 }
 
+/* Search inputs (search page SearchBar) render their own custom clear
+   button, so the WebKit/Blink native cancel glyph is hidden — otherwise
+   the field shows two X icons at once (duplicate close icon, Phase 1). */
+input[type="search"].dojo-search-input::-webkit-search-cancel-button,
+input[type="search"].dojo-search-input::-webkit-search-decoration,
+input[type="search"].dojo-search-input::-webkit-search-results-button,
+input[type="search"].dojo-search-input::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 /* --- Buttons --- */
 .dojo-btn {
   display: inline-flex;
@@ -1006,6 +1017,35 @@ body {
   );
   box-shadow: 0 0 8px 1px rgba(233, 180, 59, 0.5);
   pointer-events: none;
+}
+
+/* ============================================================
+   SCROLL CONTAINMENT (Phase 2 QA: "hide scroll on all pages")
+   ============================================================
+   Lock the document to the viewport so the page itself never
+   scrolls or rubber-bands — only the shell's <main> content area
+   scrolls. `overscroll-behavior: none` stops the scroll chain from
+   leaking to the body (no white bounce at the top/bottom on mobile).
+   The scrollable region keeps its own scroll but hides the visible
+   scrollbar track via `.dojo-scroll-hidden`. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Hide the scrollbar on an element that still needs to scroll.
+   Cross-browser: WebKit/Blink via ::-webkit-scrollbar, Firefox via
+   scrollbar-width, legacy Edge via -ms-overflow-style. */
+.dojo-scroll-hidden {
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE / old Edge */
+}
+.dojo-scroll-hidden::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;                  /* Chrome / Safari / Edge */
 }
 
 /* ============================================================

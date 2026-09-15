@@ -15,12 +15,14 @@ export const CardSortEnum = z.enum([
 ]);
 export type CardSortKey = z.infer<typeof CardSortEnum>;
 
-/** Human-readable labels shared with the client filter sheet. */
+/** Human-readable labels shared with the client filter sheet.
+ *  `recent` (updatedAt desc) is the trending order — labelled
+ *  "Trending" to match the explore surface (Phase 2 QA). */
 export const CARD_SORT_LABELS: Record<CardSortKey, string> = {
   market_desc: "Price · High to Low",
   market_asc: "Price · Low to High",
   name_asc: "Name · A to Z",
-  recent: "Recently Added",
+  recent: "Trending",
 };
 
 /**

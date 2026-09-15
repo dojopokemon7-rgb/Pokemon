@@ -24,7 +24,7 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 
 // ── Real collection item shape — matches GET /api/users/me/collection ──
@@ -112,7 +112,7 @@ function GainLossTag({ item }: { item: CollectionItem }) {
         fontSize: "9px",
         letterSpacing: "0.14em",
         textTransform: "uppercase",
-        color: up ? "#00A86B" : "var(--color-dojo-vermilion)",
+        color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
       }}
     >
       {up ? "▲" : "▼"} {up ? "+" : ""}{pct.toFixed(1)}%
@@ -131,7 +131,15 @@ function detailHref(item: CollectionItem): string {
 }
 
 // ── Card tile — grid view ──────────────────────────────────────────
-function CollectionCardGrid({ item }: { item: CollectionItem }) {
+function CollectionCardGrid({
+  item,
+  isDeleting,
+  onRemove,
+}: {
+  item: CollectionItem;
+  isDeleting: boolean;
+  onRemove: (id: string) => void;
+}) {
   const price = item.card.marketPrice;
   const initials = cardInitials(item.card.name);
   const setName = item.card.set?.name;
@@ -172,12 +180,53 @@ function CollectionCardGrid({ item }: { item: CollectionItem }) {
       <div style={{ marginTop: "5px", fontSize: "11px", color: "var(--color-dojo-faint)" }}>
         Qty: {item.quantity}
       </div>
+      {/* Remove button (Phase 1 fix) */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onRemove(item.id);
+        }}
+        disabled={isDeleting}
+        aria-label={`Remove ${item.card.name} from portfolio`}
+        style={{
+          position: "absolute",
+          top: "8px",
+          right: "8px",
+          width: "24px",
+          height: "24px",
+          border: "1px solid var(--color-dojo-stroke)",
+          background: "var(--color-dojo-card)",
+          color: "var(--color-dojo-vermilion)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: "14px",
+          lineHeight: 1,
+        }}
+        title="Remove from portfolio"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" aria-hidden="true">
+          <line x1="2" y1="2" x2="12" y2="12" />
+          <line x1="12" y1="2" x2="2" y2="12" />
+        </svg>
+      </button>
     </Link>
   );
 }
 
 // ── Card row — list view ───────────────────────────────────────────
-function CollectionCardList({ item }: { item: CollectionItem }) {
+function CollectionCardList({
+  item,
+  isDeleting,
+  onRemove,
+}: {
+  item: CollectionItem;
+  isDeleting: boolean;
+  onRemove: (id: string) => void;
+}) {
   const price = item.card.marketPrice;
   const initials = cardInitials(item.card.name);
   const setName = item.card.set?.name;
@@ -225,6 +274,39 @@ function CollectionCardList({ item }: { item: CollectionItem }) {
         </div>
         <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--color-dojo-faint)" }}>Qty: {item.quantity}</div>
       </div>
+      {/* Remove button (Phase 1 fix) */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onRemove(item.id);
+        }}
+        disabled={isDeleting}
+        aria-label={`Remove ${item.card.name} from portfolio`}
+        style={{
+          position: "absolute",
+          top: "8px",
+          right: "8px",
+          width: "24px",
+          height: "24px",
+          border: "1px solid var(--color-dojo-stroke)",
+          background: "var(--color-dojo-card)",
+          color: "var(--color-dojo-vermilion)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: "14px",
+          lineHeight: 1,
+        }}
+        title="Remove from portfolio"
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square" aria-hidden="true">
+          <line x1="2" y1="2" x2="12" y2="12" />
+          <line x1="12" y1="2" x2="2" y2="12" />
+        </svg>
+      </button>
     </Link>
   );
 }
@@ -236,10 +318,31 @@ function CollectionCardList({ item }: { item: CollectionItem }) {
 //              buyer info, marketplace source).
 type PortfolioTab = "my" | "sold";
 
+// Collection "groups" (Binders / Want List / etc.) — UI stub with mock
+// data so the client sees the vision (Phase 3 QA). "Main" is the user's
+// real collection (backed by /api/users/me/collection); every other
+// group is a placeholder until the backend lands.
+// TODO Week 3: back these with a real `Collection` table
+//   (id, userId, name, kind) + a collectionId FK on UserCollection.
+type CollectionGroup = {
+  id: string;
+  name: string;
+  /** null = real "Main" collection; a number = mock card count. */
+  mockCount: number | null;
+};
+const COLLECTION_GROUPS: CollectionGroup[] = [
+  { id: "main", name: "Main", mockCount: null },
+  { id: "binder", name: "Binders", mockCount: 42 },
+  { id: "wantlist", name: "Want List", mockCount: 12 },
+  { id: "highvalue", name: "High Value", mockCount: 7 },
+];
+
 export default function PortfolioPage() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
   const [tab, setTab] = useState<PortfolioTab>("my");
+  const [group, setGroup] = useState<string>("main");
+  const queryClient = useQueryClient();
 
   const { data, isLoading, isError } = useQuery<CollectionApiResponse>({
     queryKey: ["portfolio-collection"],
@@ -247,6 +350,24 @@ export default function PortfolioPage() {
       const res = await fetch("/api/users/me/collection");
       if (!res.ok) throw new Error("Failed to load collection");
       return res.json();
+    },
+  });
+
+  // Delete mutation — removes a card from the user's collection.
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/users/me/collection/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Failed to delete card");
+      return res.json();
+    },
+    onSuccess: () => {
+      // Invalidate portfolio collection so the list updates immediately,
+      // plus the dashboard + /you collection stats (same data, different
+      // query key) so removing a card propagates everywhere at once.
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
     },
   });
 
@@ -270,6 +391,38 @@ export default function PortfolioPage() {
         <span style={{ marginLeft: "auto", color: "var(--color-dojo-body)", display: "flex" }}>
           <BellIcon />
         </span>
+      </div>
+
+      {/* ── Collection groups (Binders / Want List / …) — UI stub ──
+          Horizontal chip selector. "Main" shows the real collection;
+          other groups are mock placeholders (Phase 3 QA). */}
+      <div
+        className="dojo-scroll-hidden"
+        style={{ display: "flex", gap: "8px", overflowX: "auto", marginBottom: "16px", paddingBottom: "2px" }}
+      >
+        {COLLECTION_GROUPS.map((g) => {
+          const activeGroup = group === g.id;
+          return (
+            <button
+              key={g.id}
+              onClick={() => setGroup(g.id)}
+              style={{
+                flex: "none", display: "flex", alignItems: "center", gap: "7px",
+                padding: "8px 13px", cursor: "pointer", whiteSpace: "nowrap",
+                border: "1px solid " + (activeGroup ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+                background: activeGroup ? "rgba(233,180,59,0.08)" : "var(--color-dojo-card)",
+                color: activeGroup ? "var(--color-dojo-gold)" : "var(--color-dojo-body)",
+                fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px",
+                letterSpacing: "0.12em", textTransform: "uppercase",
+              }}
+            >
+              {g.name}
+              <span style={{ fontWeight: 700, fontSize: "9px", color: "var(--color-dojo-faint)" }}>
+                {g.mockCount == null ? (isLoading ? "" : items.length) : g.mockCount}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* ── Search bar ── */}
@@ -303,9 +456,27 @@ export default function PortfolioPage() {
           Total value
         </span>
         <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "32px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-          {isLoading ? "—" : fmt(collTotal)}
+          {group === "main" ? (isLoading ? "—" : fmt(collTotal)) : "—"}
         </div>
       </div>
+
+      {/* Non-"Main" groups are UI stubs — show a styled "coming soon"
+          state instead of the real collection (Phase 3 QA). Rendered as
+          an early return-in-place so the real tabs/content below only
+          run for the "Main" group. */}
+      {group !== "main" ? (
+        <div style={{ border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "40px 22px", textAlign: "center", marginTop: "22px" }}>
+          <p className="dojo-heading" style={{ fontSize: "20px", margin: 0, color: "var(--color-dojo-gold)" }}>
+            {COLLECTION_GROUPS.find((g) => g.id === group)?.name} coming soon
+          </p>
+          <p className="dojo-body" style={{ marginTop: "10px", marginBottom: 0, fontSize: "13px", lineHeight: 1.55 }}>
+            organize cards into custom groups like binders, want lists, and
+            high-value trackers. this is a preview — full group support
+            lands soon.
+          </p>
+        </div>
+      ) : (
+      <>
 
       {/* ── My cards / Sold tab switcher (Phase 3.5) ── */}
       <div style={{ display: "flex", gap: "6px", margin: "22px 0 4px" }}>
@@ -409,12 +580,28 @@ export default function PortfolioPage() {
         </div>
       ) : view === "grid" ? (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-          {filteredItems.map((item) => <CollectionCardGrid key={item.id} item={item} />)}
+          {filteredItems.map((item) => (
+            <CollectionCardGrid
+              key={item.id}
+              item={item}
+              isDeleting={deleteMutation.isPending}
+              onRemove={deleteMutation.mutate}
+            />
+          ))}
         </div>
       ) : (
         <div>
-          {filteredItems.map((item) => <CollectionCardList key={item.id} item={item} />)}
+          {filteredItems.map((item) => (
+            <CollectionCardList
+              key={item.id}
+              item={item}
+              isDeleting={deleteMutation.isPending}
+              onRemove={deleteMutation.mutate}
+            />
+          ))}
         </div>
+      )}
+      </>
       )}
     </div>
   );

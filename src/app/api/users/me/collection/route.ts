@@ -87,7 +87,7 @@ const AddCardSchema = z.object({
   externalId: z.string().trim().min(1),
   name: z.string().trim().min(1),
   setName: z.string().trim().optional(),
-  imageUrl: z.string().url().optional(),
+  imageUrl: z.string().url().optional().or(z.literal("")), // Allow empty string
   rarity: z.string().optional(),
   types: z.array(z.string()).optional(),
   marketPrice: z.number().nullable().optional(),
