@@ -42,17 +42,42 @@ function getInitials(name: string): string {
 function SearchMultiInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const initialQ = searchParams.get("q") ?? "charizard";
+  // No forced "charizard" default: when reached from the Explore
+  // landing there's no query, so we show the trending catalog instead
+  // of pretending the user searched for Charizard.
+  const initialQ = searchParams.get("q")?.trim() ?? "";
+  const hasQuery = initialQ.length > 0;
   const game = searchParams.get("game") ?? "pokemon";
 
   const { data, isFetching } = useQuery<SearchApiResponse>({
-    queryKey: ["card-search", game, initialQ],
+    queryKey: ["card-multi", game, initialQ],
     queryFn: async () => {
-      const res = await fetch(
-        `/api/cards/search?game=${game}&query=${encodeURIComponent(initialQ)}`
-      );
+      // With a query → search results. Without → the trending catalog,
+      // normalized to the same { cards: [...] } shape the list expects.
+      if (hasQuery) {
+        const res = await fetch(
+          `/api/cards/search?game=${game}&query=${encodeURIComponent(initialQ)}`
+        );
+        if (!res.ok) return { cards: [] };
+        return res.json();
+      }
+      const res = await fetch(`/api/cards/trending?game=${game}&limit=50&sort=trending`);
       if (!res.ok) return { cards: [] };
-      return res.json();
+      const json = await res.json();
+      // Trending returns `setImage` for the set name and `externalId`;
+      // map to the CardResult shape (id must be the externalId so the
+      // add payload reuses the seeded card, matching the search grid).
+      const cards: CardResult[] = (json.cards ?? []).map((c: {
+        externalId?: string; id: string; name: string; setImage?: string;
+        imageUrl?: string | null; price?: number | null;
+      }) => ({
+        id: c.externalId ?? c.id,
+        name: c.name,
+        setName: c.setImage ?? undefined,
+        imageUrl: c.imageUrl ?? undefined,
+        marketPrice: c.price ?? undefined,
+      }));
+      return { cards };
     },
   });
 
@@ -107,7 +132,7 @@ function SearchMultiInner() {
       {/* ── Top Header ── */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
         <Link
-          href={`/search?q=${encodeURIComponent(initialQ)}&game=${game}`}
+          href={hasQuery ? `/search?q=${encodeURIComponent(initialQ)}&game=${game}` : `/search?game=${game}`}
           style={{
             color: "var(--color-dojo-ink)",
             textDecoration: "none",

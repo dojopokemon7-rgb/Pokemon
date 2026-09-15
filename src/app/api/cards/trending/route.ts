@@ -44,9 +44,16 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import { CardSortEnum, orderByForCardSort, type CardSortKey } from "@/lib/utils/card-sort";
+
+// A Card row with the set name joined — the shape every branch below
+// produces (all use `include: { set: { select: { name: true } } }`).
+type CardWithSetName = Prisma.CardGetPayload<{
+  include: { set: { select: { name: true } } };
+}>;
 
 // Trending is the same query for every logged-in user (global feed
 // ordered by updatedAt), so it's cheap to cache. Short TTL because
@@ -69,10 +76,46 @@ const TrendingQuerySchema = z.object({
   // don't leak cards from the other game (e.g. Charizard on One Piece).
   game: z.enum(["pokemon", "onepiece"]).optional(),
   // Shared with /api/cards/search — the client's filter sheet uses
-  // one enum for both routes. Default "recent" keeps the historical
-  // trending behaviour (most recently synced first) unchanged.
-  sort: CardSortEnum.default("recent"),
+  // one enum for both routes. Default is now "trending" (real
+  // hot-right-now ranking by recent collection-adds).
+  sort: CardSortEnum.default("trending"),
 });
+
+// "Hot right now" window: cards are ranked by how many collection-adds
+// they received in the last N days. Wider window = steadier ranking but
+// less "right now"; 7 days is the usual trending cadence.
+// ponytail: fixed 7-day window, no decay curve — a recency-weighted
+// score (e.g. exponential decay on addedAt) would be more precise but
+// needs per-row math this simple count doesn't do. Upgrade when a real
+// analytics pipeline exists.
+const TRENDING_WINDOW_DAYS = 7;
+
+/**
+ * Ranks cards by real popularity: the number of UserCollection rows
+ * (≈ distinct users, since @@unique([userId,cardId,isFoil]) caps a user
+ * at 2 rows/card) added within the trending window. Returns an ordered
+ * list of the top `take` cardIds. Empty when nobody has added anything
+ * recently — the caller then falls back to the newest-synced order so
+ * the grid is never blank on a fresh install.
+ */
+async function topTrendingCardIds(
+  gameWhere: object,
+  take: number
+): Promise<string[]> {
+  const since = new Date(Date.now() - TRENDING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const grouped = await prisma.userCollection.groupBy({
+    by: ["cardId"],
+    where: {
+      addedAt: { gte: since },
+      // Only rank cards that belong to the requested game's catalog.
+      card: gameWhere,
+    },
+    _count: { cardId: true },
+    orderBy: { _count: { cardId: "desc" } },
+    take,
+  });
+  return grouped.map((g) => g.cardId);
+}
 
 export async function GET(request: Request): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
@@ -99,9 +142,9 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   // Cursor pagination is keyset-on-`id`, which is only meaningful for
   // the default `updatedAt DESC` ordering. When the client picks any
-  // other sort, ignore the cursor and return a fresh page 1 under the
-  // new ordering — the filter sheet is meant for reordering the top of
-  // the feed, not for scrolling deep into a resorted infinite list.
+  // other sort (or trending, which is a computed ranking), ignore the
+  // cursor and return a fresh page 1 — the filter sheet reorders the
+  // top of the feed, it doesn't scroll deep into a resorted list.
   const effectiveCursor = sort === "recent" ? cursor : undefined;
   const cacheKey = trendingCacheKey(game, limit, effectiveCursor, sort);
   // Best-effort cache lookup. Any Redis error (offline, timeout) falls
@@ -135,16 +178,55 @@ export async function GET(request: Request): Promise<NextResponse> {
       ? { set: { externalId: { startsWith: `${game}-` } } }
       : {};
 
-    const rows = await prisma.card.findMany({
-      take: limit + 1, // fetch one extra to know if there's a next page
-      ...(effectiveCursor ? { skip: 1, cursor: { id: effectiveCursor } } : {}),
-      where: gameFilter,
-      orderBy: orderByForCardSort(sort),
-      include: { set: { select: { name: true } } },
-    });
+    let rows: CardWithSetName[];
+    let hasMore = false;
 
-    const hasMore = rows.length > limit;
-    const page = hasMore ? rows.slice(0, limit) : rows;
+    if (sort === "trending") {
+      // Real "hot right now": rank by recent collection-adds. Get the
+      // top cardIds by add-count in the window, then fetch those cards
+      // and re-order them to match the ranking (findMany `in` doesn't
+      // preserve order). If fewer than a full page trend, backfill with
+      // newest-synced cards so the grid is never sparse on low activity.
+      const rankedIds = await topTrendingCardIds(gameFilter, limit);
+
+      const ranked = rankedIds.length
+        ? await prisma.card.findMany({
+            where: { id: { in: rankedIds }, ...gameFilter },
+            include: { set: { select: { name: true } } },
+          })
+        : [];
+      // Restore the popularity order lost by the `in` query.
+      const rankIndex = new Map(rankedIds.map((id, i) => [id, i]));
+      ranked.sort((a, b) => (rankIndex.get(a.id)! - rankIndex.get(b.id)!));
+
+      if (ranked.length >= limit) {
+        rows = ranked.slice(0, limit);
+        // There may be more trending cards than one page; report more.
+        hasMore = rankedIds.length > limit;
+      } else {
+        // Backfill with newest-synced cards not already in the ranked set.
+        const backfill = await prisma.card.findMany({
+          where: { ...gameFilter, id: { notIn: ranked.map((c) => c.id) } },
+          orderBy: [{ updatedAt: "desc" }],
+          take: limit - ranked.length,
+          include: { set: { select: { name: true } } },
+        });
+        rows = [...ranked, ...backfill];
+        hasMore = false; // trending + backfill is a single curated page
+      }
+    } else {
+      const fetched = await prisma.card.findMany({
+        take: limit + 1, // fetch one extra to know if there's a next page
+        ...(effectiveCursor ? { skip: 1, cursor: { id: effectiveCursor } } : {}),
+        where: gameFilter,
+        orderBy: orderByForCardSort(sort),
+        include: { set: { select: { name: true } } },
+      });
+      hasMore = fetched.length > limit;
+      rows = hasMore ? fetched.slice(0, limit) : fetched;
+    }
+
+    const page = rows;
 
     const cards = page.map((c) => ({
       // `id` is this row's internal database id — used for React keys,
@@ -170,7 +252,11 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     const body = JSON.stringify({
       cards,
-      nextCursor: hasMore ? page[page.length - 1].id : null,
+      // Keyset-on-`id` pagination is only correct for the updatedAt-desc
+      // orders. Trending is a computed top-N ranking whose order doesn't
+      // map to an id cursor, so it's a single curated page (no cursor).
+      nextCursor:
+        sort !== "trending" && hasMore ? page[page.length - 1].id : null,
     });
 
     // Cache write is best-effort; a Redis outage doesn't invalidate

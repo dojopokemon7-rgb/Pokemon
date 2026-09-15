@@ -115,15 +115,15 @@ interface TrendingApiResponse {
 type Game = "pokemon" | "onepiece";
 // Must match the SortEnum in /api/cards/search/route.ts. If you add a
 // new sort mode there, add it here too.
-type SortKey = "market_desc" | "market_asc" | "name_asc" | "recent";
-// `recent` is the trending order (most recently synced first — see
-// /api/cards/trending), so it's labelled "Trending" on the explore
-// surface where it's the default (Phase 2 QA: add Trending as a sort).
+type SortKey = "trending" | "market_desc" | "market_asc" | "name_asc" | "recent";
+// `trending` = real hot-right-now (ranked by recent collection-adds in
+// the trending route). `recent` = most recently synced.
 const SORT_LABELS: Record<SortKey, string> = {
+  trending: "Trending",
   market_desc: "Price · High to Low",
   market_asc: "Price · Low to High",
   name_asc: "Name · A to Z",
-  recent: "Trending",
+  recent: "Recently Added",
 };
 
 function getInitials(name: string): string {
@@ -329,9 +329,9 @@ function FilterSheet({
   onSelect: (next: SortKey) => void;
   onClose: () => void;
 }) {
-  // "Trending" (recent) first — it's the default order and the primary
-  // sort on the explore surface (Phase 2 QA: add Trending as a sort).
+  // "Trending" first — the default, real hot-right-now ranking.
   const options: { key: SortKey; label: string }[] = [
+    { key: "trending", label: SORT_LABELS.trending },
     { key: "recent", label: SORT_LABELS.recent },
     { key: "market_desc", label: SORT_LABELS.market_desc },
     { key: "market_asc", label: SORT_LABELS.market_asc },
@@ -692,7 +692,7 @@ function SearchPageInner() {
   // default so the grid opens the way users expect (most recently
   // synced first) and the filter chip only appears once they've
   // actively re-sorted.
-  const [sort, setSort] = useState<SortKey>("recent");
+  const [sort, setSort] = useState<SortKey>("trending");
   const [filterOpen, setFilterOpen] = useState(false);
 
   // "Track this card" (star) and "add to selection" (plus) state for
@@ -819,14 +819,14 @@ function SearchPageInner() {
               position: "relative",
               display: "flex", alignItems: "center", justifyContent: "center",
               width: "44px", flex: "none",
-              border: "1px solid " + (sort !== "recent" ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+              border: "1px solid " + (sort !== "trending" ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
               background: "var(--color-dojo-card)",
-              color: sort !== "recent" ? "var(--color-dojo-gold)" : "var(--color-dojo-ink)",
+              color: sort !== "trending" ? "var(--color-dojo-gold)" : "var(--color-dojo-ink)",
               cursor: "pointer",
             }}
           >
             <SortIcon />
-            {sort !== "recent" && (
+            {sort !== "trending" && (
               <span aria-hidden style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, background: "var(--color-dojo-gold)" }} />
             )}
           </button>
@@ -881,6 +881,21 @@ function SearchPageInner() {
               >
                 Trending this week
               </span>
+              {/* Multi-select entry point on the Explore landing too — it
+                  used to appear only after searching, so bulk-add was
+                  effectively hidden. Routes to the multi list for the
+                  current game. */}
+              <Link
+                href={`/search/multi?game=${game}`}
+                style={{
+                  marginLeft: "auto",
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
+                  fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
+                  color: "var(--color-dojo-gold)", textDecoration: "none",
+                }}
+              >
+                Multi-select ›
+              </Link>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px", marginTop: "12px" }}>
@@ -977,10 +992,10 @@ function SearchPageInner() {
                   ? "Error"
                   : `${cards.length} result${cards.length !== 1 ? "s" : ""}`}
               </span>
-              {sort !== "recent" && (
+              {sort !== "trending" && (
                 <button
                   type="button"
-                  onClick={() => setSort("recent")}
+                  onClick={() => setSort("trending")}
                   title="Clear sort"
                   style={{
                     display: "inline-flex", alignItems: "center", gap: "6px",

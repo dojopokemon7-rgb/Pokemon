@@ -8,6 +8,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 export const CardSortEnum = z.enum([
+  "trending",
   "market_desc",
   "market_asc",
   "name_asc",
@@ -16,13 +17,15 @@ export const CardSortEnum = z.enum([
 export type CardSortKey = z.infer<typeof CardSortEnum>;
 
 /** Human-readable labels shared with the client filter sheet.
- *  `recent` (updatedAt desc) is the trending order — labelled
- *  "Trending" to match the explore surface (Phase 2 QA). */
+ *  `trending` = real "hot right now" (most collection-adds in the last
+ *  N days — computed in the trending route, not a plain orderBy).
+ *  `recent` = most recently synced (updatedAt desc). */
 export const CARD_SORT_LABELS: Record<CardSortKey, string> = {
+  trending: "Trending",
   market_desc: "Price · High to Low",
   market_asc: "Price · Low to High",
   name_asc: "Name · A to Z",
-  recent: "Trending",
+  recent: "Recently Added",
 };
 
 /**
@@ -39,6 +42,11 @@ export function orderByForCardSort(
       return [{ marketPrice: { sort: "asc", nulls: "last" } }, { name: "asc" }];
     case "name_asc":
       return [{ name: "asc" }];
+    // `trending` can't be expressed as a plain Card orderBy (it ranks by
+    // collection-add counts — see the trending route). This fallback is
+    // only used for cards with no recent adds, and for /api/cards/search
+    // which doesn't compute the popularity ranking: newest-synced first.
+    case "trending":
     case "recent":
       return [{ updatedAt: "desc" }];
     case "market_desc":
