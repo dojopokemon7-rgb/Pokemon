@@ -130,6 +130,93 @@ function detailHref(item: CollectionItem): string {
   return `/search/${item.cardId}?${params.toString()}`;
 }
 
+// ── Favorite card tile — grid view (Favorites tab) ─────────────────
+// A lighter tile than the collection card: favorites have no quantity,
+// foil, or gain/loss — just the card + a filled gold star to unstar.
+// Links to the detail page keyed by externalId so the detail-page star
+// stays in sync with this list.
+function FavoriteCardGrid({
+  fav,
+  isRemoving,
+  onRemove,
+}: {
+  fav: FavoriteRow;
+  isRemoving: boolean;
+  onRemove: () => void;
+}) {
+  const c = fav.card;
+  const initials = cardInitials(c.name);
+  const setName = c.set?.name;
+  const showSet = setName && setName.toLowerCase() !== "unknown set";
+  const detail = (() => {
+    const params = new URLSearchParams({ name: c.name });
+    if (showSet && setName) params.set("set", setName);
+    if (c.imageUrl) params.set("img", c.imageUrl);
+    if (c.marketPrice != null) params.set("price", String(c.marketPrice));
+    return `/search/${c.externalId}?${params.toString()}`;
+  })();
+  return (
+    <Link
+      href={detail}
+      className="dojo-card-tile"
+      style={{
+        position: "relative",
+        background: "var(--color-dojo-card)",
+        border: "1px solid var(--color-dojo-stroke)",
+        padding: "11px",
+        textDecoration: "none",
+        display: "block",
+      }}
+    >
+      <CardImage
+        src={c.imageUrl}
+        alt={c.name}
+        initials={initials}
+        style={{ background: "var(--color-dojo-raised)", border: "none" }}
+      />
+      <div style={{ marginTop: "9px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", lineHeight: 1.3, minHeight: "32px", color: "var(--color-dojo-ink)" }}>
+        {c.name}
+      </div>
+      {showSet && (
+        <div style={{ marginTop: "4px", fontSize: "10.5px", color: "var(--color-dojo-body)" }}>{setName}</div>
+      )}
+      <div style={{ marginTop: "9px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", fontVariantNumeric: "tabular-nums", color: c.marketPrice != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
+        {c.marketPrice != null ? fmt(c.marketPrice) : "—"}
+      </div>
+      {/* Filled gold star — tap to unfavorite. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onRemove();
+        }}
+        disabled={isRemoving}
+        aria-label={`Remove ${c.name} from favorites`}
+        title="Remove from favorites"
+        style={{
+          position: "absolute",
+          top: "8px",
+          right: "8px",
+          width: "28px",
+          height: "28px",
+          border: "1px solid var(--color-dojo-gold)",
+          background: "var(--color-dojo-gold)",
+          color: "#0D0D0D",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: "14px",
+          lineHeight: 1,
+        }}
+      >
+        ★
+      </button>
+    </Link>
+  );
+}
+
 // ── Card tile — grid view ──────────────────────────────────────────
 function CollectionCardGrid({
   item,
@@ -316,7 +403,24 @@ function CollectionCardList({
 // TODO Week 3: Implement real backend for sold-card tracking
 //              (schema: add UserSale table with saleDate, salePrice,
 //              buyer info, marketplace source).
-type PortfolioTab = "my" | "sold";
+type PortfolioTab = "my" | "favorites" | "sold";
+
+// ── Favorite row shape — matches GET /api/users/me/favorites ──
+interface FavoriteRow {
+  id: string;
+  cardId: string;
+  createdAt: string;
+  card: {
+    id: string;
+    externalId: string;
+    name: string;
+    rarity: string | null;
+    imageUrl: string | null;
+    imageUrlHi: string | null;
+    marketPrice: number | null;
+    set: { name: string } | null;
+  };
+}
 
 // Collection "groups" (Binders / Want List / etc.) — UI stub with mock
 // data so the client sees the vision (Phase 3 QA). "Main" is the user's
@@ -369,6 +473,32 @@ export default function PortfolioPage() {
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       queryClient.invalidateQueries({ queryKey: ["collection"] });
     },
+  });
+
+  // Favorites — server-backed (shared ["favorites"] key with the star
+  // buttons on search/detail, so starring anywhere shows up here).
+  const { data: favData, isLoading: favLoading } = useQuery<{ favorites: FavoriteRow[] }>({
+    queryKey: ["favorites"],
+    queryFn: async () => {
+      const res = await fetch("/api/users/me/favorites");
+      if (!res.ok) throw new Error("Failed to load favorites");
+      return res.json();
+    },
+  });
+  const favorites = favData?.favorites ?? [];
+
+  // Unfavorite from the Favorites tab (removes the star everywhere).
+  const unfavoriteMutation = useMutation({
+    mutationFn: async (externalId: string) => {
+      const res = await fetch("/api/users/me/favorites", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ externalId }),
+      });
+      if (!res.ok) throw new Error("Failed to remove favorite");
+      return res.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["favorites"] }),
   });
 
   const items = data?.items ?? [];
@@ -478,11 +608,12 @@ export default function PortfolioPage() {
       ) : (
       <>
 
-      {/* ── My cards / Sold tab switcher (Phase 3.5) ── */}
+      {/* ── My cards / Favorites / Sold tab switcher ── */}
       <div style={{ display: "flex", gap: "6px", margin: "22px 0 4px" }}>
         {([
-          { id: "my" as const,   label: "My cards" },
-          { id: "sold" as const, label: "Sold" },
+          { id: "my" as const,        label: "My cards" },
+          { id: "favorites" as const, label: "Favorites" },
+          { id: "sold" as const,      label: "Sold" },
         ]).map((t) => (
           <button
             key={t.id}
@@ -538,9 +669,43 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {/* ── Sold tab: empty-state stub (Phase 3.5)
-          TODO Week 3: Implement real backend for sold-card tracking. ── */}
-      {tab === "sold" ? (
+      {/* ── Favorites tab: server-backed starred cards ── */}
+      {tab === "favorites" ? (
+        favLoading ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "18px" }}>
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "11px" }}>
+                <div style={{ width: "100%", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", animation: "dojo-pulse 1.5s ease-in-out infinite" }} />
+              </div>
+            ))}
+          </div>
+        ) : favorites.length === 0 ? (
+          <div style={{ border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "40px 22px", textAlign: "center", marginTop: "18px" }}>
+            <p className="dojo-heading" style={{ fontSize: "20px", margin: 0, color: "var(--color-dojo-gold)" }}>
+              no favorites yet
+            </p>
+            <p className="dojo-body" style={{ marginTop: "10px", marginBottom: "18px", fontSize: "13px", lineHeight: 1.55 }}>
+              tap the ★ on any card to save it here for quick access.
+            </p>
+            <Link href="/search" className="dojo-btn dojo-btn-primary" style={{ textDecoration: "none", display: "inline-flex", width: "auto", padding: "12px 22px" }}>
+              BROWSE CARDS
+            </Link>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "18px" }}>
+            {favorites.map((f) => (
+              <FavoriteCardGrid
+                key={f.id}
+                fav={f}
+                isRemoving={unfavoriteMutation.isPending}
+                onRemove={() => unfavoriteMutation.mutate(f.card.externalId)}
+              />
+            ))}
+          </div>
+        )
+      ) : /* ── Sold tab: empty-state stub (Phase 3.5)
+          TODO Week 3: Implement real backend for sold-card tracking. ── */
+      tab === "sold" ? (
         <div style={{ border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "40px 22px", textAlign: "center", marginTop: "18px" }}>
           <p className="dojo-heading" style={{ fontSize: "20px", margin: 0, color: "var(--color-dojo-gold)" }}>
             no sold cards yet

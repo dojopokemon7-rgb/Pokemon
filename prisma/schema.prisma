@@ -48,6 +48,7 @@ model User {
   sessions    Session[]
   accounts    Account[]
   collections UserCollection[]
+  favorites   Favorite[]
 
   @@map("user")
 }
@@ -142,6 +143,7 @@ model Card {
 
   userCollections UserCollection[]
   pricingHistory  PricingHistory[]
+  favorites       Favorite[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -180,6 +182,26 @@ model UserCollection {
   @@index([userId])
   @@index([cardId])
   @@map("user_collection")
+}
+
+// A card a user has favorited ("tracked" / starred). Distinct from
+// UserCollection: a favorite is a watch/wishlist marker, not an owned
+// copy — no quantity, no foil variant, no purchase price. One row per
+// (user, card); starring an already-favorited card is a no-op.
+model Favorite {
+  id     String @id @default(cuid())
+  userId String
+  cardId String
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cardId]) // one favorite per card per user
+  @@index([userId])
+  @@index([cardId])
+  @@map("favorite")
 }
 
 // =============================================================

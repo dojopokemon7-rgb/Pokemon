@@ -40,6 +40,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect, Suspense } from "react";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
+import { useFavorites } from "@/lib/hooks/useFavorites";
 
 
 // ── Icons for scan/filter buttons (new per client feedback) ────────
@@ -695,9 +696,11 @@ function SearchPageInner() {
   const [sort, setSort] = useState<SortKey>("trending");
   const [filterOpen, setFilterOpen] = useState(false);
 
-  // "Track this card" (star) and "add to selection" (plus) state for
-  // the Trending grid — ported from S.wish / S.sel in the reference.
-  const [tracked, setTracked] = useState<Set<string>>(new Set());
+  // "Track this card" (star) is now server-backed favorites (persist
+  // across sessions, viewable on the portfolio Favorites tab) via the
+  // shared hook — replaces the old local `tracked` Set. "add to
+  // selection" (plus) stays local.
+  const { isFavorite, toggle: toggleFavorite } = useFavorites();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Client feedback: + on a card now opens a bottom sheet to pick
@@ -708,14 +711,6 @@ function SearchPageInner() {
   const [addSheetCard, setAddSheetCard] = useState<TrendingCard | CardResult | null>(null);
   const [addToast, setAddToast] = useState<string | null>(null);
 
-  const toggleTracked = (id: string) => {
-    setTracked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
   const toggleSelected = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -922,8 +917,17 @@ function SearchPageInner() {
                     key={card.id}
                     card={card}
                     game={game}
-                    tracked={tracked.has(card.id)}
-                    onToggleTrack={() => toggleTracked(card.id)}
+                    tracked={isFavorite(card.externalId)}
+                    onToggleTrack={() => {
+                      const next = toggleFavorite({
+                        externalId: card.externalId,
+                        name: card.name,
+                        setName: card.setImage || undefined,
+                        imageUrl: card.imageUrl || undefined,
+                        marketPrice: card.price ?? null,
+                      });
+                      setAddToast(next ? "Added to favorites" : "Removed from favorites");
+                    }}
                     selected={selected.has(card.id)}
                     // Client feedback: + now opens a bottom sheet to pick
                     // Ungraded / Graded for this specific card.
@@ -1058,8 +1062,17 @@ function SearchPageInner() {
                       index={i}
                       game={game}
                       onAdd={setAddSheetCard}
-                      tracked={tracked.has(card.id)}
-                      onToggleTrack={() => toggleTracked(card.id)}
+                      tracked={isFavorite(card.id)}
+                      onToggleTrack={() => {
+                        const next = toggleFavorite({
+                          externalId: card.id,
+                          name: card.name,
+                          setName: card.setImage ?? card.setName ?? card.set ?? undefined,
+                          imageUrl: card.imageUrl ?? card.image ?? undefined,
+                          marketPrice: card.marketPrice ?? card.price ?? null,
+                        });
+                        setAddToast(next ? "Added to favorites" : "Removed from favorites");
+                      }}
                     />
                   ))}
             </div>

@@ -35,6 +35,7 @@ import {
 } from "@/lib/utils/price-comparison";
 import { FindOnEbayLink } from "@/components/FindOnEbayLink";
 import { Toast } from "@/components/Toast";
+import { useFavorites } from "@/lib/hooks/useFavorites";
 
 // Response shape of GET /api/ebay/search — the route already normalises
 // eBay's raw payload, so this stays lean.
@@ -244,7 +245,11 @@ function CardDetailInner() {
   const [flipped, setFlipped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [starred, setStarred] = useState(false);
+  // Favorites are now server-backed (persist across sessions) via the
+  // shared hook — replaces the old local `starred` state that reset on
+  // refresh and had nowhere to be viewed.
+  const { isFavorite, toggle: toggleFavorite } = useFavorites();
+  const starred = isFavorite(id);
   const [wantToBuy, setWantToBuy] = useState(false);
   const [activeSeries, setActiveSeries] = useState<Set<string>>(new Set(["raw"]));
   const [range, setRange] = useState<string>("1M");
@@ -439,13 +444,15 @@ function CardDetailInner() {
           </div>
           <button
             onClick={() => {
-              setStarred((v) => {
-                const next = !v;
-                // Immediate visual feedback: star fills gold + toast
-                // (Phase 3 QA: favorite feedback).
-                setToast(next ? "Added to favorites" : "Removed from favorites");
-                return next;
+              // Persisted toggle; hook returns the new state for the toast.
+              const next = toggleFavorite({
+                externalId: id,
+                name,
+                setName: setName || undefined,
+                imageUrl: img && img.startsWith("http") ? img : undefined,
+                marketPrice: price || null,
               });
+              setToast(next ? "Added to favorites" : "Removed from favorites");
             }}
             title={starred ? "Remove from favorites" : "Add to favorites"}
             aria-pressed={starred}
