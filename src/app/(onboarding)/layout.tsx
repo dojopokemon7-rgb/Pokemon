@@ -34,9 +34,16 @@ export default async function OnboardingLayout({
   // when SMS provider is configured.
 
   return (
+    // Own scroll region — globals.css locks html/body to
+    // `overflow:hidden`, so this group must scroll itself or the tall
+    // profile screen gets cut off on small viewports (same fix as the
+    // auth layout).
     <div
+      className="dojo-scroll-hidden"
       style={{
-        minHeight: "100dvh",
+        height: "100dvh",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
         backgroundColor: "var(--color-dojo-app)",
         display: "flex",
         justifyContent: "center",

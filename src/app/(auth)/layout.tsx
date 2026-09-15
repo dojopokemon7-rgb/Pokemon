@@ -32,9 +32,17 @@ export default function AuthLayout({
   children: React.ReactNode;
 }) {
   return (
+    // Own scroll region: globals.css locks html/body to
+    // `overflow:hidden`, so this group needs its own scroll container or
+    // tall auth screens (keyboard open, small phones) become unreachable.
+    // `height:100dvh` + `overflowY:auto` restores scrolling; the
+    // scrollbar is hidden to match the dashboard shell.
     <div
+      className="dojo-scroll-hidden"
       style={{
-        minHeight: "100dvh",
+        height: "100dvh",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
         backgroundColor: "var(--color-dojo-app)",
         display: "flex",
         justifyContent: "center",

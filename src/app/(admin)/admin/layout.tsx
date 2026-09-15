@@ -36,9 +36,12 @@ export default async function AdminLayout({
   }
 
   return (
-    <div className="min-h-screen bg-[var(--color-dojo-app)] text-[var(--color-dojo-ink)] flex">
+    // `h-screen` + `overflow-y-auto` on <main>: globals.css locks
+    // html/body to overflow:hidden, so admin pages taller than the
+    // viewport (user tables, audit logs) need their own scroll region.
+    <div className="h-screen overflow-hidden bg-[var(--color-dojo-app)] text-[var(--color-dojo-ink)] flex">
       <AdminSidebar />
-      <main className="flex-1 ml-[240px] min-h-screen">{children}</main>
+      <main className="dojo-scroll-hidden flex-1 ml-[240px] h-screen overflow-y-auto">{children}</main>
     </div>
   );
 }
