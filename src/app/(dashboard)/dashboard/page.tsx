@@ -33,25 +33,36 @@ export default async function DashboardPage() {
   // fields the dashboard never reads (notes, condition, addedAt,
   // etc.). Kept narrow so we ship the smallest payload possible
   // during SSR.
-  const rows = await prisma.userCollection.findMany({
-    where: { userId: session.user.id },
-    orderBy: { addedAt: "desc" },
-    select: {
-      id: true,
-      cardId: true,
-      quantity: true,
-      isFoil: true,
-      purchasePrice: true,
-      card: {
-        select: {
-          id: true,
-          name: true,
-          marketPrice: true,
-          set: { select: { name: true } },
+  const [rows, collections] = await Promise.all([
+    prisma.userCollection.findMany({
+      where: { userId: session.user.id },
+      orderBy: { addedAt: "desc" },
+      select: {
+        id: true,
+        cardId: true,
+        quantity: true,
+        isFoil: true,
+        purchasePrice: true,
+        // F-11: which named collection this owned copy is filed under
+        // (null = uncategorized). Drives the dashboard collection selector.
+        collectionId: true,
+        card: {
+          select: {
+            id: true,
+            name: true,
+            marketPrice: true,
+            set: { select: { name: true } },
+          },
         },
       },
-    },
-  });
+    }),
+    // Named collections for the selector dropdown.
+    prisma.collection.findMany({
+      where: { userId: session.user.id },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, name: true },
+    }),
+  ]);
 
   const initialItems: CollectionItem[] = rows;
 
@@ -59,6 +70,10 @@ export default async function DashboardPage() {
     session.user.name?.split(" ")[0]?.toLowerCase() ?? "collector";
 
   return (
-    <DashboardClient firstName={firstName} initialItems={initialItems} />
+    <DashboardClient
+      firstName={firstName}
+      initialItems={initialItems}
+      collections={collections}
+    />
   );
 }

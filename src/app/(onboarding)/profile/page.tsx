@@ -160,7 +160,7 @@ export default function CreateProfilePage() {
               height: "88px",
               flex: "none",
               background: "var(--color-dojo-gold)",
-              color: "#0D0D0D",
+              color: "var(--color-dojo-app)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",

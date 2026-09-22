@@ -44,6 +44,27 @@ interface FavoritesResponse {
   favorites: FavoriteRow[];
 }
 
+/** Build a placeholder FavoriteRow for the optimistic cache update. Only
+ *  `card.externalId` is read by `favoriteIds`; the rest mirror the card so
+ *  the Favorites view renders sensibly until the refetch replaces it. */
+function optimisticRow(card: FavoriteCard): FavoriteRow {
+  return {
+    id: `optimistic-${card.externalId}`,
+    cardId: card.externalId,
+    createdAt: new Date().toISOString(),
+    card: {
+      id: card.externalId,
+      externalId: card.externalId,
+      name: card.name ?? "",
+      rarity: null,
+      imageUrl: card.imageUrl ?? null,
+      imageUrlHi: null,
+      marketPrice: card.marketPrice ?? null,
+      set: card.setName ? { name: card.setName } : null,
+    },
+  };
+}
+
 export function useFavorites() {
   const queryClient = useQueryClient();
 
@@ -81,7 +102,32 @@ export function useFavorites() {
       if (!res.ok) throw new Error("Favorite request failed");
       return res.json();
     },
-    onSuccess: () => {
+    // F-20: optimistic UI. Flip the cached favourites list immediately so
+    // `isFavorite` (and the star's aria-pressed) updates before the network
+    // resolves, and snapshot the previous list so onError can roll back.
+    onMutate: async ({ card, next }) => {
+      await queryClient.cancelQueries({ queryKey: ["favorites"] });
+      const previous = queryClient.getQueryData<FavoritesResponse>(["favorites"]);
+
+      queryClient.setQueryData<FavoritesResponse>(["favorites"], (old) => {
+        const rows = old?.favorites ?? [];
+        if (next) {
+          if (rows.some((r) => r.card.externalId === card.externalId)) return old ?? { favorites: rows };
+          return { favorites: [...rows, optimisticRow(card)] };
+        }
+        return { favorites: rows.filter((r) => r.card.externalId !== card.externalId) };
+      });
+
+      return { previous };
+    },
+    // Roll back to the snapshot the click started from.
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["favorites"], context.previous);
+      }
+    },
+    // Reconcile with the server once the dust settles (success OR failure).
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["favorites"] });
     },
   });

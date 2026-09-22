@@ -62,14 +62,17 @@ async function sendSmsOtp({ phoneNumber: to, code }: OtpSendPayload): Promise<vo
   if (!apiKey || !baseUrl || !fromNumber) {
     // ==========================================================
     // LOCAL DEV MODE — OTP is logged to console instead of sent.
-    // This is intentional and safe; no real SMS is dispatched.
+    // The code is a secret: NEVER log it outside development, even
+    // when no SMS provider is configured.
     // ==========================================================
-    console.log(
-      `\n[Better Auth — OTP DEV MODE]\n` +
-        `  📱 Phone : ${to}\n` +
-        `  🔑 Code  : ${code}\n` +
-        `  ⚠️  Set SMS_PROVIDER_API_KEY in .env to send real SMS.\n`
-    );
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        `\n[Better Auth — OTP DEV MODE]\n` +
+          `  📱 Phone : ${to}\n` +
+          `  🔑 Code  : ${code}\n` +
+          `  ⚠️  Set SMS_PROVIDER_API_KEY in .env to send real SMS.\n`
+      );
+    }
     return;
   }
 
@@ -178,13 +181,31 @@ export const auth = betterAuth({
       //
       // No provider is configured yet, so the reset link is logged to
       // the server console instead — copy it from the terminal to test
-      // the reset flow locally.
-      console.log(
-        `\n[Better Auth — RESET PASSWORD DEV MODE]\n` +
-          `  📧 Email : ${user.email}\n` +
-          `  🔗 Link  : ${url}\n` +
-          `  ⚠️  No email provider configured — copy this link to test the reset flow.\n`
-      );
+      // the reset flow locally. The link is a secret (it grants a
+      // password reset), so NEVER log it outside development.
+      if (process.env.NODE_ENV === "development") {
+        console.log(
+          `\n[Better Auth — RESET PASSWORD DEV MODE]\n` +
+            `  📧 Email : ${user.email}\n` +
+            `  🔗 Link  : ${url}\n` +
+            `  ⚠️  No email provider configured — copy this link to test the reset flow.\n`
+        );
+      }
+    },
+  },
+
+  // --------------------------------------------------------
+  // Social Providers (OAuth)
+  // --------------------------------------------------------
+  // Registering Google here makes Better Auth expose the social sign-in
+  // initiation (/api/auth/sign-in/social) and callback
+  // (/api/auth/callback/google) routes. Real credentials come from env in
+  // production; the "test" fallbacks keep the routes registered in local /
+  // CI where the OAuth dance is mocked at the network layer (F-02).
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID || "test",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "test",
     },
   },
 
@@ -246,8 +267,15 @@ export const auth = betterAuth({
   // --------------------------------------------------------
   // Includes the configured BETTER_AUTH_URL plus Vercel preview URLs
   // (each deploy gets a unique <hash>.vercel.app subdomain).
+  //
+  // Local dev is explicitly trusted on BOTH common ports: `next dev`
+  // defaults to :3000, while the E2E harness boots on :3001 to match
+  // BETTER_AUTH_URL. Google/social sign-in returned a 403 when the dev
+  // server ran on :3000 but only :3001 was trusted — so both are listed.
   trustedOrigins: [
     process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    "http://localhost:3000",
+    "http://localhost:3001",
     // Accept any Vercel preview deployment for this project
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
     // Wildcard match for all Vercel preview URLs of this project

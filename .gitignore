@@ -49,4 +49,10 @@ cookies.txt
 # Reference materials & prototype (not needed for deployment)
 .reference/
 dojo prototype/
+dojo-design/
 dist/
+
+# Playwright
+/test-results/
+/playwright-report/
+/e2e/.auth/

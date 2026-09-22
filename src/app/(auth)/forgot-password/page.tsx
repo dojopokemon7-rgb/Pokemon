@@ -31,7 +31,7 @@ function ChevronLeft() {
 
 function CheckIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00A86B" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-dojo-jade)" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
@@ -85,7 +85,7 @@ export default function ForgotPasswordPage() {
         <div
           style={{
             background: "rgba(0, 168, 107, 0.12)",
-            border: "1px solid #00A86B",
+            border: "1px solid var(--color-dojo-jade)",
             padding: "12px 14px",
             display: "flex",
             alignItems: "center",
@@ -93,7 +93,7 @@ export default function ForgotPasswordPage() {
           }}
         >
           <CheckIcon />
-          <span style={{ fontSize: "13px", color: "#00A86B", fontWeight: 600 }}>
+          <span style={{ fontSize: "13px", color: "var(--color-dojo-jade)", fontWeight: 600 }}>
             If an account exists for {email}, a reset link is on its way.
           </span>
         </div>

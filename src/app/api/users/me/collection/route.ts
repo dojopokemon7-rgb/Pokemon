@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { prisma } from "@/lib/db";
+import { assignBulkAddOrder } from "@/lib/utils/bulk-add-order";
 
 export async function GET(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
@@ -34,6 +35,9 @@ export async function GET(request: Request): Promise<NextResponse> {
         notes: true,
         isFoil: true,
         purchasePrice: true,
+        // F-22: which named collection this copy is filed under (null =
+        // uncategorized) — drives the Compare Collections stats.
+        collectionId: true,
         addedAt: true,
         updatedAt: true,
         card: {
@@ -151,6 +155,17 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const results: Array<{ externalId: string; ok: boolean; error?: string }> = [];
 
+  // F-15: stamp explicit, strictly-decreasing addedAt values across the
+  // batch (keyed by externalId) so the collection list — ordered by
+  // `addedAt desc` — shows the batch at the FRONT in selection order,
+  // rather than reversed by per-row now() defaults.
+  const addedAtByExternalId = new Map(
+    assignBulkAddOrder(parsed.data.cards.map((c) => c.externalId)).map((s) => [
+      s.cardId,
+      s.addedAt,
+    ])
+  );
+
   for (const item of parsed.data.cards) {
     try {
       const setName = item.setName?.trim() || "Unknown Set";
@@ -190,6 +205,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 
       // @@unique([userId, cardId, isFoil]) — adding the same card+foil
       // combo again increments quantity instead of creating a duplicate row.
+      const addedAt = addedAtByExternalId.get(item.externalId) ?? new Date();
+
       await prisma.userCollection.upsert({
         where: {
           userId_cardId_isFoil: { userId, cardId: card.id, isFoil: item.isFoil },
@@ -197,6 +214,8 @@ export async function POST(request: Request): Promise<NextResponse> {
         update: {
           quantity: { increment: item.quantity },
           ...(item.condition ? { condition: item.condition } : {}),
+          // Re-adding bumps the row to the front of the list too.
+          addedAt,
         },
         create: {
           userId,
@@ -205,6 +224,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           isFoil: item.isFoil,
           condition: item.condition ?? null,
           purchasePrice,
+          addedAt,
         },
       });
 

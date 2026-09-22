@@ -24,7 +24,7 @@ import { ArrowRight } from "@/components/ArrowRight";
 
 function CheckIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00A86B" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-dojo-jade)" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
@@ -37,14 +37,6 @@ function GoogleIcon() {
       <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
       <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
       <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-    </svg>
-  );
-}
-
-function FacebookIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="#1877F2" aria-hidden="true">
-      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
     </svg>
   );
 }
@@ -86,6 +78,9 @@ function LoginContent() {
   const isVerified = searchParams.get("verified") === "true";
   const isRegistered = searchParams.get("registered") === "true";
   const isReset = searchParams.get("reset") === "true";
+  // Better Auth redirects back here with ?error=... when a social login is
+  // cancelled or fails. Surface it instead of silently dropping the user.
+  const oauthError = searchParams.get("error");
 
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
@@ -101,9 +96,26 @@ function LoginContent() {
     "Still working… try again in a moment."
   );
 
-  // OAuth stubs — Google/Meta credentials aren't wired up yet; showing
-  // a toast is more honest than fake buttons that silently do nothing.
-  const [oauthToast, setOauthToast] = useState<string | null>(null);
+  // Kick off Better Auth's Google OAuth flow. On success Better Auth
+  // redirects to `callbackURL`; on cancel/failure it returns to /login
+  // with an `?error=` param (surfaced via `oauthError` above).
+  async function handleGoogleSignIn() {
+    setError(null);
+    const { data, error: authError } = await authClient.signIn.social({
+      provider: "google",
+      callbackURL: "/dashboard",
+    });
+    // Better Auth's built-in redirect plugin only navigates when the
+    // response carries `redirect: true`. When it returns just a URL, drive
+    // the navigation ourselves so the OAuth handoff always proceeds.
+    if (data?.url) {
+      window.location.href = data.url;
+      return;
+    }
+    if (authError) {
+      setError("Google login cancelled or failed.");
+    }
+  }
 
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
@@ -155,12 +167,19 @@ function LoginContent() {
         <p className="dojo-body" style={{ margin: 0, textAlign: "center" }}>your collection is a portfolio.</p>
       </div>
 
+      {/* OAuth error banner (e.g. user cancelled the Google flow) */}
+      {oauthError && (
+        <p className="dojo-error" role="alert" style={{ marginBottom: "16px" }}>
+          Google login cancelled or failed.
+        </p>
+      )}
+
       {/* Success Banner */}
       {(isRegistered || isVerified || isReset) && (
         <div
           style={{
             background: "rgba(0, 168, 107, 0.12)",
-            border: "1px solid #00A86B",
+            border: "1px solid var(--color-dojo-jade)",
             padding: "12px 14px",
             marginBottom: "20px",
             display: "flex",
@@ -169,7 +188,7 @@ function LoginContent() {
           }}
         >
           <CheckIcon />
-          <span style={{ fontSize: "13px", color: "#00A86B", fontWeight: 600 }}>
+          <span style={{ fontSize: "13px", color: "var(--color-dojo-jade)", fontWeight: 600 }}>
             {isRegistered
               ? "Account & profile created successfully! Please sign in to enter the Dojo."
               : isReset
@@ -265,30 +284,18 @@ function LoginContent() {
         <div className="dojo-divider-line" />
       </div>
 
-      {/* OTP sign-in disabled for MVP — re-enable in Week 4 with SMS provider */}
-
-      {/* Social buttons — OAuth providers aren't hooked up yet. Clicking
-          shows a "coming in Week 4" toast per client feedback. */}
-      <div style={{ display: "flex", gap: "12px" }}>
-        <button
-          id="btn-google"
-          type="button"
-          className="dojo-btn dojo-btn-outline"
-          onClick={() => setOauthToast("Google login coming in Week 4")}
-        >
-          <GoogleIcon />
-          GOOGLE
-        </button>
-        <button
-          id="btn-facebook"
-          type="button"
-          className="dojo-btn dojo-btn-outline"
-          onClick={() => setOauthToast("Meta login coming in Week 4")}
-        >
-          <FacebookIcon />
-          FACEBOOK
-        </button>
-      </div>
+      {/* Social sign-in — Google via Better Auth. (Full-width: Google is
+          the only wired provider.) */}
+      <button
+        id="btn-google"
+        type="button"
+        className="dojo-btn dojo-btn-outline"
+        onClick={handleGoogleSignIn}
+        style={{ width: "100%" }}
+      >
+        <GoogleIcon />
+        GOOGLE
+      </button>
 
       {/* ── Footer links ──
           margin-top:auto pins this to the true bottom of the screen,
@@ -318,12 +325,9 @@ function LoginContent() {
         </button>
       </div>
 
-      {/* Timeout + OAuth-stub toasts (single component slot, one wins) */}
+      {/* Sign-in timeout snackbar */}
       {timeoutMsg && (
         <Toast message={timeoutMsg} onDismiss={() => setTimeoutMsg(null)} tone="error" duration={3200} />
-      )}
-      {oauthToast && (
-        <Toast message={oauthToast} onDismiss={() => setOauthToast(null)} />
       )}
     </div>
   );

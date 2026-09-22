@@ -5,7 +5,7 @@
  *
  * Used across the app for:
  *   - Auth timeout snackbars ("Try again")
- *   - "Coming in Week 4" placeholders (Google/Meta OAuth, Filters)
+ *   - "Coming soon" placeholders (e.g. Filters)
  *   - Post-action confirmations ("Added Charizard to your portfolio")
  *
  * Deliberately dumb: no context provider, no queueing, no priorities.

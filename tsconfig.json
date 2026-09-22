@@ -23,5 +23,16 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "scripts", "prisma/seed.ts"]
+  // vitest/playwright config files are excluded from Next's build-time
+  // type-check: their bundled Vite/Vitest Plugin types conflict and are
+  // irrelevant to the app build (they run under their own toolchains).
+  "exclude": [
+    "node_modules",
+    "scripts",
+    "prisma/seed.ts",
+    "prisma/seed-test.ts",
+    "prisma/drafts",
+    "vitest.config.ts",
+    "playwright.config.ts"
+  ]
 }

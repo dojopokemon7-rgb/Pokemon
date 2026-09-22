@@ -5,10 +5,19 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
+    "build:standalone": "npm run build && node scripts/assemble-standalone.mjs",
     "postinstall": "prisma generate",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "type-check": "tsc --noEmit",
+    "seed": "tsx prisma/seed-test.ts",
+    "test:unit": "vitest run tests/unit src",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "test:chart-accuracy": "tsx scripts/compare-chart-accuracy.ts",
+    "verify": "npm run lint && npm run test:unit && npm run test:integration && npm run test:chart-accuracy && npm run test:e2e",
+    "audit": "npm audit --audit-level=critical",
+    "audit:fix": "npm audit fix",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
@@ -34,14 +43,24 @@
     "zod": "^3.25.67"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.1.11",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.5",
+    "jsdom": "^29.1.1",
     "postcss": "^8.5.6",
     "prisma": "^6.19.3",
     "tailwindcss": "^4.1.11",
     "tsx": "4.23.12",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^3.2.7"
   }
 }

@@ -1,0 +1,60 @@
+// =============================================================
+// DRAFT — F-10 Multiple Collections (NOT YET APPLIED)
+// =============================================================
+// This is a proposal for your review. It is NOT part of schema.prisma
+// and no migration / `prisma db push` has been run. Once approved, these
+// blocks fold into prisma/schema.prisma and get pushed to Supabase.
+//
+// Design notes:
+// - A `Collection` is a named, user-owned grouping (e.g. "Vintage WOTC",
+//   "One Piece Chase"). A user has many collections.
+// - `isPrivate` defaults to true — collections are private unless the user
+//   opts to make them public (safe default; mirrors the /you visibility UI).
+// - `typeTag` is a real Postgres enum so an invalid tag is rejected at the
+//   DB boundary, not just in app code.
+// - Cards join a collection via UserCollection (the existing owned-copy
+//   row) gaining an optional `collectionId`, so a card can sit in a named
+//   collection or the user's default/uncategorized set (null). This reuses
+//   the existing ownership model rather than inventing a parallel one.
+// =============================================================
+
+enum CollectionType {
+  POKEMON
+  ONE_PIECE
+  MIXED
+
+  @@map("collection_type")
+}
+
+model Collection {
+  id        String         @id @default(cuid())
+  userId    String
+  name      String
+  isPrivate Boolean        @default(true)
+  typeTag   CollectionType @default(MIXED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items UserCollection[] // owned-copy rows filed under this collection
+
+  // A user can't have two collections with the same name.
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("collection")
+}
+
+// ----- Additions to the EXISTING models (shown for context) -----
+//
+// model User {
+//   ...
+//   collections Collection[]
+// }
+//
+// model UserCollection {
+//   ...
+//   collectionId String?
+//   collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+//   @@index([collectionId])
+// }

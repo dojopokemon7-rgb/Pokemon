@@ -35,7 +35,7 @@ export default function AdminSidebar() {
     <aside
       className="fixed left-0 top-0 bottom-0 w-[240px] flex flex-col"
       style={{
-        background: "#0D0D0D",
+        background: "var(--color-dojo-app)",
         borderRight: "1px solid var(--color-dojo-stroke)",
       }}
     >

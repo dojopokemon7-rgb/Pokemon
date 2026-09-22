@@ -20,6 +20,9 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, useMemo, useRef } from "react";
+import { aggregateCollectionStats, ALL_COLLECTIONS } from "@/lib/utils/collection-aggregation";
+import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
+import { useFavorites } from "@/lib/hooks/useFavorites";
 
 // ── Types ──────────────────────────────────────────────────────────
 export interface CollectionItem {
@@ -28,11 +31,26 @@ export interface CollectionItem {
   quantity: number;
   isFoil: boolean;
   purchasePrice: number | null;
+  /** F-11: named collection this copy is filed under (null = uncategorized). */
+  collectionId?: string | null;
   card: {
     id: string;
     name: string;
     marketPrice: number | null;
     set: { name: string } | null;
+  };
+}
+
+// F-08: map a collection row to the shape the details popup needs. The
+// dashboard's CollectionItem carries the DB card id (used as the detail
+// path segment, matching the portfolio page) — that's sufficient to open
+// the popup and toggle favorites from Home.
+function toPopupCard(item: CollectionItem): CardDetailsData {
+  return {
+    externalId: item.cardId,
+    name: item.card.name,
+    setName: item.card.set?.name ?? undefined,
+    marketPrice: item.card.marketPrice,
   };
 }
 
@@ -124,22 +142,6 @@ function mockDelta(positive: boolean): { delta: string; pct: number } {
 }
 
 // ── Icons ──────────────────────────────────────────────────────────
-function SearchIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  );
-}
-function BellIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 01-3.46 0" />
-    </svg>
-  );
-}
 function EyeIcon({ off }: { off?: boolean }) {
   return off ? (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
@@ -154,14 +156,6 @@ function EyeIcon({ off }: { off?: boolean }) {
     </svg>
   );
 }
-function ChevronDown() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
-}
-
 const mask = "••••";
 
 function fmt(n: number): string {
@@ -249,15 +243,15 @@ function MiniAreaChart({
       >
         <defs>
           <linearGradient id="dojoGold" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#E9B43B" stopOpacity={0.3} />
-            <stop offset="100%" stopColor="#E9B43B" stopOpacity={0.05} />
+            <stop offset="0%" stopColor="var(--color-dojo-gold)" stopOpacity={0.3} />
+            <stop offset="100%" stopColor="var(--color-dojo-gold)" stopOpacity={0.05} />
           </linearGradient>
         </defs>
         <path d={areaPath} fill="url(#dojoGold)" />
         <polyline
           points={linePoints}
           fill="none"
-          stroke="#E9B43B"
+          stroke="var(--color-dojo-gold)"
           strokeWidth={2}
           vectorEffect="non-scaling-stroke"
         />
@@ -291,7 +285,7 @@ function MiniAreaChart({
             marginLeft: -4.5,
             marginTop: -4.5,
             borderRadius: "50%",
-            background: "#E9B43B",
+            background: "var(--color-dojo-gold)",
             boxShadow: "0 0 0 3px rgba(233,180,59,0.25)",
             pointerEvents: "none",
           }}
@@ -342,11 +336,26 @@ function DeltaTag({ delta, up }: { delta: string; up: boolean }) {
 }
 
 // ── Card row component ─────────────────────────────────────────────
-function SectionRow({ name, sub, price, delta, up }: { 
-  name: string; sub: string; price: string; delta: string; up: boolean 
+// F-08: rows are clickable and carry the `card-result` testid so a click
+// opens the shared details popup (same behaviour as the Explore tiles).
+function SectionRow({ name, sub, price, delta, up, onOpen }: {
+  name: string; sub: string; price: string; delta: string; up: boolean;
+  onOpen?: () => void;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", height: "57px", borderTop: "1px solid var(--color-dojo-divider)", cursor: "pointer" }}>
+    <div
+      data-testid="card-result"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (onOpen && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      style={{ display: "flex", alignItems: "center", height: "57px", borderTop: "1px solid var(--color-dojo-divider)", cursor: "pointer" }}
+    >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {name}
@@ -401,15 +410,23 @@ interface DashboardClientProps {
    *  side mutations still invalidate the ["collection"] query key so
    *  the UI stays in sync after add / delete flows. */
   initialItems: CollectionItem[];
+  /** F-11: the user's named collections for the dashboard selector. */
+  collections?: { id: string; name: string }[];
 }
 
 export default function DashboardClient({
   firstName,
   initialItems,
+  collections = [],
 }: DashboardClientProps) {
   const [activeTab, setActiveTab] = useState<TabId>("mv");
   const [activeRange, setActiveRange] = useState<RangeId>("1M");
   const [hidden, setHidden] = useState(false);
+  // F-11: which collection the dashboard headline is scoped to.
+  const [selectedCollection, setSelectedCollection] = useState<string>(ALL_COLLECTIONS);
+  // F-08: the card whose details popup is open (null = closed).
+  const [popupCard, setPopupCard] = useState<CardDetailsData | null>(null);
+  const { isFavorite, toggle: toggleFavorite } = useFavorites();
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   const dateString = `${today} · Markets open`;
@@ -454,6 +471,7 @@ export default function DashboardClient({
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
           up: pct >= 0,
+          card: toPopupCard(item),
         };
       });
 
@@ -488,6 +506,7 @@ export default function DashboardClient({
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
           up: true,
+          card: toPopupCard(item),
         };
       });
 
@@ -504,6 +523,7 @@ export default function DashboardClient({
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
           up: false,
+          card: toPopupCard(item),
         };
       });
 
@@ -527,6 +547,27 @@ export default function DashboardClient({
 
     return { marketValue, paid, unrealized, mostValuable, collections, gainers, losers, chartData, overallPct, overallDelta };
   }, [collectionData, activeRange]);
+
+  // F-11: headline value / count / chart scoped to the selected collection.
+  // Uses the shared aggregator so the selector re-scopes the top-of-page
+  // figures. When "All Collections" is selected this equals the full total.
+  const scoped = useMemo(() => {
+    const agg = aggregateCollectionStats(
+      (collectionData ?? []).map((i) => ({
+        quantity: i.quantity,
+        purchasePrice: i.purchasePrice,
+        collectionId: i.collectionId ?? null,
+        card: { marketPrice: i.card.marketPrice },
+      })),
+      selectedCollection
+    );
+    // Re-shape the sparkline via the existing range-aware generator so it
+    // still varies by range; falls back to the aggregator's empty series
+    // when the scoped total is zero (empty state → no line, no crash).
+    const chartData =
+      agg.totalValue > 0 ? generateMockChartData(agg.totalValue, activeRange) : [];
+    return { marketValue: agg.totalValue, cardCount: agg.cardCount, chartData };
+  }, [collectionData, selectedCollection, activeRange]);
 
   // Get rows for the active tab
   const getActiveRows = () => {
@@ -555,29 +596,43 @@ export default function DashboardClient({
       {hasCollection ? (
         /* ══════════ POPULATED STATE ══════════ */
         <>
-          {/* ── Header with collection selector ── */}
-          <div style={{ display: "flex", alignItems: "center", marginTop: "16px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "7px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "6px 11px", cursor: "pointer" }}>
-              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-ink)", whiteSpace: "nowrap" }}>
-                Main
-              </span>
-              <span style={{ display: "flex", color: "var(--color-dojo-body)" }}><ChevronDown /></span>
-            </div>
-            <div style={{ display: "flex", gap: "14px", alignItems: "center", color: "var(--color-dojo-body)", marginLeft: "auto" }}>
-              <Link href="/search" style={{ display: "flex", color: "inherit" }}>
-                <SearchIcon />
-              </Link>
-              <span style={{ position: "relative", display: "flex" }}>
-                <BellIcon />
-                <i style={{ position: "absolute", top: "-1px", right: "-2px", width: "6px", height: "6px", background: "var(--color-dojo-vermilion)", borderRadius: "50%" }} />
-              </span>
-            </div>
+          {/* Defect 3: removed the dead "Main ▾" pill (a static control with
+              no onClick that duplicated the functional selector below) along
+              with the duplicate search/bell icons already provided by the
+              global shell header. Only the real F-11 selector remains. */}
+
+          {/* ── Collection selector (F-11) ── */}
+          <div style={{ marginTop: "16px" }}>
+            <label htmlFor="collection-select" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+              Collection
+            </label>
+            <select
+              id="collection-select"
+              aria-label="Collection"
+              data-testid="collection-select"
+              value={selectedCollection}
+              onChange={(e) => setSelectedCollection(e.target.value)}
+              style={{
+                fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px",
+                letterSpacing: "0.08em", color: "var(--color-dojo-ink)",
+                background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)",
+                padding: "8px 10px", cursor: "pointer",
+              }}
+            >
+              <option value={ALL_COLLECTIONS}>All Collections</option>
+              {collections.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
           </div>
 
           {/* ── Portfolio value + eye toggle ── */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "16px" }}>
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%", fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
               Portfolio value
+            </span>
+            <span data-testid="card-count" style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+              {scoped.cardCount} {scoped.cardCount === 1 ? "card" : "cards"}
             </span>
             <button
               onClick={() => setHidden((v) => !v)}
@@ -591,7 +646,7 @@ export default function DashboardClient({
           {/* ── Big value + delta ── */}
           <div style={{ marginTop: "6px", display: "flex", alignItems: "flex-end", gap: "16px" }}>
             <div style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "38px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-              {hidden ? `$ ${mask}${mask}` : fmt(stats.marketValue)}
+              {hidden ? `$ ${mask}${mask}` : fmt(scoped.marketValue)}
             </div>
             {/* Only the % delta here — the active period is already shown
                 (and highlighted) by the range-tab row directly below, so
@@ -624,10 +679,21 @@ export default function DashboardClient({
               the query result — everything below already takes an
               array of `{ value: number }`. */}
           <div style={{ margin: "16px -22px 0", height: "200px" }}>
-            <MiniAreaChart
-              data={stats.chartData}
-              formatValue={(v) => (hidden ? `$ ${mask}` : fmt(v))}
-            />
+            {scoped.chartData.length > 0 ? (
+              <MiniAreaChart
+                data={scoped.chartData}
+                formatValue={(v) => (hidden ? `$ ${mask}` : fmt(v))}
+              />
+            ) : (
+              // F-11 empty state: selected collection has no cards. Show a
+              // calm placeholder rather than a blank/flat chart or a crash.
+              <div
+                data-testid="empty-chart"
+                style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontSize: "12px", letterSpacing: "0.08em", textTransform: "uppercase" }}
+              >
+                No cards in this collection yet
+              </div>
+            )}
           </div>
 
           {/* ── Range selector tabs ── */}
@@ -660,7 +726,7 @@ export default function DashboardClient({
                   border: "1px solid var(--color-dojo-stroke)",
                   fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
                   background: activeTab === tab.id ? "var(--color-dojo-gold)" : "transparent",
-                  color: activeTab === tab.id ? "#0D0D0D" : "var(--color-dojo-body)",
+                  color: activeTab === tab.id ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
                   boxShadow: "none",
                 }}
               >
@@ -697,8 +763,8 @@ export default function DashboardClient({
             ) : (
               /* Most valuable / Gainers / Losers tabs */
               getActiveRows().length > 0 ? (
-                getActiveRows().map((row) => (
-                  <SectionRow key={row.name} {...row} />
+                getActiveRows().map(({ card, ...row }) => (
+                  <SectionRow key={row.name} {...row} onOpen={() => setPopupCard(card)} />
                 ))
               ) : (
                 <div style={{ padding: "20px 0", textAlign: "center", color: "var(--color-dojo-faint)", fontSize: "12px" }}>
@@ -720,12 +786,8 @@ export default function DashboardClient({
                 {dateString}
               </p>
             </div>
-            <div style={{ display: "flex", gap: "16px", alignItems: "center", color: "var(--color-dojo-body)", paddingTop: "5px" }}>
-              <Link href="/search" style={{ display: "flex", color: "inherit" }}>
-                <SearchIcon />
-              </Link>
-              <BellIcon />
-            </div>
+            {/* F-01: removed the duplicate search/bell icons here — the
+                global shell header already provides them. */}
           </div>
 
           <div style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "19px 20px" }}>
@@ -740,8 +802,8 @@ export default function DashboardClient({
             </div>
           </div>
 
-          <div style={{ background: "var(--color-dojo-gold)", boxShadow: "6px 6px 0 0 #806A17", padding: "19px 20px", margin: "20px 6px 6px 0" }}>
-            <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "15px", color: "#0D0D0D", margin: 0 }}>
+          <div style={{ background: "var(--color-dojo-gold)", boxShadow: "6px 6px 0 0 var(--color-dojo-btn-shadow)", padding: "19px 20px", margin: "20px 6px 6px 0" }}>
+            <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "15px", color: "var(--color-dojo-app)", margin: 0 }}>
               add your first card
             </p>
             <p style={{ marginTop: "6px", fontSize: "12px", lineHeight: 1.5, color: "rgba(13,13,13,0.75)", marginBottom: 0 }}>
@@ -752,7 +814,7 @@ export default function DashboardClient({
                 href="/scanner"
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "6px",
-                  background: "#0D0D0D", color: "#fff",
+                  background: "var(--color-dojo-app)", color: "var(--color-dojo-ink)",
                   fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10.5px", letterSpacing: "0.14em",
                   padding: "12px 16px", textDecoration: "none", border: "none",
                 }}
@@ -763,7 +825,7 @@ export default function DashboardClient({
                 href="/search"
                 style={{
                   fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase",
-                  color: "#0D0D0D", textDecoration: "none",
+                  color: "var(--color-dojo-app)", textDecoration: "none",
                 }}
               >
                 Search ›
@@ -771,6 +833,29 @@ export default function DashboardClient({
             </div>
           </div>
         </>
+      )}
+
+      {/* F-08: card details popup — opens when a Most Valuable / Gainers /
+          Losers row is clicked. Add-to-collection routes the user to the
+          search flow (the dashboard has no inline add sheet); favourites
+          toggle in place. */}
+      {popupCard && (
+        <CardDetailsPopup
+          card={popupCard}
+          isFavorite={isFavorite(popupCard.externalId)}
+          onClose={() => setPopupCard(null)}
+          onAddToCollection={() => {
+            window.location.href = "/search";
+          }}
+          onToggleFavorite={() => {
+            toggleFavorite({
+              externalId: popupCard.externalId,
+              name: popupCard.name,
+              setName: popupCard.setName ?? undefined,
+              marketPrice: popupCard.marketPrice ?? null,
+            });
+          }}
+        />
       )}
     </div>
   );

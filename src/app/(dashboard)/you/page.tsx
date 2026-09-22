@@ -10,7 +10,7 @@
  *   - 2-col stat grid (Total paid / Total value) — ACC_PAID / ACC_VALUE.
  *   - "Visibility" section: per-collection Public/Private segmented
  *     toggle (ported from app.js setVis — S.vis[key]).
- *   - "Connected accounts": Google / Meta rows with a Disconnect link.
+ *   - "Connected accounts": Google account linking row.
  *   - CONTACT SUPPORT outline button + "Log out" link.
  *
  * The reference's numbers (ACC_TOTALS/ACC_PAID/ACC_VALUE) are fixed
@@ -23,6 +23,9 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSession, authClient } from "@/lib/auth-client";
+import { CollectionsSection } from "./_components/CollectionsSection";
+import { CompareCollectionsSection } from "./_components/CompareCollectionsSection";
+import { ContactSupport } from "./_components/ContactSupport";
 
 // Same shape + query key as the dashboard uses. React Query dedupes
 // by key, so navigating dashboard <-> you reuses the cache — no extra
@@ -65,10 +68,35 @@ function initials(name: string): string {
 export default function YouAccountPage() {
   const { data: session, isPending } = useSession();
   const [loggingOut, setLoggingOut] = useState(false);
-  // Per-collection visibility — ported from app.js S.vis (defaults to
-  // true/"Public", matching freshState()'s { coll1: true, coll2: false }).
-  const [vis, setVis] = useState<Record<string, boolean>>({ coll1: true, coll2: false });
-  const [connected, setConnected] = useState<Record<string, boolean>>({ Google: true, Meta: true });
+  // Google is backed by real Better Auth account linking (see
+  // `googleLinked` below). No other providers are wired up yet.
+
+  // Real linked-provider state from Better Auth. `listAccounts()` returns
+  // the OAuth/credential accounts attached to the current user; a Google
+  // row means the account is genuinely linked (not a local toggle).
+  const { data: linkedAccounts, refetch: refetchAccounts } = useQuery({
+    queryKey: ["linked-accounts"],
+    queryFn: async () => {
+      const { data } = await authClient.listAccounts();
+      return data ?? [];
+    },
+  });
+  const googleLinked = (linkedAccounts ?? []).some(
+    (a: { provider?: string; providerId?: string }) =>
+      a.provider === "google" || a.providerId === "google"
+  );
+
+  async function handleConnectGoogle() {
+    const { data } = await authClient.linkSocial({ provider: "google", callbackURL: "/you" });
+    // Drive the OAuth handoff ourselves when Better Auth returns a URL
+    // without the auto-redirect flag (mirrors the login page).
+    if (data?.url) {
+      window.location.href = data.url;
+      return;
+    }
+    // If linkSocial resolves in-page (mocked in tests), refresh the list.
+    refetchAccounts();
+  }
 
   // Real collection stats — same query key + fetcher as the dashboard
   // and portfolio pages so cross-navigation is cache-instant.
@@ -135,11 +163,6 @@ export default function YouAccountPage() {
       </div>
     );
   }
-
-  const VIS_ROWS: [string, string][] = [
-    ["collection 1", "coll1"],
-    ["collection 2", "coll2"],
-  ];
 
   return (
     <div style={{ padding: "6px 22px 24px" }}>
@@ -216,65 +239,43 @@ export default function YouAccountPage() {
         </div>
       </div>
 
-      {/* ── Visibility ── */}
-      <div style={{ marginTop: "24px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-        Visibility
-      </div>
-      <p className="dojo-body" style={{ marginTop: "4px" }}>who can see each collection on your profile.</p>
-      {VIS_ROWS.map(([label, key]) => {
-        const on = vis[key] !== false;
-        return (
-          <div key={key} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>{label}</div>
-              <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-                {on ? "visible to everyone" : "only you"}
-              </div>
-            </div>
-            <div className="dojo-seg-tight">
-              <button type="button" className={on ? "on" : undefined} onClick={() => setVis((s) => ({ ...s, [key]: true }))}>
-                Public
-              </button>
-              <button type="button" className={!on ? "on" : undefined} onClick={() => setVis((s) => ({ ...s, [key]: false }))}>
-                Private
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      {/* Defect 6: removed the mock "Visibility" section (fake
+          "collection 1" / "collection 2" rows backed by local state only).
+          The real, data-backed Collections manager (F-10) below owns
+          per-collection privacy via its Public/Private setting. */}
+
+      {/* ── Collections (F-10) ── */}
+      <CollectionsSection />
+
+      {/* ── Compare Collections (F-22) ── */}
+      <CompareCollectionsSection />
 
       {/* ── Connected accounts ── */}
       <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
         Connected accounts
       </div>
-      {(["Google", "Meta"] as const).map((n) => (
-        <div key={n} style={{ display: "flex", alignItems: "center", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-          <div style={{ flex: 1, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>
-            {n}
-          </div>
-          {connected[n] ? (
-            <button
-              onClick={() => setConnected((s) => ({ ...s, [n]: false }))}
-              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-vermilion)" }}
-            >
-              Disconnect
-            </button>
-          ) : (
-            <button
-              onClick={() => setConnected((s) => ({ ...s, [n]: true }))}
-              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}
-            >
-              Connect
-            </button>
-          )}
+      {/* Google — backed by real Better Auth account linking. */}
+      <div style={{ display: "flex", alignItems: "center", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+        <div style={{ flex: 1, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>
+          Google
         </div>
-      ))}
+        {googleLinked ? (
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}>
+            Google Connected
+          </span>
+        ) : (
+          <button
+            onClick={handleConnectGoogle}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}
+          >
+            Connect Google
+          </button>
+        )}
+      </div>
 
       {/* ── Contact support + Log out ── */}
       <div style={{ margin: "22px 0 6px", display: "flex", flexDirection: "column", gap: "12px" }}>
-        <button type="button" className="dojo-btn dojo-btn-outline" style={{ height: "44px" }}>
-          CONTACT SUPPORT
-        </button>
+        <ContactSupport defaultName={user?.name ?? ""} defaultEmail={user?.email ?? ""} />
         <button
           id="btn-account-logout"
           type="button"

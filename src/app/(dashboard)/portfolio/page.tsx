@@ -26,6 +26,7 @@ import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
+import { WantList } from "@/components/WantList";
 
 // ── Real collection item shape — matches GET /api/users/me/collection ──
 interface CollectionItem {
@@ -120,6 +121,38 @@ function GainLossTag({ item }: { item: CollectionItem }) {
   );
 }
 
+// ── Graded / ungraded badge (Defect 2) ────────────────────────────
+// A card is considered "graded" if its free-text `condition` names a
+// grading company (PSA/BGS/CGC/SGC/Beckett) — the same heuristic the
+// /you stat grid uses to count graded cards. Graded → gold badge
+// showing the condition text (e.g. "PSA 10"); ungraded → grey "Raw".
+// ponytail: heuristic on free-text condition — upgrade path is a
+// dedicated grader/grade column on UserCollection.
+const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
+
+function GradeBadge({ condition }: { condition: string | null }) {
+  const graded = !!condition && GRADED_RE.test(condition);
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "2px 6px",
+        fontFamily: "var(--font-display)",
+        fontWeight: 700,
+        fontSize: "8.5px",
+        letterSpacing: "0.14em",
+        textTransform: "uppercase",
+        border: "1px solid " + (graded ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+        color: graded ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
+        background: graded ? "rgba(233,180,59,0.10)" : "transparent",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {graded ? (condition as string) : "Raw"}
+    </span>
+  );
+}
+
 function detailHref(item: CollectionItem): string {
   const params = new URLSearchParams({
     name: item.card.name,
@@ -202,7 +235,7 @@ function FavoriteCardGrid({
           height: "28px",
           border: "1px solid var(--color-dojo-gold)",
           background: "var(--color-dojo-gold)",
-          color: "#0D0D0D",
+          color: "var(--color-dojo-app)",
           cursor: "pointer",
           display: "flex",
           alignItems: "center",
@@ -252,6 +285,9 @@ function CollectionCardGrid({
       />
       <div style={{ marginTop: "9px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", lineHeight: 1.3, minHeight: "32px", color: "var(--color-dojo-ink)" }}>
         {item.card.name}
+      </div>
+      <div style={{ marginTop: "6px" }}>
+        <GradeBadge condition={item.condition} />
       </div>
       <div style={{ marginTop: "4px", fontSize: "10.5px", color: "var(--color-dojo-body)" }}>
         {showSet ? setName : ""}{showSet && item.isFoil ? " · " : ""}{item.isFoil ? "Foil" : ""}
@@ -339,7 +375,7 @@ function CollectionCardList({
           src={item.card.imageUrl}
           alt={item.card.name}
           initials={initials}
-          aspectRatio="40 / 56"
+          aspectRatio="660 / 921"
           initialsSize="12px"
           style={{ background: "var(--color-dojo-raised)", border: "none" }}
         />
@@ -353,8 +389,9 @@ function CollectionCardList({
             {price != null ? fmt(price) : "—"}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: "12px", marginTop: "6px" }}>
-          <div style={{ flex: 1, fontSize: "11px", color: "var(--color-dojo-body)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px" }}>
+          <GradeBadge condition={item.condition} />
+          <div style={{ flex: 1, minWidth: 0, fontSize: "11px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {showSet ? setName : ""}{showSet && item.isFoil ? " · " : ""}{item.isFoil ? "Foil" : ""}
           </div>
           <GainLossTag item={item} />
@@ -422,12 +459,11 @@ interface FavoriteRow {
   };
 }
 
-// Collection "groups" (Binders / Want List / etc.) — UI stub with mock
-// data so the client sees the vision (Phase 3 QA). "Main" is the user's
-// real collection (backed by /api/users/me/collection); every other
-// group is a placeholder until the backend lands.
-// TODO Week 3: back these with a real `Collection` table
-//   (id, userId, name, kind) + a collectionId FK on UserCollection.
+// Collection "groups" (Want List / etc.) — UI stub with mock data so the
+// client sees the vision (Phase 3 QA). "Main" is the user's real collection
+// (backed by /api/users/me/collection); every other group is a placeholder
+// until the backend lands. (Binders was removed in F-07 in favor of the
+// Want List.)
 type CollectionGroup = {
   id: string;
   name: string;
@@ -436,8 +472,9 @@ type CollectionGroup = {
 };
 const COLLECTION_GROUPS: CollectionGroup[] = [
   { id: "main", name: "Main", mockCount: null },
-  { id: "binder", name: "Binders", mockCount: 42 },
-  { id: "wantlist", name: "Want List", mockCount: 12 },
+  // Want List is real now (renders <WantList/>); it has its own per-intent
+  // counts inside, so no chip badge here (-1 = "show nothing").
+  { id: "wantlist", name: "Want List", mockCount: -1 },
   { id: "highvalue", name: "High Value", mockCount: 7 },
 ];
 
@@ -523,7 +560,7 @@ export default function PortfolioPage() {
         </span>
       </div>
 
-      {/* ── Collection groups (Binders / Want List / …) — UI stub ──
+      {/* ── Collection groups (Want List / …) — UI stub ──
           Horizontal chip selector. "Main" shows the real collection;
           other groups are mock placeholders (Phase 3 QA). */}
       <div
@@ -548,7 +585,7 @@ export default function PortfolioPage() {
             >
               {g.name}
               <span style={{ fontWeight: 700, fontSize: "9px", color: "var(--color-dojo-faint)" }}>
-                {g.mockCount == null ? (isLoading ? "" : items.length) : g.mockCount}
+                {g.mockCount == null ? (isLoading ? "" : items.length) : g.mockCount < 0 ? "" : g.mockCount}
               </span>
             </button>
           );
@@ -594,13 +631,20 @@ export default function PortfolioPage() {
           state instead of the real collection (Phase 3 QA). Rendered as
           an early return-in-place so the real tabs/content below only
           run for the "Main" group. */}
-      {group !== "main" ? (
+      {group === "wantlist" ? (
+        // F-07: the "Want List" group renders the real Want List (Buy/Sell/
+        // Trade tabs) — same component as the /wantlist route, minus its
+        // page heading since the portfolio header is already above.
+        <div style={{ marginTop: "22px" }}>
+          <WantList heading={false} />
+        </div>
+      ) : group !== "main" ? (
         <div style={{ border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "40px 22px", textAlign: "center", marginTop: "22px" }}>
           <p className="dojo-heading" style={{ fontSize: "20px", margin: 0, color: "var(--color-dojo-gold)" }}>
             {COLLECTION_GROUPS.find((g) => g.id === group)?.name} coming soon
           </p>
           <p className="dojo-body" style={{ marginTop: "10px", marginBottom: 0, fontSize: "13px", lineHeight: 1.55 }}>
-            organize cards into custom groups like binders, want lists, and
+            organize cards into custom groups like
             high-value trackers. this is a preview — full group support
             lands soon.
           </p>
@@ -624,7 +668,7 @@ export default function PortfolioPage() {
               fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px",
               letterSpacing: "0.14em", textTransform: "uppercase",
               background: tab === t.id ? "var(--color-dojo-gold)" : "transparent",
-              color: tab === t.id ? "#0D0D0D" : "var(--color-dojo-body)",
+              color: tab === t.id ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
             }}
           >
             {t.label}
@@ -646,7 +690,7 @@ export default function PortfolioPage() {
                 width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer", border: "none", padding: 0,
                 background: view === "list" ? "var(--color-dojo-gold)" : "transparent",
-                color: view === "list" ? "#0D0D0D" : "var(--color-dojo-faint)",
+                color: view === "list" ? "var(--color-dojo-app)" : "var(--color-dojo-faint)",
                 boxShadow: view === "list" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)",
               }}
             >
@@ -659,7 +703,7 @@ export default function PortfolioPage() {
                 width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer", border: "none", padding: 0,
                 background: view === "grid" ? "var(--color-dojo-gold)" : "transparent",
-                color: view === "grid" ? "#0D0D0D" : "var(--color-dojo-faint)",
+                color: view === "grid" ? "var(--color-dojo-app)" : "var(--color-dojo-faint)",
                 boxShadow: view === "grid" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)",
               }}
             >

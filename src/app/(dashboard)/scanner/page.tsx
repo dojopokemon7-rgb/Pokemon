@@ -1,35 +1,116 @@
 "use client";
 
 /**
- * Card Scanner Placeholder Page (/scanner)
+ * Card Scanner (/scanner) — F-14 MVP.
+ *
+ * Flow: live camera preview → "Scan" → POST /api/cards/recognize →
+ * render the matched card + an "Add to Collection" action.
+ *
+ * The recognition backend is currently a mock (returns a fixed Charizard
+ * match); the capture here sends a placeholder identifier rather than a
+ * real frame grab. When a real Vision API is wired in, only the capture
+ * payload and the API internals change — this component's structure stays.
  */
 
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+
+interface RecognizedCard {
+  id: string;
+  name: string;
+  set: string;
+  imageUrl: string;
+}
 
 export default function ScannerPage() {
   const router = useRouter();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [result, setResult] = useState<RecognizedCard | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Distinct from `error`: when the camera is denied there's nothing to
+  // scan, so we swap the Scan control for an "Enable Camera" retry.
+  const [cameraDenied, setCameraDenied] = useState(false);
+
+  // Requests the camera and attaches the stream to the <video>. Callable
+  // again from "Enable Camera" so a denial is recoverable without reload.
+  const startCamera = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setCameraDenied(false);
+    } catch {
+      setCameraDenied(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    startCamera();
+    return () => {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, [startCamera]);
+
+  async function handleScan() {
+    setScanning(true);
+    setError(null);
+    try {
+      // MVP: send a placeholder identifier. A real capture would grab a
+      // frame from the video into a canvas and send its base64 data URL.
+      const res = await fetch("/api/cards/recognize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: "mock-capture" }),
+      });
+
+      // Non-2xx (e.g. 500) → generic error, don't try to trust the body.
+      if (!res.ok) {
+        setResult(null);
+        setError("Scanner error, please try again.");
+        return;
+      }
+
+      const data = await res.json().catch(() => null);
+      if (data?.success && data.card) {
+        setResult(data.card as RecognizedCard);
+      } else {
+        // Recognized-nothing: surface the API message when present, else
+        // the default not-recognized copy. Scan button stays for a retry.
+        setResult(null);
+        setError(
+          typeof data?.message === "string" ? data.message : "Card not recognized."
+        );
+      }
+    } catch {
+      setError("Scanner error, please try again.");
+    } finally {
+      setScanning(false);
+    }
+  }
 
   return (
-    // Scanner is a fixed, non-scrolling viewport — it previews the
-    // eventual full-screen camera view, so it must never scroll
-    // (Phase 3 QA: overflow-hidden, not scrollable).
     <div
       style={{
         position: "relative",
-        height: "100%",
-        minHeight: "100%",
+        /* Locked to the viewport height — the scanner is an immersive
+           camera view rendered full-bleed by the shell (no header/nav),
+           so the viewfinder can never scroll (Defect 5). */
+        height: "100dvh",
         overflow: "hidden",
         padding: "24px 22px",
         color: "var(--color-dojo-ink)",
         display: "flex",
         flexDirection: "column",
+        gap: "16px",
       }}
     >
-      {/* Close (X) — replaces the old "‹ Back" text control (Phase 3 QA).
-          Sits top-right like a modal dismiss; still calls router.back(). */}
       <button
         onClick={() => router.back()}
-        aria-label="Close scanner"
+        aria-label="Close"
         title="Close"
         style={{
           position: "absolute",
@@ -53,71 +134,99 @@ export default function ScannerPage() {
         </svg>
       </button>
 
-      <h1 className="dojo-heading" style={{ fontSize: "24px", marginBottom: "8px", paddingRight: "48px" }}>
+      <h1 className="dojo-heading" style={{ fontSize: "24px", margin: 0, paddingRight: "48px" }}>
         Card Scanner
       </h1>
-      <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", marginBottom: "24px" }}>
-        Instant AI & OCR card recognition using your camera.
+      <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", margin: 0 }}>
+        Point your camera at a card, then tap Scan.
       </p>
 
-      <div
+      <video
+        ref={videoRef}
+        data-testid="camera-preview"
+        autoPlay
+        muted
+        playsInline
         style={{
-          background: "var(--color-dojo-card)",
+          width: "100%",
+          maxHeight: "320px",
+          background: "#000",
           border: "1px solid var(--color-dojo-stroke)",
-          padding: "48px 20px",
-          textAlign: "center",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "24px",
+          objectFit: "cover",
         }}
-      >
-        {/*
-          Scan frame with sweeping line — ported verbatim from the
-          reference's .scanframe/.sweep (dojo-prototype/styles.css),
-          used here to preview the eventual camera viewport.
-        */}
-        <div className="dojo-scanframe">
-          <i className="dojo-corner tl" />
-          <i className="dojo-corner tr" />
-          <i className="dojo-corner bl" />
-          <i className="dojo-corner br" />
-          <i className="dojo-sweep" />
-        </div>
+      />
 
-        <div
-          style={{
-            width: "64px",
-            height: "64px",
-            background: "var(--color-dojo-gold)",
-            boxShadow: "4px 4px 0 0 #806A17",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#0D0D0D",
-          }}
-        >
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75">
-            <path d="M3 7V5a2 2 0 012-2h2" />
-            <path d="M17 3h2a2 2 0 012 2v2" />
-            <path d="M21 17v2a2 2 0 01-2 2h-2" />
-            <path d="M7 21H5a2 2 0 01-2-2v-2" />
-            <line x1="3" y1="12" x2="21" y2="12" />
-          </svg>
+      {cameraDenied ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <p style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>
+            Camera access denied. Allow camera access to scan a card.
+          </p>
+          <button
+            onClick={startCamera}
+            style={{
+              padding: "12px 20px",
+              fontFamily: "var(--font-display)",
+              fontWeight: 700,
+              background: "var(--color-dojo-gold)",
+              color: "var(--color-dojo-app)",
+              border: "1px solid var(--color-dojo-stroke)",
+              cursor: "pointer",
+              alignSelf: "flex-start",
+            }}
+          >
+            Enable Camera
+          </button>
         </div>
-
-        <p
+      ) : (
+        <button
+          onClick={handleScan}
+          disabled={scanning}
           style={{
+            padding: "12px 20px",
             fontFamily: "var(--font-display)",
             fontWeight: 700,
-            fontSize: "14px",
-            color: "var(--color-dojo-ink)",
-            margin: 0,
+            background: "var(--color-dojo-gold)",
+            color: "var(--color-dojo-app)",
+            border: "1px solid var(--color-dojo-stroke)",
+            cursor: scanning ? "default" : "pointer",
           }}
         >
-          Camera OCR & Visual Search coming in Week 2
-        </p>
-      </div>
+          {scanning ? "Scanning…" : "Scan"}
+        </button>
+      )}
+
+      {error && (
+        <p role="alert" style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>{error}</p>
+      )}
+
+      {result && (
+        <div
+          style={{
+            background: "var(--color-dojo-card)",
+            border: "1px solid var(--color-dojo-stroke)",
+            padding: "16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+          }}
+        >
+          <p style={{ margin: 0, fontWeight: 700 }}>{result.name}</p>
+          <p style={{ margin: 0, fontSize: "13px", color: "var(--color-dojo-body)" }}>{result.set}</p>
+          <button
+            style={{
+              padding: "10px 16px",
+              fontFamily: "var(--font-display)",
+              fontWeight: 700,
+              background: "var(--color-dojo-ink)",
+              color: "#fff",
+              border: "1px solid var(--color-dojo-stroke)",
+              cursor: "pointer",
+            }}
+          >
+            Add to Collection
+          </button>
+        </div>
+      )}
     </div>
   );
 }

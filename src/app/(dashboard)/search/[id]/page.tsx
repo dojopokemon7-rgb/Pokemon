@@ -29,29 +29,9 @@
 import { useState, useMemo, Suspense, useEffect, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  evaluateDeal,
-  lowestEbayPrice,
-} from "@/lib/utils/price-comparison";
-import { FindOnEbayLink } from "@/components/FindOnEbayLink";
 import { Toast } from "@/components/Toast";
 import { useFavorites } from "@/lib/hooks/useFavorites";
-
-// Response shape of GET /api/ebay/search — the route already normalises
-// eBay's raw payload, so this stays lean.
-interface EbaySearchResponse {
-  listings?: Array<{
-    itemId: string;
-    title: string;
-    price: number;
-    currency: string | null;
-    imageUrl: string | null;
-    itemWebUrl: string;
-  }>;
-  fallback?: boolean;
-  error?: string;
-  source?: "cache" | "live";
-}
+import { buildEbaySearchUrl, evaluateDeal, lowestEbayPrice } from "@/lib/utils/price-comparison";
 
 // ── Icons ──────────────────────────────────────────────────────────
 function ChevronLeft() {
@@ -88,7 +68,7 @@ function ShareIcon() {
 // view (not per-card data), so this mirrors that scope exactly. ────
 const SERIES = [
   { id: "raw", label: "Raw", grade: "Raw", group: "Raw", priceFmt: "$246", color: "#9AA0A6" },
-  { id: "psa10", label: "PSA 10", grade: "10", group: "PSA", priceFmt: "$7.93K", color: "#E9B43B" },
+  { id: "psa10", label: "PSA 10", grade: "10", group: "PSA", priceFmt: "$7.93K", color: "var(--color-dojo-gold)" },
   { id: "psa9", label: "PSA 9", grade: "9", group: "PSA", priceFmt: "$4.01K", color: "#0AC27E" },
   { id: "bgsbl", label: "BGS BL10", grade: "BL10", group: "BGS", priceFmt: "$42K", color: "#2D7FF9" },
   { id: "bgs10", label: "BGS 10", grade: "10", group: "BGS", priceFmt: "$9.77K", color: "#D400FF" },
@@ -132,11 +112,35 @@ function fmtUSD(n: number): string {
 // than a fabricated dollar value; the series' overall price already
 // shows on its chip. viewBox uses the default meet aspect, so pointer
 // mapping goes through the rendered rect width. ────────────────────
-function DojoChart({ series, height = 170 }: { series: { pts: number[]; color: string }[]; height?: number }) {
+// F-09: format a point's date for the tooltip, e.g. "2026-06-01" → "Jun 2026".
+function fmtChartDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+function DojoChart({
+  series,
+  height = 170,
+  points,
+}: {
+  series: { pts: number[]; color: string }[];
+  height?: number;
+  /** F-09: real {date, price} for the PRIMARY series, index-aligned with
+   *  series[0].pts. When present, hovering/tapping shows a tooltip with the
+   *  exact date + price of the nearest point. Absent (mock-only cards) → no
+   *  tooltip, just the existing guide line. */
+  points?: { date: string; price: number }[];
+}) {
   const H = height, W = 330, P = 6;
   const gridLines = [0.25, 0.5, 0.75].map((f) => P + f * (H - P * 2));
   const wrapRef = useRef<HTMLDivElement>(null);
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  // Tracks the last interaction type. On touch, the browser fires COMPAT
+  // mouse events (incl. a spurious mouseleave) after the tap — we must not
+  // let that mouseleave clear the tooltip. Only a genuine mouse hover-out
+  // should clear it; touch stays until an outside click dismisses it.
+  const lastPointerType = useRef<string>("mouse");
 
   const nPts = series[0]?.pts.length ?? 0;
   const step = nPts > 1 ? (W - P * 2) / (nPts - 1) : 0;
@@ -148,21 +152,78 @@ function DojoChart({ series, height = 170 }: { series: { pts: number[]; color: s
     const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
     return Math.round(frac * (nPts - 1));
   };
-  const handleMove = (clientX: number) => setActiveIdx(idxFromClientX(clientX));
+  // Timestamp of the last open, so the dismiss listener can ignore the
+  // trailing synthesized events of the SAME gesture that opened the tooltip.
+  const openedAt = useRef<number>(0);
+  const handleMove = (clientX: number) => {
+    openedAt.current = Date.now();
+    setActiveIdx(idxFromClientX(clientX));
+  };
   const clear = () => setActiveIdx(null);
+
+  // F-09 dismissal: a click/tap OUTSIDE the chart wrapper hides the tooltip.
+  // Listen on `click` only (not touchstart/mousedown) so the tap that OPENS
+  // the tooltip on touch can't also dismiss it via its own low-level events —
+  // a real outside click still fires `click` and dismisses. Registered on a
+  // microtask delay so the opening gesture's trailing click never counts.
+  useEffect(() => {
+    if (activeIdx == null) return;
+    const onDocPointerDown = (e: Event) => {
+      // Ignore events within ~350ms of opening — those are the trailing
+      // pieces of the SAME tap/click gesture (touch fires compat mouse
+      // events after touchend), not a fresh "click away".
+      if (Date.now() - openedAt.current < 350) return;
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setActiveIdx(null);
+      }
+    };
+    document.addEventListener("pointerdown", onDocPointerDown);
+    document.addEventListener("click", onDocPointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", onDocPointerDown);
+      document.removeEventListener("click", onDocPointerDown);
+    };
+  }, [activeIdx]);
 
   const yFor = (v: number) => P + (v / 90) * (H - P * 2);
   const activeX = activeIdx != null ? P + activeIdx * step : 0;
 
+  // Tooltip data for the active point (only when we have real points).
+  // Clamp the index into `points`: activeIdx may have been computed against a
+  // different-length series (e.g. the mock 12-pt shape shown before the real
+  // 6-pt history finished loading), so guard against an out-of-range index.
+  const activePoint =
+    activeIdx != null && points && points.length > 0
+      ? points[Math.min(activeIdx, points.length - 1)]
+      : null;
+  // Horizontal position as a % of the wrapper width so the HTML tooltip
+  // lands over the active sample regardless of the SVG's rendered scale.
+  const activeXFrac = activeIdx != null && nPts > 1 ? activeIdx / (nPts - 1) : 0;
+
   return (
     <div
       ref={wrapRef}
-      style={{ width: "100%", touchAction: "none" }}
-      onMouseMove={(e) => handleMove(e.clientX)}
-      onMouseLeave={clear}
-      onTouchStart={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
-      onTouchMove={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
-      onTouchEnd={clear}
+      style={{ width: "100%", position: "relative", touchAction: "none" }}
+      // Pointer events unify mouse + touch: hover (mouse move), tap and drag
+      // (touch) all resolve to the nearest sample. Desktop mouse-leave clears;
+      // touch stays until an outside tap dismisses it (handled by the effect).
+      onPointerDown={(e) => {
+        lastPointerType.current = e.pointerType;
+        handleMove(e.clientX);
+      }}
+      onPointerMove={(e) => {
+        // Only track on hover (mouse) or an active touch drag — not stray
+        // pointer moves with no button on touch devices.
+        if (e.pointerType === "mouse" || e.buttons > 0 || e.pressure > 0) {
+          lastPointerType.current = e.pointerType;
+          handleMove(e.clientX);
+        }
+      }}
+      // Ignore the compat mouseleave that follows a touch tap; only clear on a
+      // real mouse hover-out.
+      onMouseLeave={() => {
+        if (lastPointerType.current === "mouse") clear();
+      }}
       role="img"
       aria-label="Price history chart"
     >
@@ -201,6 +262,175 @@ function DojoChart({ series, height = 170 }: { series: { pts: number[]; color: s
           </g>
         )}
       </svg>
+
+      {/* F-09 tooltip — HTML overlay so it can show the real date + price of
+          the nearest point. Follows the active x, clamped from the edges so
+          it never overflows the chart. */}
+      {activePoint && (
+        <div
+          data-testid="chart-tooltip"
+          style={{
+            position: "absolute",
+            top: 4,
+            left: `${Math.min(85, Math.max(15, activeXFrac * 100))}%`,
+            transform: "translateX(-50%)",
+            background: "var(--color-dojo-overlay)",
+            border: "1px solid var(--color-dojo-stroke)",
+            padding: "6px 9px",
+            pointerEvents: "none",
+            whiteSpace: "nowrap",
+            zIndex: 2,
+          }}
+        >
+          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            {fmtChartDate(activePoint.date)}
+          </div>
+          <div style={{ marginTop: "2px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-gold)" }}>
+            {fmtUSD(activePoint.price)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── eBay Deal Finder (restored) ─────────────────────────────────────
+// F-16 removed the Dojo-vs-eBay comparison UI, but the backend was kept:
+// /api/ebay/search returns live listings and buildEbaySearchUrl builds a
+// targeted outbound link. This section wires that backend back up:
+//   - Always shows a "Find on eBay" button (works even if the API is down).
+//   - Fetches the cheapest live listings; if the lowest beats our market
+//     price by ≥10% it flags a "Good Deal" (evaluateDeal), the original
+//     product behaviour.
+// Degrades gracefully: any eBay failure (fallback/empty) just leaves the
+// outbound link — never blocks the page.
+interface EbayListing {
+  itemId: string;
+  title: string;
+  price: number;
+  currency: string | null;
+  imageUrl: string | null;
+  itemWebUrl: string;
+}
+
+function EbayDealSection({
+  name,
+  setName,
+  cardNumber,
+  game,
+  marketPrice,
+}: {
+  name: string;
+  setName: string;
+  cardNumber: string;
+  game: "pokemon" | "onepiece";
+  marketPrice: number;
+}) {
+  const outboundUrl = buildEbaySearchUrl(name, setName || undefined, cardNumber || undefined, game);
+
+  const { data, isLoading } = useQuery<{ listings: EbayListing[] }>({
+    queryKey: ["ebay-search", name, setName, cardNumber, game],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ name, game });
+      if (setName) qs.set("set", setName);
+      if (cardNumber) qs.set("number", cardNumber);
+      const res = await fetch(`/api/ebay/search?${qs.toString()}`);
+      // The API returns { listings: [] } on its own error path, so a non-ok
+      // still parses; treat any failure as "no listings" (link still shows).
+      if (!res.ok) return { listings: [] };
+      return res.json();
+    },
+    staleTime: 5 * 60_000,
+  });
+
+  const listings = data?.listings ?? [];
+  const lowest = lowestEbayPrice(listings.map((l) => l.price));
+  const deal = lowest != null ? evaluateDeal(marketPrice, lowest) : null;
+
+  // Open the actual cheapest listing's item page when we have one — eBay has
+  // no single "card" page, so the best "this card on eBay" target is the
+  // lowest live listing. Fall back to the targeted search only when eBay
+  // returned nothing (API down / no matches).
+  const cheapest = listings
+    .filter((l) => Number.isFinite(l.price) && l.price > 0)
+    .sort((a, b) => a.price - b.price)[0];
+  const primaryUrl = cheapest?.itemWebUrl ?? outboundUrl;
+  const opensListing = !!cheapest;
+
+  const label = { fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" as const, color: "var(--color-dojo-body)" };
+
+  return (
+    <div style={{ marginTop: "20px" }}>
+      <div style={{ display: "flex", alignItems: "baseline" }}>
+        <span style={label}>Find on eBay</span>
+        {deal?.isGoodDeal && (
+          <span
+            data-testid="ebay-good-deal"
+            style={{
+              marginLeft: "10px", padding: "3px 8px",
+              fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px",
+              letterSpacing: "0.12em", textTransform: "uppercase",
+              color: "var(--color-dojo-jade)", border: "1px solid var(--color-dojo-jade)",
+              background: "rgba(10,194,126,.1)",
+            }}
+          >
+            🔥 Good Deal · Save {fmtUSD(deal.savings)}
+          </span>
+        )}
+      </div>
+
+      {/* Lowest live listing (when we got one). */}
+      {lowest != null && (
+        <div style={{ marginTop: "10px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-body)" }}>
+          Lowest listing:{" "}
+          <span style={{ color: "var(--color-dojo-gold)", fontVariantNumeric: "tabular-nums" }}>{fmtUSD(lowest)}</span>
+        </div>
+      )}
+      <div style={{ marginTop: "12px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "14px" }}>
+        {isLoading ? (
+          // Don't expose a clickable link until the lookup resolves — a
+          // premature click would fall through to the search URL, which is
+          // exactly the "opens the search page" bug. Show a disabled button
+          // that becomes the real deep-link once listings arrive.
+          <button
+            type="button"
+            disabled
+            data-testid="ebay-find-loading"
+            className="dojo-btn dojo-btn-outline"
+            style={{ display: "inline-flex", padding: "10px 18px", opacity: 0.6, cursor: "wait" }}
+          >
+            CHECKING EBAY…
+          </button>
+        ) : (
+          <a
+            href={primaryUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="ebay-find-link"
+            className="dojo-btn dojo-btn-outline"
+            style={{ display: "inline-flex", textDecoration: "none", padding: "10px 18px" }}
+          >
+            {opensListing ? "VIEW ON EBAY ›" : "FIND ON EBAY ›"}
+          </a>
+        )}
+        {/* When we deep-link to a single listing, still offer the full
+            targeted search as a secondary "see all listings" escape. */}
+        {opensListing && (
+          <a
+            href={outboundUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="ebay-search-link"
+            style={{
+              fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px",
+              letterSpacing: "0.14em", textTransform: "uppercase",
+              color: "var(--color-dojo-gold)", textDecoration: "none",
+            }}
+          >
+            See all listings ›
+          </a>
+        )}
+      </div>
     </div>
   );
 }
@@ -275,8 +505,13 @@ function CardDetailInner() {
   // pricing data is available in Week 3).
   const ADD_ROWS = useMemo(() => {
     const rawPrice = price || 0;
-    // PSA 10 premium: 3x for cards under $10, scaling up to 30x for expensive cards
-    const psa10Multiplier = rawPrice < 10 ? 3 : Math.min(30, 3 + (rawPrice / 100));
+    // PSA 10 premium: graded always trades above raw. Cheap cards carry
+    // the biggest relative premium (grading fee dominates), so start at
+    // 4.5x (a $10 raw ≈ $45 PSA 10 — the client's reference point) and
+    // ease toward ~2x for high-value cards where the fee is negligible.
+    // Continuous curve (no step at $10) so the number never jumps oddly.
+    // TODO Week 3: replace with real graded pricing data.
+    const psa10Multiplier = 2 + 50 / (rawPrice + 10);
     const psa10Price = rawPrice * psa10Multiplier;
     
     return [
@@ -330,17 +565,48 @@ function CardDetailInner() {
     });
   };
 
+  // F-18: real price history from the DB (PricingHistory). When we have
+  // points for this card, the "Raw" line is driven by them instead of the
+  // mock CHARTS shape; cards with no history keep the mock (graceful
+  // fallback). Never errors — an empty/failed fetch just leaves realPts null.
+  const { data: historyData } = useQuery<{ points: { date: string; price: number }[] }>({
+    queryKey: ["card-history", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/history`);
+      if (!res.ok) throw new Error("Failed to load history");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+  // Normalize real prices into the chart's shape band (4..86) so they plug
+  // straight into DojoChart alongside the mock series.
+  const realPts = useMemo(() => {
+    const points = historyData?.points ?? [];
+    if (points.length < 2) return null;
+    const prices = points.map((p) => p.price);
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const range = max - min || 1;
+    return prices.map((p) => 4 + ((p - min) / range) * (86 - 4));
+  }, [historyData]);
+
   const chartSeries = useMemo(() => {
     const pts = CHARTS[range] ?? CHARTS["1M"];
     const active = SERIES.filter((d) => activeSeries.has(d.id));
     if (active.length === 0) {
-      return [{ pts, color: "#9AA0A6" }];
+      // Default view: prefer real history when we have it.
+      return [{ pts: realPts ?? pts, color: "#9AA0A6" }];
     }
     return active.map((d, di) => ({
-      pts: pts.map((y, i) => Math.max(4, Math.min(86, y + Math.sin(i * 1.3 + di * 2) * 6))),
+      // The "raw" series maps to our recorded market history; graded
+      // series stay on the mock shapes (no per-grade history pipeline yet).
+      pts:
+        d.id === "raw" && realPts
+          ? realPts
+          : pts.map((y, i) => Math.max(4, Math.min(86, y + Math.sin(i * 1.3 + di * 2) * 6))),
       color: d.color,
     }));
-  }, [range, activeSeries]);
+  }, [range, activeSeries, realPts]);
 
   const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * d.price, 0);
   const pop = POP.find((p) => p.grader === popGrader) ?? POP[0];
@@ -460,7 +726,7 @@ function CardDetailInner() {
               flex: "none", width: "34px", height: "34px", fontSize: "16px",
               border: "1px solid " + (starred ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
               background: starred ? "var(--color-dojo-gold)" : "var(--color-dojo-app)",
-              color: starred ? "#0D0D0D" : "var(--color-dojo-body)",
+              color: starred ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
               display: "flex", alignItems: "center", justifyContent: "center",
               cursor: "pointer", transition: "all 150ms",
             }}
@@ -479,12 +745,27 @@ function CardDetailInner() {
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "26px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
               {fmtUSD(price)}
             </div>
-            <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#00A86B" }}>
+            <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
               ▲ +4.1% · 1M
             </div>
           </div>
           <button
-            onClick={() => setWantToBuy((v) => !v)}
+            onClick={async () => {
+              // F-07: persist to the Want List (Want to Buy) rather than a
+              // local-only toggle. Optimistically flip; the /wantlist page
+              // reads the real rows.
+              setWantToBuy(true);
+              try {
+                await fetch("/api/want-list", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "include",
+                  body: JSON.stringify({ cardId: id, intent: "BUY" }),
+                });
+              } catch {
+                setWantToBuy(false);
+              }
+            }}
             style={{
               flex: "none", display: "inline-flex", alignItems: "center", justifyContent: "center",
               height: "38px", padding: "0 18px",
@@ -499,9 +780,12 @@ function CardDetailInner() {
           </button>
         </div>
 
-        {/* ── Price Comparison (eBay Deal Finder) ── */}
-        <PriceComparisonSection
-          cardName={name}
+        {/* eBay Deal Finder (restored) — the F-16 removal took out the
+            Dojo-vs-eBay comparison UI; this brings back a "Find on eBay"
+            link plus a live lowest-listing + good-deal check off the
+            existing /api/ebay/search backend. */}
+        <EbayDealSection
+          name={name}
           setName={setName}
           cardNumber={cardNumber}
           game={game}
@@ -549,7 +833,20 @@ function CardDetailInner() {
         </div>
 
         <div style={{ margin: "12px -22px 0" }}>
-          <DojoChart series={chartSeries} height={170} />
+          {/* F-09: hand the chart the real {date, price} history so the
+              hover/tap tooltip can show exact values. Only when the primary
+              (index-0) line IS the real Raw series — i.e. default view or Raw
+              is active — so the tooltip index aligns with the drawn line.
+              Graded-only views keep the mock shape and no price tooltip. */}
+          <DojoChart
+            series={chartSeries}
+            height={170}
+            points={
+              realPts && (activeSeries.size === 0 || activeSeries.has("raw"))
+                ? historyData?.points
+                : undefined
+            }
+          />
         </div>
         <div style={{ display: "flex", marginTop: "4px" }}>
           {RANGE_TABS.map(([label, key]) => (
@@ -720,318 +1017,6 @@ function CardDetailInner() {
   );
 }
 
-// ── Price Comparison — the "Deal Finder" section ───────────────────
-//
-// Hits GET /api/ebay/search?q=<cardName> via React Query, then compares
-// the mean of the returned listing prices against the card's recorded
-// market price via evaluateDeal(). Renders one of four states:
-//
-//   1. Loading   — "Checking eBay…" placeholder on the eBay side.
-//   2. Live data — Market Value (gold) alongside eBay Avg. (blue),
-//                  plus a "🔥 Good Deal" badge (jade) when the eBay
-//                  average is ≥10% below market.
-//   3. Empty     — Sandbox/no-listings fallback with a "View real
-//                  results on eBay ›" deep link into eBay's public
-//                  HTML search.
-//   4. Error     — Same as Empty (graceful degradation), because a
-//                  broken eBay call should never break the UI. The API
-//                  route already returns { fallback: true } for us.
-//
-// The React Query cache key includes name + set + number + game so
-// two cards that share a character (e.g. Charizard reprints across
-// sets) get distinct entries. This matches the composite cache key
-// used by the API route's Redis layer.
-function PriceComparisonSection({
-  cardName,
-  setName,
-  cardNumber,
-  game,
-  marketPrice,
-}: {
-  cardName: string;
-  setName: string;
-  /** Printed card number or Bandai code (e.g. "OP01-001"). Empty when
-   *  the trailing id segment isn't useful for eBay listings. */
-  cardNumber: string;
-  game: "pokemon" | "onepiece";
-  marketPrice: number;
-}) {
-  // Build the query string with the exact-match params the API now
-  // requires: name, set (optional), number (optional), game.
-  const apiQs = new URLSearchParams({ name: cardName, game });
-  if (setName) apiQs.set("set", setName);
-  if (cardNumber) apiQs.set("number", cardNumber);
-  const apiUrl = `/api/ebay/search?${apiQs.toString()}`;
-
-  const { data, isLoading, isError } = useQuery<EbaySearchResponse>({
-    queryKey: [
-      "ebay-search",
-      cardName.toLowerCase(),
-      setName.toLowerCase(),
-      cardNumber.toLowerCase(),
-      game,
-    ],
-    queryFn: async () => {
-      const res = await fetch(apiUrl);
-      if (!res.ok) throw new Error(`Bad status ${res.status}`);
-      return res.json();
-    },
-    // Give it one retry — sandbox 429s and cold-start timeouts should
-    // not immediately fall through to the "unavailable" state.
-    retry: 1,
-    // Once fetched, keep it in-memory for the full session; the API
-    // route caches upstream for 24h so refetching on every mount is
-    // wasteful.
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const listings = data?.listings ?? [];
-  // Show the lowest current asking price — the actual buyable number —
-  // rather than a mean, which hides outliers and masks what a buyer
-  // would really pay for this card on eBay right now.
-  const ebayPrice = lowestEbayPrice(listings.map((l) => l.price));
-  const deal = ebayPrice != null ? evaluateDeal(marketPrice, ebayPrice) : null;
-
-  // Pick the actual listing object with the lowest price so the "Find
-  // on eBay" button on this panel can deep-link straight to it,
-  // instead of dumping the user on a generic search page. Filters out
-  // non-positive prices for safety; sort is stable-enough here.
-  const cheapestListing = listings
-    .filter((l) => Number.isFinite(l.price) && l.price > 0)
-    .reduce<(typeof listings)[number] | null>(
-      (best, l) => (best == null || l.price < best.price ? l : best),
-      null
-    );
-
-  // Empty when: hard error, explicit fallback flag, or the API just
-  // returned zero listings (sandbox default). All three collapse to
-  // the same graceful UI.
-  const isEmpty =
-    isError ||
-    Boolean(data?.fallback) ||
-    (data != null && listings.length === 0);
-
-  return (
-    <div style={{ marginTop: "20px" }}>
-      <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-        Price comparison
-      </div>
-
-      <div
-        style={{
-          marginTop: "12px",
-          display: "flex",
-          gap: "12px",
-          alignItems: "stretch",
-        }}
-      >
-        {/* Market value tile — always populated from our DB. */}
-        <div
-          style={{
-            flex: 1,
-            padding: "12px 14px",
-            border: "1px solid var(--color-dojo-stroke)",
-            background: "rgba(233,180,59,0.06)",
-          }}
-        >
-          {/* Labelled "Dojo Value" (not "Market Value") so it reads as
-              the comparison baseline against the eBay tile beside it,
-              rather than duplicating the headline market price shown at
-              the top of the page (Phase 3 QA: remove duplicate Market
-              value). */}
-          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            Dojo Value
-          </div>
-          <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-gold)" }}>
-            {fmtUSD(marketPrice)}
-          </div>
-        </div>
-
-        {/* eBay tile — loading / live avg / sandbox fallback. */}
-        <div
-          style={{
-            flex: 1,
-            padding: "12px 14px",
-            border: "1px solid var(--color-dojo-stroke)",
-            background: "rgba(45,127,249,0.06)",
-          }}
-        >
-          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            eBay Price
-          </div>
-          <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "#2D7FF9" }}>
-            {isLoading ? (
-              <span style={{ fontSize: "13px", color: "var(--color-dojo-body)", fontWeight: 400 }}>
-                Checking eBay…
-              </span>
-            ) : ebayPrice != null ? (
-              fmtUSD(ebayPrice)
-            ) : (
-              <span style={{ fontSize: "13px", color: "var(--color-dojo-faint)", fontWeight: 400 }}>
-                —
-              </span>
-            )}
-          </div>
-          {/* Transparency: show the exact query used and the pool the
-              price was picked from. "Lowest of N" tells the user this
-              is the cheapest currently buyable copy — not a blended
-              average across variants. */}
-          {!isLoading && ebayPrice != null && (
-            <div style={{ marginTop: "4px", fontSize: "10px", color: "var(--color-dojo-faint)", lineHeight: 1.3 }}>
-              lowest of {listings.length} listing{listings.length !== 1 ? "s" : ""} · &ldquo;{[cardName, setName, cardNumber].filter(Boolean).join(" ")}&rdquo;
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Warn when the eBay price looks too disconnected from our
-          recorded market value. A 60%+ delta usually means the search
-          returned condition variants or unrelated print runs — not a
-          real "deal", just noise. Keeps the Good Deal badge honest. */}
-      {!isLoading && ebayPrice != null && marketPrice > 0 && Math.abs(marketPrice - ebayPrice) / marketPrice > 0.6 && (
-        <div style={{ marginTop: "10px", padding: "8px 12px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", fontSize: "11px", color: "var(--color-dojo-body)", lineHeight: 1.4 }}>
-          ⚠ Big gap between market value and eBay listing — likely a different variant
-          (raw vs graded, print run). Click the listing below to check the exact match.
-        </div>
-      )}
-
-      {/* Good Deal badge — jade bg + white text + sharp 0px radius
-          per client style spec. Rendered only when the live eBay
-          average is ≥10% below the recorded market value. */}
-      {deal?.isGoodDeal && (
-        <div
-          style={{
-            marginTop: "12px",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "8px",
-            padding: "8px 14px",
-            background: "#00A86B",
-            color: "#FFFFFF",
-            fontFamily: "var(--font-display)",
-            fontWeight: 800,
-            fontSize: "11px",
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            borderRadius: 0,
-          }}
-        >
-          🔥 Good Deal — Save {fmtUSD(deal.savings)} ({(deal.savingsPct * 100).toFixed(1)}% off)
-        </div>
-      )}
-
-      {/* Sandbox / no-listings fallback — a plain, honest note plus
-          a deep-link that ALWAYS lands the user on real eBay results,
-          even when our sandbox-mode Browse API returned zero items. */}
-      {isEmpty && !isLoading && (
-        <div
-          style={{
-            marginTop: "12px",
-            padding: "10px 14px",
-            border: "1px solid var(--color-dojo-stroke)",
-            background: "var(--color-dojo-card)",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            flexWrap: "wrap",
-          }}
-        >
-          <span style={{ flex: 1, minWidth: 0, fontSize: "12px", color: "var(--color-dojo-body)", lineHeight: 1.4 }}>
-            Sandbox mode — no live listings.
-          </span>
-          <FindOnEbayLink
-            name={cardName}
-            setName={setName || undefined}
-            cardCode={cardNumber || undefined}
-            game={game}
-            variant="inline"
-          />
-        </div>
-      )}
-
-      {/* Real live listings — the 3 items that make up the average
-          shown above. Each row is a direct deep-link to THAT specific
-          eBay listing (not a keyword search), so the user gets to the
-          exact card, not eBay's generic 100k-result grid. */}
-      {!isEmpty && !isLoading && listings.length > 0 && (
-        <>
-          <div style={{ marginTop: "18px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            Live eBay listings
-          </div>
-          <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "8px" }}>
-            {listings.slice(0, 3).map((l) => (
-              <a
-                key={l.itemId}
-                href={l.itemWebUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "12px",
-                  padding: "10px 12px",
-                  border: "1px solid var(--color-dojo-stroke)",
-                  background: "var(--color-dojo-card)",
-                  textDecoration: "none",
-                  cursor: "pointer",
-                }}
-              >
-                {l.imageUrl && (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img
-                    src={l.imageUrl}
-                    alt=""
-                    width={44}
-                    height={44}
-                    style={{ width: "44px", height: "44px", flex: "none", objectFit: "cover", background: "var(--color-dojo-raised)" }}
-                  />
-                )}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-display)",
-                      fontWeight: 700,
-                      fontSize: "12.5px",
-                      lineHeight: 1.35,
-                      color: "var(--color-dojo-ink)",
-                      overflow: "hidden",
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                    }}
-                  >
-                    {l.title}
-                  </div>
-                  <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}>
-                    View on eBay ›
-                  </div>
-                </div>
-                <div style={{ flex: "none", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "14px", fontVariantNumeric: "tabular-nums", color: "#2D7FF9" }}>
-                  {fmtUSD(l.price)}
-                </div>
-              </a>
-            ))}
-          </div>
-
-          {/* Bottom link — deep-links straight to the cheapest live
-              listing so "Find on eBay" lands the user on THAT item's
-              page (buyable), not another eBay search page. Falls back
-              to the search URL only if, for some reason, no positive-
-              priced listing exists in the fetched set. */}
-          <div style={{ marginTop: "12px", textAlign: "right" }}>
-            <FindOnEbayLink
-              name={cardName}
-              setName={setName || undefined}
-              cardCode={cardNumber || undefined}
-              game={game}
-              directUrl={cheapestListing?.itemWebUrl}
-            />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
 
 // ── Quantity stepper row — ported from app.js addQtyRow() ──────────
 function AddQtyRow({ label, sub, price, qty, onChange }: { label: string; sub?: string; price: number; qty: number; onChange: (q: number) => void }) {

@@ -1,0 +1,22 @@
+[
+  { "id": "charizard-base-psa10", "name": "Charizard", "set": "Base Set", "game": "pokemon", "grade": 10, "rawMarketPrice": 3500, "gradedMarketValue": 35000 },
+  { "id": "charizard-base-psa9", "name": "Charizard", "set": "Base Set", "game": "pokemon", "grade": 9, "rawMarketPrice": 3500, "gradedMarketValue": 8500 },
+  { "id": "blastoise-base-psa10", "name": "Blastoise", "set": "Base Set", "game": "pokemon", "grade": 10, "rawMarketPrice": 900, "gradedMarketValue": 9000 },
+  { "id": "venusaur-base-psa10", "name": "Venusaur", "set": "Base Set", "game": "pokemon", "grade": 10, "rawMarketPrice": 850, "gradedMarketValue": 7800 },
+  { "id": "pikachu-base-psa10", "name": "Pikachu", "set": "Base Set", "game": "pokemon", "grade": 10, "rawMarketPrice": 120, "gradedMarketValue": 1500 },
+  { "id": "mewtwo-base-psa9", "name": "Mewtwo", "set": "Base Set", "game": "pokemon", "grade": 9, "rawMarketPrice": 140, "gradedMarketValue": 420 },
+  { "id": "umbreon-vmax-eva-psa10", "name": "Umbreon VMAX", "set": "Evolving Skies", "game": "pokemon", "grade": 10, "rawMarketPrice": 550, "gradedMarketValue": 1100 },
+  { "id": "rayquaza-vmax-eva-psa10", "name": "Rayquaza VMAX", "set": "Evolving Skies", "game": "pokemon", "grade": 10, "rawMarketPrice": 180, "gradedMarketValue": 430 },
+  { "id": "charizard-151-psa10", "name": "Charizard ex", "set": "151", "game": "pokemon", "grade": 10, "rawMarketPrice": 90, "gradedMarketValue": 320 },
+  { "id": "mew-151-psa10", "name": "Mew ex", "set": "151", "game": "pokemon", "grade": 10, "rawMarketPrice": 70, "gradedMarketValue": 240 },
+  { "id": "lugia-neo-psa9", "name": "Lugia", "set": "Neo Genesis", "game": "pokemon", "grade": 9, "rawMarketPrice": 600, "gradedMarketValue": 1800 },
+  { "id": "gengar-fossil-psa10", "name": "Gengar", "set": "Fossil", "game": "pokemon", "grade": 10, "rawMarketPrice": 200, "gradedMarketValue": 2600 },
+  { "id": "luffy-op01-psa10", "name": "Monkey D. Luffy", "set": "Romance Dawn", "game": "onepiece", "grade": 10, "rawMarketPrice": 60, "gradedMarketValue": 320 },
+  { "id": "zoro-op01-psa10", "name": "Roronoa Zoro", "set": "Romance Dawn", "game": "onepiece", "grade": 10, "rawMarketPrice": 55, "gradedMarketValue": 300 },
+  { "id": "shanks-op01-psa10", "name": "Shanks", "set": "Romance Dawn", "game": "onepiece", "grade": 10, "rawMarketPrice": 45, "gradedMarketValue": 260 },
+  { "id": "law-op02-psa10", "name": "Trafalgar Law", "set": "Paramount War", "game": "onepiece", "grade": 10, "rawMarketPrice": 40, "gradedMarketValue": 210 },
+  { "id": "kaido-op02-psa9", "name": "Kaido", "set": "Paramount War", "game": "onepiece", "grade": 9, "rawMarketPrice": 35, "gradedMarketValue": 95 },
+  { "id": "nami-op01-psa10", "name": "Nami", "set": "Romance Dawn", "game": "onepiece", "grade": 10, "rawMarketPrice": 30, "gradedMarketValue": 170 },
+  { "id": "ace-op02-psa10", "name": "Portgas D. Ace", "set": "Paramount War", "game": "onepiece", "grade": 10, "rawMarketPrice": 50, "gradedMarketValue": 280 },
+  { "id": "yamato-op04-psa10", "name": "Yamato", "set": "Kingdoms of Intrigue", "game": "onepiece", "grade": 10, "rawMarketPrice": 25, "gradedMarketValue": 130 }
+]

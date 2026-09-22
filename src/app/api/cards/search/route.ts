@@ -8,8 +8,14 @@
  * live-fetching on every keystroke.
  *
  * Query params:
- *   - `game`   Required. `"pokemon"` or `"onepiece"`.
- *   - `query`  Required. Free-text search term.
+ *   - `game`     Required. `"pokemon"` or `"onepiece"`.
+ *   - `query`    Required. Free-text search term.
+ *   - `sort`     Optional. Sort key (see CardSortEnum).
+ *   - `set`      Optional (F-06). Filter to one set by name.
+ *   - `rarity`   Optional (F-06). Filter by rarity (contains match).
+ *   - `graded`   Optional (F-06). `"graded"` | `"ungraded"` (rarity-based).
+ *   - `minPrice` Optional (F-06). Min marketPrice (USD).
+ *   - `maxPrice` Optional (F-06). Max marketPrice (USD).
  *
  * Response (200):
  * ```json
@@ -39,6 +45,11 @@ const ENFORCE_AUTH = false;
 /** Cap results at a sensible page — the UI grid renders ~60 tiles well. */
 const RESULT_LIMIT = 60;
 
+/** Grading companies — a card is "graded" when its rarity names one of
+ *  these (there's no dedicated grade column yet; graded-ness rides on
+ *  `rarity`, e.g. "PSA 10"). See prisma/seed-test.ts. */
+const GRADERS = ["PSA", "BGS", "CGC", "SGC", "Beckett"] as const;
+
 const SearchQuerySchema = z.object({
   game: z.enum(["pokemon", "onepiece"]),
   query: z
@@ -47,6 +58,18 @@ const SearchQuerySchema = z.object({
     .min(1, "query must not be empty")
     .max(100, "query is too long"),
   sort: CardSortEnum.default("market_desc"),
+  // F-06: optional set filter. Matches on the joined CardSet.name (that's
+  // the label the UI shows on each tile and in the filter dropdown).
+  set: z.string().trim().min(1).max(100).optional(),
+  // F-06: optional rarity filter — matches on Card.rarity (case-insensitive).
+  rarity: z.string().trim().min(1).max(50).optional(),
+  // F-06: graded/ungraded filter. "graded" → rarity names a grader;
+  // "ungraded" → it doesn't; omitted → both.
+  graded: z.enum(["graded", "ungraded"]).optional(),
+  // F-06: price range on Card.marketPrice (USD). Coerced from query strings;
+  // non-numeric/negative values are rejected.
+  minPrice: z.coerce.number().min(0).optional(),
+  maxPrice: z.coerce.number().min(0).optional(),
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -60,6 +83,11 @@ export async function GET(request: Request): Promise<NextResponse> {
     game: searchParams.get("game") ?? undefined,
     query: searchParams.get("query") ?? undefined,
     sort: searchParams.get("sort") ?? undefined,
+    set: searchParams.get("set") ?? undefined,
+    rarity: searchParams.get("rarity") ?? undefined,
+    graded: searchParams.get("graded") ?? undefined,
+    minPrice: searchParams.get("minPrice") ?? undefined,
+    maxPrice: searchParams.get("maxPrice") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -74,7 +102,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query, sort } = parsed.data;
+  const { game, query, sort, set, rarity, graded, minPrice, maxPrice } = parsed.data;
 
   // ---------------------------------------------------------------
   // Local catalog query
@@ -83,10 +111,41 @@ export async function GET(request: Request): Promise<NextResponse> {
   // convention on `CardSet.externalId` (same convention used by the
   // trending + admin routes). Ordering favours priced cards first so
   // notable/valuable cards surface above unpriced filler.
+
+  // F-06 graded/ungraded: graded-ness lives in `rarity` (e.g. "PSA 10").
+  // A card is graded when its rarity starts with a grader name; ungraded
+  // is the negation. Built as OR-of-startsWith across the known graders.
+  const gradedMatch = GRADERS.map((g) => ({
+    rarity: { startsWith: g, mode: "insensitive" as const },
+  }));
+
+  // F-06 price range on marketPrice. Compose gte/lte only for the bounds
+  // that were provided.
+  const priceFilter =
+    minPrice != null || maxPrice != null
+      ? {
+          marketPrice: {
+            ...(minPrice != null ? { gte: minPrice } : {}),
+            ...(maxPrice != null ? { lte: maxPrice } : {}),
+          },
+        }
+      : {};
+
   const rows = await prisma.card.findMany({
     where: {
       name: { contains: query, mode: "insensitive" },
-      set: { externalId: { startsWith: `${game}-` } },
+      set: {
+        externalId: { startsWith: `${game}-` },
+        // F-06: narrow to a single set (by name) when the filter is active.
+        ...(set ? { name: { equals: set, mode: "insensitive" } } : {}),
+      },
+      // F-06: rarity filter (case-insensitive exact-ish contains match).
+      ...(rarity ? { rarity: { contains: rarity, mode: "insensitive" } } : {}),
+      // F-06: graded → rarity names a grader; ungraded → it doesn't.
+      ...(graded === "graded" ? { OR: gradedMatch } : {}),
+      ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
+      // F-06: price range.
+      ...priceFilter,
     },
     take: RESULT_LIMIT,
     orderBy: orderByForCardSort(sort),

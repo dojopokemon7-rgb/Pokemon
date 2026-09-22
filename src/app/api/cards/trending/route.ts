@@ -28,7 +28,11 @@
  *
  * Query params:
  *   - `limit`  Optional. Page size, 1-50, default 10.
- *   - `cursor` Optional. Card `id` to page after (keyset pagination).
+ *   - `cursor` Optional. Numeric OFFSET (count of items already loaded) to
+ *              page after. Offset pagination works identically for every
+ *              sort order (name/market/recent), unlike keyset-on-`id` which
+ *              only lined up with `updatedAt` order and silently re-served
+ *              page 1 for the other sorts (F-04 duplicate-cards bug).
  *
  * Response (200):
  * ```json
@@ -63,15 +67,17 @@ const TRENDING_CACHE_SECONDS = 120;
 function trendingCacheKey(
   game: string | undefined,
   limit: number,
-  cursor: string | undefined,
+  offset: number,
   sort: CardSortKey
 ): string {
-  return `card:trending:${game ?? "all"}:${sort}:${limit}:${cursor ?? "-"}`;
+  return `card:trending:${game ?? "all"}:${sort}:${limit}:${offset}`;
 }
 
 const TrendingQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
-  cursor: z.string().trim().min(1).optional(),
+  // Offset cursor: how many items the client has already loaded. Coerced
+  // to a non-negative int; absent → page 1 (offset 0).
+  cursor: z.coerce.number().int().min(0).optional(),
   // Client feedback fix: game filter so the Pokémon / One Piece tabs
   // don't leak cards from the other game (e.g. Charizard on One Piece).
   game: z.enum(["pokemon", "onepiece"]).optional(),
@@ -140,13 +146,13 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const { limit, cursor, game, sort } = parsed.data;
 
-  // Cursor pagination is keyset-on-`id`, which is only meaningful for
-  // the default `updatedAt DESC` ordering. When the client picks any
-  // other sort (or trending, which is a computed ranking), ignore the
-  // cursor and return a fresh page 1 — the filter sheet reorders the
-  // top of the feed, it doesn't scroll deep into a resorted list.
-  const effectiveCursor = sort === "recent" ? cursor : undefined;
-  const cacheKey = trendingCacheKey(game, limit, effectiveCursor, sort);
+  // Offset pagination is honored for EVERY sort — `skip: offset` composes
+  // with any orderBy, so page 2 never re-includes page 1 (F-04 fix).
+  // Trending now paginates too: page 1 (offset 0) is the curated
+  // ranked+backfill grid; page 2+ continues through the catalog so users
+  // can browse past the first page instead of being capped at one page.
+  const offset = cursor ?? 0;
+  const cacheKey = trendingCacheKey(game, limit, offset, sort);
   // Best-effort cache lookup. Any Redis error (offline, timeout) falls
   // through to a live query rather than 500-ing on the user.
   try {
@@ -181,12 +187,12 @@ export async function GET(request: Request): Promise<NextResponse> {
     let rows: CardWithSetName[];
     let hasMore = false;
 
-    if (sort === "trending") {
-      // Real "hot right now": rank by recent collection-adds. Get the
-      // top cardIds by add-count in the window, then fetch those cards
-      // and re-order them to match the ranking (findMany `in` doesn't
-      // preserve order). If fewer than a full page trend, backfill with
-      // newest-synced cards so the grid is never sparse on low activity.
+    if (sort === "trending" && offset === 0) {
+      // PAGE 1 of the trending sort — the curated "hot right now" grid.
+      // Rank by recent collection-adds, then fetch + re-order those cards
+      // (findMany `in` doesn't preserve order). If fewer than a full page
+      // trend, backfill with newest-synced cards so the grid is never
+      // sparse on low activity.
       const rankedIds = await topTrendingCardIds(gameFilter, limit);
 
       const ranked = rankedIds.length
@@ -201,8 +207,6 @@ export async function GET(request: Request): Promise<NextResponse> {
 
       if (ranked.length >= limit) {
         rows = ranked.slice(0, limit);
-        // There may be more trending cards than one page; report more.
-        hasMore = rankedIds.length > limit;
       } else {
         // Backfill with newest-synced cards not already in the ranked set.
         const backfill = await prisma.card.findMany({
@@ -212,12 +216,29 @@ export async function GET(request: Request): Promise<NextResponse> {
           include: { set: { select: { name: true } } },
         });
         rows = [...ranked, ...backfill];
-        hasMore = false; // trending + backfill is a single curated page
       }
+      // "More" if the catalog holds cards beyond this first page. Page 2+
+      // browses the catalog by `updatedAt desc` (the backfill order) so
+      // Show More keeps loading rather than dead-ending at one page.
+      const total = await prisma.card.count({ where: gameFilter });
+      hasMore = total > rows.length;
+    } else if (sort === "trending") {
+      // PAGE 2+ of the trending sort — plain catalog pagination by the
+      // same `updatedAt desc` order page 1's backfill used, so it composes
+      // with page 1 without re-serving the same cards up front.
+      const fetched = await prisma.card.findMany({
+        take: limit + 1, // one extra to detect a further page
+        skip: offset,
+        where: gameFilter,
+        orderBy: [{ updatedAt: "desc" }],
+        include: { set: { select: { name: true } } },
+      });
+      hasMore = fetched.length > limit;
+      rows = hasMore ? fetched.slice(0, limit) : fetched;
     } else {
       const fetched = await prisma.card.findMany({
         take: limit + 1, // fetch one extra to know if there's a next page
-        ...(effectiveCursor ? { skip: 1, cursor: { id: effectiveCursor } } : {}),
+        skip: offset, // offset pagination — correct for any orderBy
         where: gameFilter,
         orderBy: orderByForCardSort(sort),
         include: { set: { select: { name: true } } },
@@ -245,6 +266,9 @@ export async function GET(request: Request): Promise<NextResponse> {
       setImage: c.set?.name ?? "",
       imageUrl: c.imageUrl ?? c.imageUrlHi ?? null,
       price: c.marketPrice ?? null,
+      // Graded-ness rides on `rarity` ("PSA 10") — the popup uses it to
+      // open the graded add flow (F-19). No dedicated grade column yet.
+      rarity: c.rarity ?? null,
       // No real historical pricing data yet — never fabricate a delta.
       delta: null as string | null,
       up: null as boolean | null,
@@ -252,11 +276,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     const body = JSON.stringify({
       cards,
-      // Keyset-on-`id` pagination is only correct for the updatedAt-desc
-      // orders. Trending is a computed top-N ranking whose order doesn't
-      // map to an id cursor, so it's a single curated page (no cursor).
-      nextCursor:
-        sort !== "trending" && hasMore ? page[page.length - 1].id : null,
+      // Next-page cursor is the running OFFSET (items loaded so far). Every
+      // sort — trending included now — pages via `skip: offset`, so this
+      // composes correctly with any order and lets "Show More" advance.
+      nextCursor: hasMore ? offset + page.length : null,
     });
 
     // Cache write is best-effort; a Redis outage doesn't invalidate

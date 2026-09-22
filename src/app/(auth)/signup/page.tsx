@@ -33,7 +33,7 @@ function ChevronLeft() {
 
 function CheckIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00A86B" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-dojo-jade)" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
@@ -236,7 +236,7 @@ export default function SignUpPage() {
             </p>
           )}
           {pwMatched && (
-            <p style={{ marginTop: "2px", fontSize: "11px", lineHeight: 1.5, color: "#00A86B" }}>
+            <p style={{ marginTop: "2px", fontSize: "11px", lineHeight: 1.5, color: "var(--color-dojo-jade)" }}>
               passwords match.
             </p>
           )}

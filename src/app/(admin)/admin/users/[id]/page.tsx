@@ -284,7 +284,7 @@ function StatCard({
 function ProfitLossCard({ profitLoss }: { profitLoss: number | null }) {
   const unknown = profitLoss == null;
   const positive = !unknown && profitLoss >= 0;
-  // Dojo tokens: jade #00A86B for gains, vermilion #E34234 for losses.
+  // Dojo tokens: jade #0AC27E for gains, vermilion #EF4423 for losses.
   const color = unknown
     ? "var(--color-dojo-ink)"
     : positive

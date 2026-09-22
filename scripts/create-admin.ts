@@ -23,14 +23,16 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 const DEFAULT_EMAIL = "admin@dojo.com";
-const DEFAULT_PASSWORD = "DojoAdmin2026!";
 const DEFAULT_NAME = "Admin";
 
 async function main() {
   const [argEmail, argPassword, argName] = process.argv.slice(2);
   const email = argEmail ?? process.env.ADMIN_EMAIL ?? DEFAULT_EMAIL;
   const password =
-    argPassword ?? process.env.ADMIN_PASSWORD ?? DEFAULT_PASSWORD;
+    argPassword ?? process.env.ADMIN_PASSWORD ?? process.env.ADMIN_INITIAL_PASSWORD;
+  if (!password) {
+    throw new Error("Missing ADMIN_INITIAL_PASSWORD in .env file");
+  }
   const name = argName ?? process.env.ADMIN_NAME ?? DEFAULT_NAME;
 
   console.log(`\nProvisioning admin account for ${email} …`);

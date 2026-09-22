@@ -20,8 +20,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { authClient } from "@/lib/auth-client";
+import { authClient, useSession } from "@/lib/auth-client";
 import { useState } from "react";
+import { NotificationsPanel } from "@/components/NotificationsPanel";
+
+/** The scanner stays phone-width: it's an immersive, locked camera view that
+ *  would look wrong stretched across a desktop viewport. Everything else is
+ *  full-width (a proper desktop web app, no centered frame). */
+const SCANNER_MAX_WIDTH = 480;
 
 // ── Icons (self-contained SVGs, no external dep) ──────────────────
 function HomeIcon({ filled }: { filled?: boolean }) {
@@ -80,15 +86,6 @@ function SearchIcon() {
   );
 }
 
-function BellIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 01-3.46 0" />
-    </svg>
-  );
-}
-
 function LogOutIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
@@ -117,6 +114,8 @@ export default function DashboardClientShell({
 }) {
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
+  const { data: session } = useSession();
+  const userName = session?.user?.name;
 
   async function handleLogOut() {
     setLoggingOut(true);
@@ -129,6 +128,28 @@ export default function DashboardClientShell({
     }
   }
 
+  // Defect 5: the scanner is an immersive, locked camera view — no app
+  // header, no bottom tab bar, and no scrolling. Render it full-bleed in
+  // its own locked frame (the page provides its own close "X"). Still
+  // width-constrained to the phone frame on desktop for consistency.
+  if (pathname === "/scanner" || pathname.startsWith("/scanner/")) {
+    return (
+      <div
+        style={{
+          height: "100dvh",
+          overflow: "hidden",
+          backgroundColor: "var(--color-dojo-app)",
+          maxWidth: SCANNER_MAX_WIDTH,
+          marginInline: "auto",
+          position: "relative",
+          borderInline: "1px solid var(--color-dojo-divider)",
+        }}
+      >
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -139,9 +160,15 @@ export default function DashboardClientShell({
         backgroundColor: "var(--color-dojo-app)",
         display: "flex",
         flexDirection: "column",
+        /* Full-width desktop web app — the shell spans the entire viewport
+           (no centered frame, no side gutters). Content breathes via the
+           header/main horizontal padding, and the grids inside go adaptive
+           so wide screens fill with more columns. */
+        width: "100%",
+        position: "relative",
       }}
     >
-      {/* ── Top header ── */}
+      {/* ── Top header ── (full-width; padding scales up on desktop) */}
       <header
         style={{
           position: "sticky",
@@ -151,7 +178,7 @@ export default function DashboardClientShell({
           borderBottom: "1px solid var(--color-dojo-divider)",
           display: "flex",
           alignItems: "center",
-          padding: "14px 22px",
+          padding: "14px clamp(16px, 4vw, 48px)",
           gap: "16px",
         }}
       >
@@ -175,6 +202,24 @@ export default function DashboardClientShell({
         {/* Spacer */}
         <div style={{ flex: 1 }} />
 
+        {/* Logged-in user's name (from the session). */}
+        {userName && (
+          <span
+            style={{
+              fontFamily: "var(--font-display)",
+              fontWeight: 700,
+              fontSize: "12px",
+              color: "rgba(255,255,255,0.75)",
+              maxWidth: "40vw",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {userName}
+          </span>
+        )}
+
         {/* Right icons */}
         <Link
           href="/search"
@@ -188,21 +233,7 @@ export default function DashboardClientShell({
         >
           <SearchIcon />
         </Link>
-        <button
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            color: "rgba(255,255,255,0.6)",
-            display: "flex",
-            alignItems: "center",
-            padding: 0,
-            position: "relative",
-          }}
-          aria-label="Notifications"
-        >
-          <BellIcon />
-        </button>
+        <NotificationsPanel />
         <button
           onClick={handleLogOut}
           disabled={loggingOut}
@@ -254,8 +285,11 @@ export default function DashboardClientShell({
         style={{
           position: "fixed",
           bottom: 0,
+          /* Full-width bar spanning the whole viewport on every screen
+             size — no centered frame / side gutters. */
           left: 0,
           right: 0,
+          width: "100%",
           zIndex: 50,
           display: "flex",
           borderTop: "1px solid var(--color-dojo-stroke)",
@@ -288,10 +322,10 @@ export default function DashboardClientShell({
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
-                gap: "5px",
+                gap: "4px",
                 padding: "12px 0 10px",
                 textDecoration: "none",
-                color: active ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
+                color: active ? "#fff" : "var(--color-dojo-faint)",
               }}
               aria-current={active ? "page" : undefined}
             >
@@ -305,10 +339,9 @@ export default function DashboardClientShell({
               <span
                 style={{
                   fontFamily: "var(--font-display)",
-                  fontWeight: 700,
-                  fontStretch: "112%",
-                  fontSize: "7.5px",
-                  letterSpacing: "0.18em",
+                  fontWeight: 800,
+                  fontSize: "8.5px",
+                  letterSpacing: "0.16em",
                   textTransform: "uppercase",
                 }}
               >

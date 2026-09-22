@@ -16,48 +16,54 @@
   --color-dojo-gold-hover:  #F2C866;
   --color-dojo-btn-gold:    #FFD52E;
   --color-dojo-btn-shadow:  #806A17;
-  --color-dojo-jade:        #00A86B;
-  --color-dojo-vermilion:   #E34234;
-  --color-dojo-negative:    #E34234;
+  /* Exact reference values (dojo-prototype/styles.css :root):
+     --jade-500 #0AC27E · --verm-500 #EF4423 (positive/negative). */
+  --color-dojo-jade:        #0AC27E;
+  --color-dojo-vermilion:   #EF4423;
+  --color-dojo-negative:    #EF4423;
 
-  /* --- App Surfaces (Dark Mode) --- */
+  /* --- App Surfaces (Dark Mode) ---
+     Reference: --surface-app ink-900 #0D0D0D · --surface-card ink-800
+     #121212 · --surface-raised ink-700 #161616. */
   --color-dojo-app:         #0D0D0D;
   --color-dojo-raised:      #161616;
-  --color-dojo-card:        #1C1C1C;
-  --color-dojo-overlay:     #222222;
+  --color-dojo-card:        #121212;
+  --color-dojo-overlay:     #1E1E1E;
 
-  /* --- Text Hierarchy --- */
-  --color-dojo-ink:         #FFFFFF;
-  --color-dojo-body:        rgba(255, 255, 255, 0.60);
-  --color-dojo-faint:       rgba(255, 255, 255, 0.35);
+  /* --- Text Hierarchy ---
+     Reference: heading .9 · body .5 · faint .3 (white alpha). */
+  --color-dojo-ink:         rgba(255, 255, 255, 0.90);
+  --color-dojo-body:        rgba(255, 255, 255, 0.50);
+  --color-dojo-faint:       rgba(255, 255, 255, 0.30);
 
-  /* --- Borders & Dividers --- */
-  --color-dojo-stroke:        rgba(255, 255, 255, 0.12);
+  /* --- Borders & Dividers ---
+     Reference: --stroke-card and --divider are both white .1. */
+  --color-dojo-stroke:        rgba(255, 255, 255, 0.10);
   --color-dojo-stroke-strong: rgba(255, 255, 255, 0.90);
   --color-dojo-divider:       rgba(255, 255, 255, 0.10);
 }
 
 @theme {
-  /* --- Brand Colors --- */
+  /* --- Brand Colors (exact reference values) --- */
   --color-dojo-gold:        #E9B43B;
   --color-dojo-gold-hover:  #F2C866;
-  --color-dojo-jade:        #00A86B;
-  --color-dojo-vermilion:   #E34234;
-  --color-dojo-negative:    #E34234;
+  --color-dojo-jade:        #0AC27E;
+  --color-dojo-vermilion:   #EF4423;
+  --color-dojo-negative:    #EF4423;
 
   /* --- App Surfaces (Dark Mode) --- */
   --color-dojo-app:         #0D0D0D;
   --color-dojo-raised:      #161616;
-  --color-dojo-card:        #1C1C1C;
-  --color-dojo-overlay:     #222222;
+  --color-dojo-card:        #121212;
+  --color-dojo-overlay:     #1E1E1E;
 
   /* --- Text Hierarchy --- */
-  --color-dojo-ink:         #FFFFFF;
-  --color-dojo-body:        rgba(255, 255, 255, 0.60);
-  --color-dojo-faint:       rgba(255, 255, 255, 0.35);
+  --color-dojo-ink:         rgba(255, 255, 255, 0.90);
+  --color-dojo-body:        rgba(255, 255, 255, 0.50);
+  --color-dojo-faint:       rgba(255, 255, 255, 0.30);
 
   /* --- Borders --- */
-  --color-dojo-stroke:      rgba(255, 255, 255, 0.12);
+  --color-dojo-stroke:      rgba(255, 255, 255, 0.10);
   --color-dojo-stroke-strong: rgba(255, 255, 255, 0.90);
 
   /* --- Divider --- */
@@ -115,25 +121,28 @@ body {
   gap: 6px;
 }
 
+/* Reference .lab: 700 · 10px · letter-spacing .16em · body color. */
 .dojo-label {
   font-family: var(--font-display);
   font-weight: 700;
-  font-stretch: 112%;
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
+  font-size: 10px;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--color-dojo-body);
 }
 
+/* Exact reference: .field input — height 46px, padding 0 13px,
+   font 14px/400, 1px stroke-card border, focus → accent. */
 .dojo-input {
   width: 100%;
+  height: 46px;
   background: var(--color-dojo-card);
   border: 1px solid var(--color-dojo-stroke);
   color: var(--color-dojo-ink);
   font-family: var(--font-display);
-  font-weight: 600;
+  font-weight: 400;
   font-size: 14px;
-  padding: 14px 16px;
+  padding: 0 13px;
   outline: none;
   border-radius: 0;
   transition: border-color var(--transition-fast);
@@ -155,16 +164,11 @@ body {
   cursor: not-allowed;
 }
 
-/* Search inputs (search page SearchBar) render their own custom clear
-   button, so the WebKit/Blink native cancel glyph is hidden — otherwise
-   the field shows two X icons at once (duplicate close icon, Phase 1). */
-input[type="search"].dojo-search-input::-webkit-search-cancel-button,
-input[type="search"].dojo-search-input::-webkit-search-decoration,
-input[type="search"].dojo-search-input::-webkit-search-results-button,
-input[type="search"].dojo-search-input::-webkit-search-results-decoration {
-  -webkit-appearance: none;
-  appearance: none;
-}
+/* The SearchBar has no custom clear button, so the native WebKit/Blink
+   search cancel (×) glyph is intentionally LEFT VISIBLE — it's the only
+   clear affordance the field has. (Earlier this was hidden on the
+   assumption a custom clear button existed; it doesn't, which left the
+   field with no way to clear. Defect 1 fix.) */
 
 /* --- Buttons --- */
 .dojo-btn {
@@ -195,11 +199,14 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
    (dojo-prototype/styles.css: background:#FFD52E; box-shadow:...var(--gold-700)
    where --gold-700:#806A17 in that file's palette). This is a brighter
    yellow than the general --color-dojo-gold accent used for links/borders. */
+/* Exact reference: .btn — height 52px, font 12.5px/800/0.14em,
+   #FFD52E on a 5px gold-700 plunk shadow (added in the animation block). */
 .dojo-btn-primary {
   background: var(--color-dojo-btn-gold);
   color: #0D0D0D;
-  font-size: 13px;
-  padding: 17px 24px;
+  font-size: 12.5px;
+  height: 52px;
+  padding: 0 24px;
   width: 100%;
 }
 
@@ -211,13 +218,15 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
   opacity: 0.85;
 }
 
-/* Outline */
+/* Outline — exact reference: .btn2 (height 43px, 1px white .6 border,
+   font 10.5px/800/0.14em). */
 .dojo-btn-outline {
   background: transparent;
-  border: 1px solid var(--color-dojo-stroke);
+  border: 1px solid rgba(255, 255, 255, 0.6);
   color: var(--color-dojo-ink);
-  font-size: 11px;
-  padding: 13px 20px;
+  font-size: 10.5px;
+  height: 43px;
+  padding: 0 20px;
   width: 100%;
 }
 
@@ -301,15 +310,16 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
 }
 
 /* --- Select / Dropdown --- */
+/* Reference .select .val: font 400 / 13.5px; trigger padding 12px 13px. */
 .dojo-select {
   width: 100%;
   background: var(--color-dojo-card);
   border: 1px solid var(--color-dojo-stroke);
   color: var(--color-dojo-ink);
   font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 13px;
-  padding: 10px 14px;
+  font-weight: 400;
+  font-size: 13.5px;
+  padding: 12px 13px;
   outline: none;
   border-radius: 0;
   cursor: pointer;
@@ -417,17 +427,17 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
   color: var(--color-dojo-gold);
 }
 
-/* --- Heading (serif) --- */
+/* --- Heading (serif) — reference .serif.s27: 26px / line-height 1.18. --- */
 .dojo-heading {
   font-family: var(--font-serif);
-  font-size: 27px;
-  line-height: 1.2;
+  font-size: 26px;
+  line-height: 1.18;
   color: var(--color-dojo-ink);
 }
 
-/* --- Body text --- */
+/* --- Body text — reference .body: 12.5px / 1.5. --- */
 .dojo-body {
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.5;
   color: var(--color-dojo-body);
 }
@@ -768,6 +778,18 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
   }
 }
 
+/* --- Card details popup: scale + fade open (F-08) --- */
+@keyframes dojo-popup-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* --- Sign-in mark: SVG draw then fill ---
    Ported from .mark / @keyframes dojo-draw / dojo-fill-in.
    Apply to <path pathLength="1"> elements. */
@@ -971,6 +993,40 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
   }
 }
 
+/* --- Responsive card grid ---
+   Adaptive column count so the search / trending grids fill the wider
+   desktop container instead of showing tiny auto-filled tiles:
+     mobile (<640px)    → 2 columns
+     tablet (≥640px)    → 3 columns   (Tailwind sm)
+     desktop (≥1024px)  → 4 columns   (Tailwind lg)
+     wide (≥1280px)     → 5 columns   (Tailwind xl)
+   Column count is fixed per breakpoint (not auto-fill) so tile size scales
+   with the viewport rather than the tiles staying a fixed 150px. */
+.dojo-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+@media (min-width: 640px) {
+  .dojo-card-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .dojo-card-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .dojo-card-grid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
 /* --- Interactive card tile hover state (Phase 3.2) ---
    Subtle lift + shadow on hover for every clickable card tile
    (search results, trending grid, portfolio grid/list, dashboard
@@ -994,11 +1050,10 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
 }
 
 /* --- Bottom tab bar: active-tab glow ---
-   Client feedback (Phase 1): active state should be gold-highlighted,
-   not the reference's white glow. Changed the icon drop-shadow and
-   top gradient bar from white to Dojo gold. */
+   Matches the reference .tabbar button.on exactly (dojo-prototype/styles.css):
+   white text, white icon drop-shadow, white underline bar. */
 .dojo-tab-icon-glow {
-  filter: drop-shadow(0 0 3px rgba(233, 180, 59, 0.65));
+  filter: drop-shadow(0 0 4px #fff);
 }
 
 .dojo-tab-glow-bar {
@@ -1009,13 +1064,8 @@ input[type="search"].dojo-search-input::-webkit-search-results-decoration {
   transform: translateX(-50%);
   width: 80%;
   height: 2px;
-  background: linear-gradient(
-    90deg,
-    rgba(233, 180, 59, 0.1),
-    rgba(233, 180, 59, 0.95),
-    rgba(233, 180, 59, 0.1)
-  );
-  box-shadow: 0 0 8px 1px rgba(233, 180, 59, 0.5);
+  background: linear-gradient(90deg, #fff 0%, #fff 100%);
+  box-shadow: 0 0 8px 1px rgba(255, 255, 255, 0.5);
   pointer-events: none;
 }
 

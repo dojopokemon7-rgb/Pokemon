@@ -45,10 +45,13 @@ model User {
   isAdmin Boolean @default(false)
 
   // Relations
-  sessions    Session[]
-  accounts    Account[]
-  collections UserCollection[]
-  favorites   Favorite[]
+  sessions           Session[]
+  accounts           Account[]
+  collections        UserCollection[]
+  favorites          Favorite[]
+  namedCollections   Collection[]
+  supportTickets     SupportTicket[]
+  wantList           WantListItem[]
 
   @@map("user")
 }
@@ -133,8 +136,13 @@ model Card {
   imageUrl   String?
   imageUrlHi String? // High-res image URL
 
-  // Pricing snapshot (latest market price cache)
+  // Pricing snapshot (latest market price cache).
+  //   marketPrice   = last-known "Dojo Value" (our aggregated market price)
+  //   lastEbayPrice = last-known eBay price (F-16). Both are the cache the
+  //                   price-sources aggregator falls back to when a live
+  //                   source fetch fails, so a stale number can still show.
   marketPrice Float?
+  lastEbayPrice Float?
   lastPricedAt DateTime?
 
   // Relations
@@ -157,6 +165,34 @@ model Card {
   @@map("card")
 }
 
+// A named, user-owned grouping of cards (F-10). A user has many; cards are
+// filed into one via UserCollection.collectionId (null = uncategorized).
+enum CollectionType {
+  POKEMON
+  ONE_PIECE
+  MIXED
+
+  @@map("collection_type")
+}
+
+model Collection {
+  id        String         @id @default(cuid())
+  userId    String
+  name      String
+  isPrivate Boolean        @default(true)
+  typeTag   CollectionType @default(MIXED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items UserCollection[]
+
+  @@unique([userId, name]) // no two same-named collections per user
+  @@index([userId])
+  @@map("collection")
+}
+
 // Represents a user's card collection entry (one row per card owned)
 model UserCollection {
   id       String @id @default(cuid())
@@ -175,12 +211,19 @@ model UserCollection {
   addedAt  DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Optional membership in a named Collection (F-10). Null = the user's
+  // default/uncategorized set. SetNull so deleting a collection unfiles
+  // its cards rather than deleting the owned-copy rows.
+  collectionId String?
+  collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
 
   @@unique([userId, cardId, isFoil]) // One entry per card+variant per user
   @@index([userId])
   @@index([cardId])
+  @@index([collectionId])
   @@map("user_collection")
 }
 
@@ -242,4 +285,67 @@ model PricingHistory {
 
   @@index([cardId, recordedAt])
   @@map("pricing_history")
+}
+
+// =============================================================
+// SUPPORT TICKETS (F-21 Contact Support)
+// =============================================================
+enum TicketStatus {
+  OPEN
+  RESOLVED
+
+  @@map("ticket_status")
+}
+
+// A support message submitted via the Contact Support form. `userId` is
+// nullable so the model also supports anonymous submissions later; today
+// the form is gated to logged-in users and stamps their id. Persisting
+// tickets (rather than emailing) gives us an admin queue to build on.
+model SupportTicket {
+  id        String       @id @default(cuid())
+  userId    String?
+  name      String
+  email     String
+  subject   String
+  message   String
+  status    TicketStatus @default(OPEN)
+  createdAt DateTime     @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("support_ticket")
+}
+
+// =============================================================
+// WANT LIST (F-07 — replaces the Binders stub)
+// =============================================================
+// A user's wishlist of cards they want to Buy / Sell / Trade. `cardId` is
+// the EXTERNAL API card id (e.g. "base1-4", "OP01-001") — the same
+// identifier used across the search/detail flow — not a FK to Card, so a
+// card can be wanted before it's ever persisted in the local catalog.
+enum WantIntent {
+  BUY
+  SELL
+  TRADE
+
+  @@map("want_intent")
+}
+
+model WantListItem {
+  id        String     @id @default(cuid())
+  userId    String
+  cardId    String     // external card id
+  intent    WantIntent
+  createdAt DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Same card can't sit in the same intent list twice for a user, but the
+  // same card CAN appear under different intents (Buy and Trade, say).
+  @@unique([userId, cardId, intent])
+  @@index([userId, intent])
+  @@map("want_list_item")
 }

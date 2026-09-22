@@ -12,7 +12,7 @@
  *   mock array (CARD_DATA — five Charizard variants used as prototype
  *   filler, never meant to be a real feed). This build instead calls
  *   `/api/cards/trending`, which reads the real seeded card catalog
- *   (prisma/seed.ts — ~70+ real Pokémon/One Piece cards) with keyset
+ *   (prisma/seed.ts — ~70+ real Pokémon/One Piece cards) with offset
  *   pagination and a "Show more" control, so every seeded card is
  *   actually reachable instead of only ever showing 5.
  *
@@ -41,6 +41,7 @@ import { useState, useRef, useEffect, Suspense } from "react";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
 import { useFavorites } from "@/lib/hooks/useFavorites";
+import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
 
 
 // ── Icons for scan/filter buttons (new per client feedback) ────────
@@ -84,6 +85,7 @@ interface CardResult {
   image?: string;
   marketPrice?: number;
   price?: number;
+  rarity?: string;
   source?: string;
 }
 
@@ -105,11 +107,15 @@ interface TrendingCard {
   price: number | null;
   delta: string | null;
   up: boolean | null;
+  rarity?: string | null;
 }
 
 interface TrendingApiResponse {
   cards: TrendingCard[];
-  nextCursor: string | null;
+  // Numeric OFFSET of the next page (items loaded so far), or null when
+  // there is no further page. Offset pagination is honored for every sort
+  // (F-04 fix); the client just echoes it back as `&cursor=`.
+  nextCursor: number | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -150,6 +156,7 @@ function TrendCardTile({
   onToggleTrack,
   selected,
   onToggleSelect,
+  onOpen,
 }: {
   card: TrendingCard;
   game: Game;
@@ -157,34 +164,24 @@ function TrendCardTile({
   onToggleTrack: () => void;
   selected: boolean;
   onToggleSelect: () => void;
+  onOpen: () => void;
 }) {
-  const router = useRouter();
   const initials = cardInitials(card.name);
 
-  // Build the detail URL with everything the detail page needs to
-  // render + hit the exact-match eBay search. `externalId` is used as
-  // the path segment (not the DB id) to match the shape produced by
-  // the search grid — "pl4-1", "OP01-001", etc.
-  const detailHref = ((): string => {
-    const params = new URLSearchParams({ name: card.name, game });
-    if (card.setImage) params.set("set", card.setImage);
-    if (card.imageUrl) params.set("img", card.imageUrl);
-    if (card.price != null) params.set("price", String(card.price));
-    return `/search/${card.externalId}?${params.toString()}`;
-  })();
-
-  const goToDetail = () => router.push(detailHref);
-
+  // F-08: clicking the tile opens the details popup in place (instead of
+  // navigating to /search/[id]). The popup carries a "View full details"
+  // link for users who want the deeper page.
   return (
     <div
       className="dojo-card-tile"
-      role="link"
+      data-testid="card-result"
+      role="button"
       tabIndex={0}
-      onClick={goToDetail}
+      onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          goToDetail();
+          onOpen();
         }
       }}
       style={{
@@ -211,7 +208,7 @@ function TrendCardTile({
           height: "30px",
           border: "1px solid " + (tracked ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
           background: tracked ? "var(--color-dojo-gold)" : "var(--color-dojo-app)",
-          color: tracked ? "#0D0D0D" : "var(--color-dojo-body)",
+          color: tracked ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -297,7 +294,7 @@ function TrendCardTile({
             borderRadius: "50%",
             border: "1.5px solid " + (selected ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
             background: selected ? "var(--color-dojo-gold)" : "var(--color-dojo-card)",
-            color: selected ? "#0D0D0D" : "var(--color-dojo-body)",
+            color: selected ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -411,7 +408,7 @@ function SkeletonCard() {
         overflow: "hidden",
       }}
     >
-      <div style={{ aspectRatio: "3/4", background: "var(--color-dojo-raised)", animation: "dojo-pulse 1.5s ease-in-out infinite" }} />
+      <div style={{ aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", animation: "dojo-pulse 1.5s ease-in-out infinite" }} />
       <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: "6px" }}>
         <div style={{ height: "13px", background: "var(--color-dojo-raised)", width: "70%" }} />
         <div style={{ height: "11px", background: "var(--color-dojo-stroke)", width: "50%" }} />
@@ -432,6 +429,7 @@ function CardTile({
   onAdd,
   tracked,
   onToggleTrack,
+  onOpen,
 }: {
   card: CardResult;
   index?: number;
@@ -439,6 +437,7 @@ function CardTile({
   onAdd: (card: CardResult) => void;
   tracked: boolean;
   onToggleTrack: () => void;
+  onOpen: () => void;
 }) {
   const imgSrc = card.imageUrl ?? card.image;
   const price = card.marketPrice ?? card.price ?? 0;
@@ -468,6 +467,14 @@ function CardTile({
     <Link
       href={`/search/${card.id}?${detailParams.toString()}`}
       className="dojo-card-tile"
+      data-testid="card-result"
+      // F-08: open the details popup in place instead of navigating. The
+      // href is kept so middle-click / open-in-new-tab still reaches the
+      // full page, but a plain click is intercepted.
+      onClick={(e) => {
+        e.preventDefault();
+        onOpen();
+      }}
       style={{
         background: "var(--color-dojo-card)",
         border: "1px solid var(--color-dojo-stroke)",
@@ -486,7 +493,7 @@ function CardTile({
           src={imgSrc}
           alt={card.name}
           initials={initials}
-          aspectRatio="3/4"
+          aspectRatio="660 / 921"
           initialsSize="26px"
           style={{ background: "var(--color-dojo-raised)", border: "none" }}
         />
@@ -507,7 +514,7 @@ function CardTile({
             height: "30px",
             border: "1px solid " + (tracked ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
             background: tracked ? "var(--color-dojo-gold)" : "var(--color-dojo-app)",
-            color: tracked ? "#0D0D0D" : "var(--color-dojo-body)",
+            color: tracked ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -571,7 +578,7 @@ function CardTile({
         </div>
         {/* Client feedback: hide set name if unknown/empty */}
         {setName && setName.toLowerCase() !== "unknown set" && (
-          <div style={{ marginTop: "-2px", fontSize: "11px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <div data-testid="card-result-set" style={{ marginTop: "-2px", fontSize: "11px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {setName}
           </div>
         )}
@@ -620,60 +627,268 @@ function CardTile({
   );
 }
 
+// ── Recent searches (F-05) — persisted in localStorage ─────────────
+const RECENT_SEARCHES_KEY = "dojo-recent-searches";
+const RECENT_SEARCHES_MAX = 5;
+
+function readRecentSearches(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_SEARCHES_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushRecentSearch(query: string): string[] {
+  const q = query.trim();
+  if (!q || typeof window === "undefined") return readRecentSearches();
+  // Most-recent-first, de-duplicated case-insensitively, capped.
+  const existing = readRecentSearches().filter((r) => r.toLowerCase() !== q.toLowerCase());
+  const next = [q, ...existing].slice(0, RECENT_SEARCHES_MAX);
+  try {
+    window.localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next));
+  } catch {
+    /* storage full / disabled — non-fatal, suggestions just won't persist */
+  }
+  return next;
+}
+
 // ── Search bar ─────────────────────────────────────────────────────
-function SearchBar({ defaultValue, onSearch, onClear }: {
+function SearchBar({ defaultValue, game, onSearch, onClear }: {
   defaultValue?: string;
+  game: Game;
   onSearch: (q: string) => void;
   onClear?: () => void;
 }) {
   const [value, setValue] = useState(defaultValue ?? "");
+  const [focused, setFocused] = useState(false);
+  const [recent, setRecent] = useState<string[]>([]);
+  // Debounced copy of `value` that actually drives the autocomplete query,
+  // so we don't fire a suggestions request on every keystroke.
+  const [suggestQuery, setSuggestQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // F-05: debounce as-you-type search so a burst of keystrokes collapses
+  // into one request once the user pauses (~350ms). Enter still fires
+  // immediately. The timer lives in a ref so it survives re-renders.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTimer = () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = null;
+  };
+  // Clear any pending timer on unmount so it can't fire after teardown.
+  useEffect(() => clearTimer, []);
+
+  // Load recent searches from localStorage on mount (client-only).
+  useEffect(() => setRecent(readRecentSearches()), []);
+
+  // Close the dropdown on an outside click.
+  useEffect(() => {
+    if (!focused) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setFocused(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [focused]);
+
+  // F-05 autocomplete: fetch matching cards for the debounced query and
+  // derive up to 5 unique suggestions (card names + set names). Reuses the
+  // same local-catalog search endpoint the results grid uses; React Query
+  // dedupes/caches by key. Never throws into the UI — 404/no-match → [].
+  const trimmedSuggest = suggestQuery.trim();
+  const { data: suggestions = [] } = useQuery<string[]>({
+    queryKey: ["search-suggest", game, trimmedSuggest],
+    enabled: trimmedSuggest.length > 0,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/cards/search?game=${game}&query=${encodeURIComponent(trimmedSuggest)}&sort=market_desc`
+      );
+      if (!res.ok) return [];
+      const json = (await res.json()) as SearchApiResponse;
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const c of json.cards ?? []) {
+        for (const label of [c.name, c.setImage]) {
+          const l = (label ?? "").trim();
+          if (l && l.toLowerCase() !== "unknown set" && !seen.has(l.toLowerCase())) {
+            seen.add(l.toLowerCase());
+            out.push(l);
+          }
+          if (out.length >= 5) break;
+        }
+        if (out.length >= 5) break;
+      }
+      return out;
+    },
+  });
+
+  const handleChange = (raw: string) => {
+    setValue(raw);
+    clearTimer();
+    const q = raw.trim();
+    debounceRef.current = setTimeout(() => {
+      setSuggestQuery(q); // drives the autocomplete query
+      if (q) onSearch(q);
+      else onClear?.();
+    }, 350);
+  };
+
+  // Commit a query: fill the input, persist to recent, run the search,
+  // and close the dropdown. Used by Enter and by tapping a suggestion.
+  const commit = (q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed) return;
+    clearTimer();
+    setValue(trimmed);
+    setRecent(pushRecentSearch(trimmed));
+    setFocused(false);
+    inputRef.current?.blur();
+    onSearch(trimmed);
+  };
+
+  // What the dropdown shows: live suggestions while typing, else the
+  // recent searches when the field is focused but empty.
+  const showTyping = value.trim().length > 0;
+  const rows = showTyping ? suggestions : recent;
+  const open = focused && rows.length > 0;
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (value.trim()) onSearch(value.trim());
-      }}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "10px",
-        border: "1px solid var(--color-dojo-stroke)",
-        background: "var(--color-dojo-card)",
-        padding: "12px 14px",
-        color: "var(--color-dojo-ink)",
-      }}
-    >
-      {/* Search icon */}
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true" style={{ color: "rgba(255,255,255,0.5)", flexShrink: 0 }}>
-        <circle cx="11" cy="11" r="8" />
-        <line x1="21" y1="21" x2="16.65" y2="16.65" />
-      </svg>
-      {/* No autoFocus — the explore page must not pop the mobile
-          keyboard on mount; it opens only when the user taps the field
-          (Phase 2 QA: prevent keyboard auto-trigger on Explore). */}
-      <input
-        ref={inputRef}
-        type="search"
-        className="dojo-search-input"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="charizard"
-        style={{
-          flex: 1,
-          background: "transparent",
-          border: "none",
-          outline: "none",
-          fontFamily: "var(--font-display)",
-          fontWeight: 600,
-          fontSize: "14px",
-          color: "var(--color-dojo-ink)",
-          caretColor: "var(--color-dojo-gold)",
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          commit(value); // fire now, don't double-fire via the debounce
         }}
-        aria-label="Search cards"
-      />
-    </form>
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          border: "1px solid var(--color-dojo-stroke)",
+          background: "var(--color-dojo-card)",
+          padding: "12px 14px",
+          color: "var(--color-dojo-ink)",
+        }}
+      >
+        {/* Search icon */}
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true" style={{ color: "rgba(255,255,255,0.5)", flexShrink: 0 }}>
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        {/* No autoFocus — the explore page must not pop the mobile
+            keyboard on mount; it opens only when the user taps the field
+            (Phase 2 QA: prevent keyboard auto-trigger on Explore). */}
+        <input
+          ref={inputRef}
+          type="search"
+          className="dojo-search-input"
+          value={value}
+          onChange={(e) => handleChange(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onKeyDown={(e) => { if (e.key === "Escape") setFocused(false); }}
+          placeholder="charizard"
+          // Keep the native `searchbox` role (type="search"); expose the
+          // autocomplete relationship without overriding the role so
+          // assistive tech and role-based selectors still see a searchbox.
+          aria-autocomplete="list"
+          aria-controls="search-suggestions"
+          aria-expanded={open}
+          style={{
+            flex: 1,
+            background: "transparent",
+            border: "none",
+            outline: "none",
+            fontFamily: "var(--font-display)",
+            fontWeight: 600,
+            fontSize: "14px",
+            color: "var(--color-dojo-ink)",
+            caretColor: "var(--color-dojo-gold)",
+          }}
+          aria-label="Search cards"
+        />
+      </form>
+
+      {/* F-05 autocomplete / recent-searches dropdown. Dark theme, 0px
+          radius, display font — mirrors the .dojo-menu popover styling. */}
+      {open && (
+        <div
+          id="search-suggestions"
+          data-testid="search-suggestions"
+          role="listbox"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            zIndex: 30,
+            background: "var(--color-dojo-raised)",
+            border: "1px solid var(--color-dojo-stroke)",
+            boxShadow: "5px 5px 0 0 #000",
+            maxHeight: "260px",
+            overflowY: "auto",
+            animation: "dojo-fade-in 160ms ease-out both",
+          }}
+        >
+          {!showTyping && (
+            <div style={{ padding: "9px 13px 5px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+              Recent
+            </div>
+          )}
+          {rows.map((label) => (
+            <button
+              key={label}
+              type="button"
+              role="option"
+              aria-selected={false}
+              data-testid="search-suggestion"
+              // onMouseDown (not onClick) so it fires before the input's
+              // blur/outside-click closes the dropdown.
+              onMouseDown={(e) => { e.preventDefault(); commit(label); }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                width: "100%",
+                textAlign: "left",
+                padding: "11px 13px",
+                background: "transparent",
+                border: "none",
+                borderTop: "1px solid var(--color-dojo-divider)",
+                cursor: "pointer",
+                fontFamily: "var(--font-display)",
+                fontWeight: 700,
+                fontSize: "12.5px",
+                color: "var(--color-dojo-ink)",
+              }}
+            >
+              {/* leading glyph: clock for recent, magnifier for suggestions */}
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true" style={{ color: "var(--color-dojo-faint)", flexShrink: 0 }}>
+                {showTyping ? (
+                  <>
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </>
+                ) : (
+                  <>
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3 3" />
+                  </>
+                )}
+              </svg>
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {label}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -686,6 +901,13 @@ function SearchPageInner() {
   const [game, setGame] = useState<Game>(
     (searchParams.get("game") as Game) || "pokemon"
   );
+  // F-06: active filters, all driven by URL params so the page reacts to
+  // them and they survive refresh / deep-linking.
+  const setFilter = searchParams.get("set") ?? "";
+  const rarityFilter = searchParams.get("rarity") ?? "";
+  const gradedFilter = searchParams.get("graded") ?? ""; // "" | "graded" | "ungraded"
+  const minPriceFilter = searchParams.get("minPrice") ?? "";
+  const maxPriceFilter = searchParams.get("maxPrice") ?? "";
 
   // Sort state — persisted only in memory. Query keys below include
   // `sort` so switching the filter sheet triggers a refetch without a
@@ -710,6 +932,8 @@ function SearchPageInner() {
   // passes CardResult — both are handled by AddCardSheet.
   const [addSheetCard, setAddSheetCard] = useState<TrendingCard | CardResult | null>(null);
   const [addToast, setAddToast] = useState<string | null>(null);
+  // F-08: the card whose details popup is open (null = closed).
+  const [popupCard, setPopupCard] = useState<CardDetailsData | null>(null);
 
   const toggleSelected = (id: string) => {
     setSelected((prev) => {
@@ -741,26 +965,45 @@ function SearchPageInner() {
     // (and doesn't reuse cache from the other game / previous order).
     queryKey: ["trending-cards", game, sort],
     queryFn: async ({ pageParam }) => {
-      const cursorParam = pageParam ? `&cursor=${encodeURIComponent(String(pageParam))}` : "";
+      const cursorParam = pageParam != null ? `&cursor=${pageParam}` : "";
       const res = await fetch(
         `/api/cards/trending?limit=10&game=${game}&sort=${sort}${cursorParam}`
       );
       if (!res.ok) throw new Error("Failed to load trending cards");
       return res.json();
     },
-    initialPageParam: undefined as string | undefined,
+    initialPageParam: undefined as number | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !hasQuery,
   });
 
-  const trendingCards = trendingPages?.pages.flatMap((p) => p.cards) ?? [];
+  // Flatten paginated trending pages, de-duplicating by externalId so a
+  // card can never render twice even if the curated page 1 and a later
+  // catalog page happen to overlap (F-04: zero duplicates on Show More).
+  const trendingCards = (() => {
+    const seen = new Set<string>();
+    const out: TrendingCard[] = [];
+    for (const p of trendingPages?.pages ?? []) {
+      for (const c of p.cards) {
+        if (seen.has(c.externalId)) continue;
+        seen.add(c.externalId);
+        out.push(c);
+      }
+    }
+    return out;
+  })();
 
   const { data, isFetching, isError } = useQuery<SearchApiResponse>({
-    queryKey: ["card-search", game, initialQ, sort],
+    queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter],
     queryFn: async () => {
-      const res = await fetch(
-        `/api/cards/search?game=${game}&query=${encodeURIComponent(initialQ)}&sort=${sort}`
-      );
+      // Compose the optional F-06 filter params only when set.
+      const params = new URLSearchParams({ game, query: initialQ, sort });
+      if (setFilter) params.set("set", setFilter);
+      if (rarityFilter) params.set("rarity", rarityFilter);
+      if (gradedFilter) params.set("graded", gradedFilter);
+      if (minPriceFilter) params.set("minPrice", minPriceFilter);
+      if (maxPriceFilter) params.set("maxPrice", maxPriceFilter);
+      const res = await fetch(`/api/cards/search?${params.toString()}`);
       if (!res.ok) {
         if (res.status === 404) return { cards: [] };
         throw new Error("Search failed");
@@ -771,6 +1014,71 @@ function SearchPageInner() {
   });
 
   const cards = data?.cards ?? [];
+
+  // F-06: options for the "Filter by set" dropdown. When no set filter is
+  // active the current results span every set, so we remember that full set
+  // list in state; while a filter IS active the API returns only that set,
+  // so we reuse the remembered list to keep every option (and "All sets")
+  // reachable. State — not a ref — so populating it re-renders the control.
+  const [knownSets, setKnownSets] = useState<string[]>([]);
+  useEffect(() => {
+    if (setFilter || cards.length === 0) return;
+    const names = Array.from(
+      new Set(
+        cards
+          .map((c) => c.setImage ?? c.setName ?? c.set ?? "")
+          .filter((n) => n && n.toLowerCase() !== "unknown set")
+      )
+    ).sort();
+    // Only update when the set list actually changed (avoid a render loop).
+    setKnownSets((prev) =>
+      prev.length === names.length && prev.every((v, i) => v === names[i]) ? prev : names
+    );
+  }, [setFilter, cards]);
+  // Always include the active filter so it stays selectable (e.g. a
+  // deep-linked ?set= whose set wasn't in the remembered list).
+  const setOptions = Array.from(
+    new Set([...knownSets, ...(setFilter ? [setFilter] : [])])
+  ).sort();
+
+  // F-06: apply one or more filter changes at once, preserving the query,
+  // game, and every other active filter. Pass "" to clear a given filter.
+  const applyFilters = (
+    overrides: Partial<{ set: string; rarity: string; graded: string; minPrice: string; maxPrice: string }>
+  ) => {
+    const current = {
+      set: setFilter,
+      rarity: rarityFilter,
+      graded: gradedFilter,
+      minPrice: minPriceFilter,
+      maxPrice: maxPriceFilter,
+      ...overrides,
+    };
+    const params = new URLSearchParams();
+    if (initialQ) params.set("q", initialQ);
+    params.set("game", game);
+    for (const [k, v] of Object.entries(current)) {
+      if (v) params.set(k, v);
+    }
+    router.replace(`/search?${params.toString()}`);
+  };
+  const applySetFilter = (nextSet: string) => applyFilters({ set: nextSet });
+
+  // Rarity options: unique rarities present in the (unfiltered) results,
+  // remembered the same way sets are so they stay selectable while filtered.
+  const [knownRarities, setKnownRarities] = useState<string[]>([]);
+  useEffect(() => {
+    if (rarityFilter || cards.length === 0) return;
+    const rs = Array.from(
+      new Set(cards.map((c) => (c.rarity ?? "").trim()).filter((r) => r && r.toLowerCase() !== "unknown"))
+    ).sort();
+    setKnownRarities((prev) =>
+      prev.length === rs.length && prev.every((v, i) => v === rs[i]) ? prev : rs
+    );
+  }, [rarityFilter, cards]);
+  const rarityOptions = Array.from(
+    new Set([...knownRarities, ...(rarityFilter ? [rarityFilter] : [])])
+  ).sort();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
@@ -788,7 +1096,7 @@ function SearchPageInner() {
         {/* Row with search input + scan icon + filter icon */}
         <div style={{ display: "flex", alignItems: "stretch", gap: "8px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <SearchBar defaultValue={initialQ} onSearch={doSearch} onClear={clearSearch} />
+            <SearchBar defaultValue={initialQ} game={game} onSearch={doSearch} onClear={clearSearch} />
           </div>
           <Link
             href="/scanner"
@@ -893,7 +1201,7 @@ function SearchPageInner() {
               </Link>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px", marginTop: "12px" }}>
+            <div className="dojo-card-grid" style={{ marginTop: "12px" }}>
               {trendingLoading
                 ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
                 : trendingError
@@ -932,6 +1240,18 @@ function SearchPageInner() {
                     // Client feedback: + now opens a bottom sheet to pick
                     // Ungraded / Graded for this specific card.
                     onToggleSelect={() => setAddSheetCard(card)}
+                    // F-08: tile click opens the details popup.
+                    onOpen={() =>
+                      setPopupCard({
+                        externalId: card.externalId,
+                        name: card.name,
+                        setName: card.setImage || undefined,
+                        imageUrl: card.imageUrl || undefined,
+                        marketPrice: card.price ?? null,
+                        condition: card.rarity ?? undefined,
+                        game,
+                      })
+                    }
                   />
                 ))}
             </div>
@@ -1029,14 +1349,110 @@ function SearchPageInner() {
               </div>
             </div>
 
-            {/* Card grid */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(2, 1fr)",
-                gap: "10px",
-              }}
-            >
+            {/* F-06: Filter by set. Options are the sets present in the
+                (unfiltered) results, plus an "All sets" clear option.
+                Selecting one drives the ?set= URL param, which the search
+                query above reacts to. */}
+            {/* F-06 filters: set, rarity, graded/ungraded, price range.
+                Each is URL-driven (via applyFilters), so the search query
+                above reacts and the state survives refresh / deep-links. */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "10px" }}>
+              {setOptions.length > 0 && (
+                <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
+                  <label className="dojo-label" htmlFor="set-filter">Filter by set</label>
+                  <select
+                    id="set-filter"
+                    data-testid="set-filter"
+                    aria-label="Filter by set"
+                    className="dojo-select"
+                    value={setFilter}
+                    onChange={(e) => applySetFilter(e.target.value)}
+                  >
+                    <option value="">All sets</option>
+                    {setOptions.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {rarityOptions.length > 0 && (
+                <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
+                  <label className="dojo-label" htmlFor="rarity-filter">Rarity</label>
+                  <select
+                    id="rarity-filter"
+                    data-testid="rarity-filter"
+                    aria-label="Filter by rarity"
+                    className="dojo-select"
+                    value={rarityFilter}
+                    onChange={(e) => applyFilters({ rarity: e.target.value })}
+                  >
+                    <option value="">All rarities</option>
+                    {rarityOptions.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
+                <label className="dojo-label" htmlFor="graded-filter">Graded</label>
+                <select
+                  id="graded-filter"
+                  data-testid="graded-filter"
+                  aria-label="Filter by graded"
+                  className="dojo-select"
+                  value={gradedFilter}
+                  onChange={(e) => applyFilters({ graded: e.target.value })}
+                >
+                  <option value="">Both</option>
+                  <option value="graded">Graded only</option>
+                  <option value="ungraded">Ungraded only</option>
+                </select>
+              </div>
+
+              <div className="dojo-input-wrap" style={{ flex: "1 1 200px", minWidth: 0 }}>
+                <label className="dojo-label">Price range (USD)</label>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    placeholder="Min"
+                    aria-label="Minimum price"
+                    data-testid="min-price-filter"
+                    className="dojo-input"
+                    defaultValue={minPriceFilter}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v !== minPriceFilter) applyFilters({ minPrice: v });
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    style={{ minWidth: 0 }}
+                  />
+                  <span style={{ color: "var(--color-dojo-faint)", fontSize: "12px" }}>–</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    placeholder="Max"
+                    aria-label="Maximum price"
+                    data-testid="max-price-filter"
+                    className="dojo-input"
+                    defaultValue={maxPriceFilter}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v !== maxPriceFilter) applyFilters({ maxPrice: v });
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    style={{ minWidth: 0 }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Card grid — adaptive columns (2 mobile / 3 tablet / 4–5 desktop) */}
+            <div className="dojo-card-grid">
               {isFetching
                 ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
                 : isError
@@ -1073,6 +1489,18 @@ function SearchPageInner() {
                         });
                         setAddToast(next ? "Added to favorites" : "Removed from favorites");
                       }}
+                      // F-08: tile click opens the details popup.
+                      onOpen={() =>
+                        setPopupCard({
+                          externalId: card.id,
+                          name: card.name,
+                          setName: card.setImage ?? card.setName ?? card.set ?? undefined,
+                          imageUrl: card.imageUrl ?? card.image ?? undefined,
+                          marketPrice: card.marketPrice ?? card.price ?? null,
+                          condition: card.rarity ?? undefined,
+                          game,
+                        })
+                      }
                     />
                   ))}
             </div>
@@ -1095,11 +1523,47 @@ function SearchPageInner() {
         )}
       </div>
 
+      {/* F-08: card details popup — opens on tile click. "Add to
+          Collection" hands off to the existing AddCardSheet (Ungraded /
+          Graded picker); "Add to Favourites" toggles the server-backed
+          favorite. */}
+      {popupCard && (
+        <CardDetailsPopup
+          card={popupCard}
+          isFavorite={isFavorite(popupCard.externalId)}
+          onClose={() => setPopupCard(null)}
+          onAddToCollection={() => {
+            setAddSheetCard({
+              id: popupCard.externalId,
+              name: popupCard.name,
+              setImage: popupCard.setName ?? undefined,
+              imageUrl: popupCard.imageUrl ?? undefined,
+              price: popupCard.marketPrice ?? undefined,
+              // Carry the grade/condition so the Add sheet can open the
+              // graded flow (F-19) for a graded card.
+              rarity: popupCard.condition ?? undefined,
+            } as CardResult);
+            setPopupCard(null);
+          }}
+          onToggleFavorite={() => {
+            const next = toggleFavorite({
+              externalId: popupCard.externalId,
+              name: popupCard.name,
+              setName: popupCard.setName ?? undefined,
+              imageUrl: popupCard.imageUrl ?? undefined,
+              marketPrice: popupCard.marketPrice ?? null,
+            });
+            setAddToast(next ? "Added to favorites" : "Removed from favorites");
+          }}
+        />
+      )}
+
       {/* Client feedback: + on a card opens this bottom sheet to pick
           Ungraded / Graded before adding. */}
       {addSheetCard && (
         <AddCardSheet
           card={addSheetCard}
+          initialCondition={addSheetCard.rarity ?? undefined}
           onClose={() => setAddSheetCard(null)}
           onAdded={(msg) => {
             setAddSheetCard(null);
@@ -1151,26 +1615,50 @@ const CONDITIONS = [
   "Poor 1",
 ] as const;
 
+/** Parse a graded condition string like "PSA 10" / "BGS 9.5" into its
+ *  grading company + grade. Returns null when the string names no known
+ *  company (i.e. the card is raw/ungraded), which is how the Add sheet
+ *  decides whether to open the graded form. */
+function parseGraded(
+  condition: string | undefined | null
+): { grader: (typeof GRADERS)[number]; grade: string } | null {
+  if (!condition) return null;
+  const grader = GRADERS.find((g) => new RegExp(`\\b${g}\\b`, "i").test(condition));
+  if (!grader) return null;
+  const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "";
+  return { grader, grade };
+}
+
 function AddCardSheet({
   card,
   onClose,
   onAdded,
+  initialCondition,
 }: {
   card: TrendingCard | CardResult;
   onClose: () => void;
   onAdded: (message: string) => void;
+  /** Card's grade/condition string (e.g. "PSA 10"). When it names a
+   *  grading company the sheet opens straight into the graded form,
+   *  pre-filled — this is the F-19 Graded Add Flow entry point. */
+  initialCondition?: string;
 }) {
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
-  // Phase 3.4: which step of the sheet is showing.
-  //   "picker"  — Ungraded / Graded choice buttons (default)
-  //   "graded"  — Grader/Condition/Grade form (UI stub)
-  const [step, setStep] = useState<"picker" | "graded">("picker");
-  const [grader, setGrader] = useState<(typeof GRADERS)[number]>("PSA");
+  // Parse "PSA 10" → { grader: "PSA", grade: "10" } so a graded card
+  // pre-fills its own known values. Unknown companies fall back to PSA.
+  const parsed = parseGraded(initialCondition);
+
+  // Phase 3.4 / F-19: which step of the sheet is showing.
+  //   "picker"  — Ungraded / Graded choice buttons (default for raw cards)
+  //   "graded"  — Grading Company / Grade form. Auto-selected when the card
+  //               already carries a graded condition (F-19).
+  const [step, setStep] = useState<"picker" | "graded">(parsed ? "graded" : "picker");
+  const [grader, setGrader] = useState<(typeof GRADERS)[number]>(parsed?.grader ?? "PSA");
   const [condition, setCondition] = useState<(typeof CONDITIONS)[number]>("Gem Mint 10");
-  const [grade, setGrade] = useState("10");
+  const [grade, setGrade] = useState(parsed?.grade ?? "10");
 
   // `id` is the internal DB id for TrendingCard, but the *search*
   // API returns `id` as the externalId (see api/cards/search/route.ts).
@@ -1179,7 +1667,10 @@ function AddCardSheet({
   // Price may live on `price` (trending) or `marketPrice`/`price` (search).
   const marketPrice = "marketPrice" in card ? (card.marketPrice ?? card.price ?? null) : (card.price ?? null);
 
-  async function addUngraded() {
+  // Shared add path for both raw and graded cards. `condition` (e.g.
+  // "PSA 10") is the only difference — it's persisted on the collection
+  // row as the card's graded metadata (F-19). Omitted → an ungraded add.
+  async function addCard(condition?: string) {
     setAdding(true);
     setErrMsg(null);
     try {
@@ -1192,6 +1683,7 @@ function AddCardSheet({
         quantity: 1,
         isFoil: false,
       };
+      if (condition) cardPayload.condition = condition;
       // Only include imageUrl if it's a non-empty string (Zod requires URL format)
       const imgUrl = (card as any).imageUrl;
       if (imgUrl && typeof imgUrl === "string" && imgUrl.trim().length > 0) {
@@ -1217,6 +1709,10 @@ function AddCardSheet({
       setAdding(false);
     }
   }
+
+  const addUngraded = () => addCard();
+  // Graded add: persist the company + grade as "PSA 10"-style condition.
+  const addGraded = () => addCard(`${grader} ${grade}`.trim());
 
   return (
     <>
@@ -1295,15 +1791,17 @@ function AddCardSheet({
             </button>
           </div>
         ) : (
-          /* Phase 3.4: Graded card form — UI stub. Backing schema
-             (grader/grade/cert on UserCollection) doesn't exist yet, so
-             Add just shows a "coming in Week 3" toast.
-             TODO Week 3: Implement real backend for graded cards. */
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          /* F-19: Graded Add Flow — capture the grading company + grade and
+             persist them as the collection row's `condition` ("PSA 10"). */
+          <div
+            data-testid="graded-add-modal"
+            style={{ display: "flex", flexDirection: "column", gap: "14px" }}
+          >
             <div className="dojo-input-wrap">
-              <label className="dojo-label" htmlFor="grader-select">Grader</label>
+              <label className="dojo-label" htmlFor="grader-select">Grading Company</label>
               <select
                 id="grader-select"
+                aria-label="Grading Company"
                 value={grader}
                 onChange={(e) => setGrader(e.target.value as (typeof GRADERS)[number])}
                 className="dojo-select"
@@ -1352,11 +1850,12 @@ function AddCardSheet({
               </button>
               <button
                 type="button"
-                onClick={() => onAdded("Graded card tracking coming in Week 3")}
+                onClick={addGraded}
+                disabled={adding}
                 className="dojo-btn dojo-btn-primary"
                 style={{ flex: 2 }}
               >
-                ADD
+                {adding ? "ADDING…" : "ADD TO COLLECTION"}
               </button>
             </div>
           </div>
