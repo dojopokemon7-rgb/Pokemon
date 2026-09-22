@@ -276,6 +276,10 @@ export const auth = betterAuth({
     process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
     "http://localhost:3000",
     "http://localhost:3001",
+    // Production domain, listed explicitly as a safety net (the wildcard
+    // below should also cover it, but an exact origin is the reliable one
+    // the Google callback is validated against).
+    "https://pokemon-five-pi.vercel.app",
     // Accept any Vercel preview deployment for this project
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
     // Wildcard match for all Vercel preview URLs of this project
