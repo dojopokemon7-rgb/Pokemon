@@ -19,7 +19,6 @@ import { STORAGE_STATE } from "./constants";
 // @@unique([userId, name]) constraint.
 const RUN = Date.now();
 const NAME = `My Holo Collection ${RUN}`;
-const RENAMED = `My Holo Collection v2 ${RUN}`;
 
 test.describe.configure({ mode: "serial" });
 
@@ -37,7 +36,7 @@ test.describe("F-10 collections management", () => {
       if (res.ok()) {
         const { data } = await res.json();
         for (const c of (data ?? []) as { id: string; name: string }[]) {
-          if (c.name === NAME || c.name === RENAMED) {
+          if (c.name === NAME) {
             await ctx.delete(`/api/collections/${c.id}`);
           }
         }
@@ -53,57 +52,46 @@ test.describe("F-10 collections management", () => {
     await page.getByRole("button", { name: /add collection/i }).click();
 
     await page.getByLabel(/name/i).fill(NAME);
-    // Privacy → Private, type tag → POKEMON.
+    // Privacy → Private, type tag → POKEMON (create form still uses radios
+    // + a type select; the row-level pill toggle is exercised separately).
     await page.getByLabel(/private/i).check();
     await page.getByLabel(/type|tag/i).selectOption("POKEMON");
     await page.getByRole("button", { name: /save|create/i }).click();
 
     const row = page.getByTestId("collection-row").filter({ hasText: NAME });
     await expect(row).toBeVisible();
-    await expect(row.getByText(/private/i)).toBeVisible();
-    await expect(row.getByText(/pokemon/i)).toBeVisible();
+    // The private caption + the PRIVATE pill being active reflect privacy.
+    await expect(row.getByText(/only you/i)).toBeVisible();
+    await expect(row.getByRole("button", { name: /set private/i })).toHaveAttribute("aria-pressed", "true");
   });
 
-  test("rename: change the collection name", async ({ page }) => {
+  test("toggle privacy via the PUBLIC/PRIVATE pill: make it public", async ({ page }) => {
     await page.goto("/you");
 
     const row = page.getByTestId("collection-row").filter({ hasText: NAME });
-    await row.getByRole("button", { name: /edit|rename/i }).click();
+    // Click the PUBLIC pill on the row (row-level toggle).
+    await row.getByRole("button", { name: /set public/i }).click();
 
-    await page.getByLabel(/name/i).fill(RENAMED);
-    await page.getByRole("button", { name: /save/i }).click();
-
-    await expect(
-      page.getByTestId("collection-row").filter({ hasText: RENAMED })
-    ).toBeVisible();
+    const updated = page.getByTestId("collection-row").filter({ hasText: NAME });
+    await expect(updated.getByText(/visible to everyone/i)).toBeVisible();
+    await expect(updated.getByRole("button", { name: /set public/i })).toHaveAttribute("aria-pressed", "true");
   });
 
-  test("toggle privacy & tag: make it public and MIXED", async ({ page }) => {
+  test("delete: expand the row, click Delete, confirm in the modal", async ({ page }) => {
     await page.goto("/you");
 
-    const row = page.getByTestId("collection-row").filter({ hasText: RENAMED });
-    await row.getByRole("button", { name: /edit|settings/i }).click();
+    const row = page.getByTestId("collection-row").filter({ hasText: NAME });
+    // Expand the row to reveal Delete.
+    await row.getByRole("button", { name: /expand for options/i }).click();
+    await row.getByRole("button", { name: /^delete$/i }).click();
 
-    await page.getByLabel(/public/i).check();
-    await page.getByLabel(/type|tag/i).selectOption("MIXED");
-    await page.getByRole("button", { name: /save/i }).click();
-
-    const updated = page.getByTestId("collection-row").filter({ hasText: RENAMED });
-    await expect(updated.getByText(/public/i)).toBeVisible();
-    await expect(updated.getByText(/mixed/i)).toBeVisible();
-  });
-
-  test("delete: remove the collection from the list", async ({ page }) => {
-    await page.goto("/you");
-
-    const row = page.getByTestId("collection-row").filter({ hasText: RENAMED });
-    await row.getByRole("button", { name: /delete/i }).click();
-    // Confirm if a confirmation control appears.
-    const confirm = page.getByRole("button", { name: /confirm|yes, delete|delete/i });
-    if (await confirm.count()) await confirm.last().click();
+    // Double-confirm modal: click the final Delete.
+    const dialog = page.getByRole("dialog", { name: /confirm delete/i });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: /^delete$/i }).click();
 
     await expect(
-      page.getByTestId("collection-row").filter({ hasText: RENAMED })
+      page.getByTestId("collection-row").filter({ hasText: NAME })
     ).toHaveCount(0);
   });
 });

@@ -140,8 +140,13 @@ test.describe("F-02 Google login", () => {
 
     // Should end up authenticated on the dashboard…
     await expect(page).toHaveURL(/\/dashboard/);
-    // …and the Google identity should be visible somewhere in the shell.
-    await expect(page.getByText(GOOGLE_USER.name)).toBeVisible();
+    // …and the Google identity should persist into the session. The header
+    // no longer shows the username (per design), so verify identity on the
+    // You page, which renders the session handle (@ash.ketchum from the
+    // Google name "Ash Ketchum").
+    await page.goto("/you");
+    const handle = "@" + GOOGLE_USER.name.toLowerCase().replace(/\s+/g, ".");
+    await expect(page.getByText(handle)).toBeVisible();
   });
 
   test("account linking: connecting Google shows 'Google Connected'", async ({ page }) => {

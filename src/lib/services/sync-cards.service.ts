@@ -33,6 +33,7 @@
  */
 
 import { prisma } from "@/lib/db";
+import { buildTags } from "@/lib/utils/card-tags";
 
 // -----------------------------------------------------------------
 // Types
@@ -284,7 +285,7 @@ async function syncOneSet(
         break;
       }
       const chunk = cards.slice(i, i + UPSERT_CONCURRENCY);
-      await Promise.all(chunk.map((card) => upsertCard(card, dbSet.id)));
+      await Promise.all(chunk.map((card) => upsertCard(card, dbSet.id, set.name)));
       base.cardsUpserted += chunk.length;
     }
   } catch (err) {
@@ -298,7 +299,17 @@ async function syncOneSet(
 }
 
 // Single-card upsert extracted so the parallel chunker stays readable.
-async function upsertCard(card: SyncCardInput, setId: string): Promise<void> {
+async function upsertCard(card: SyncCardInput, setId: string, setName: string): Promise<void> {
+  // Searchable keyword tags from the card/set metadata (same helper the
+  // seed + one-off backfill use), so cards the daily cron imports are
+  // searchable-by-tag immediately — no separate backfill needed.
+  const tags = buildTags({
+    rarity: card.rarity ?? null,
+    types: card.types ?? [],
+    number: card.number,
+    set: { name: setName, series: null },
+  });
+
   await prisma.card.upsert({
     where: { externalId: card.externalId },
     update: {
@@ -306,6 +317,7 @@ async function upsertCard(card: SyncCardInput, setId: string): Promise<void> {
       number: card.number,
       rarity: card.rarity ?? undefined,
       types: card.types ?? undefined,
+      tags,
       imageUrl: card.imageUrl ?? undefined,
       imageUrlHi: card.imageUrlHi ?? undefined,
       ...(card.marketPrice != null
@@ -319,6 +331,7 @@ async function upsertCard(card: SyncCardInput, setId: string): Promise<void> {
       number: card.number,
       rarity: card.rarity ?? null,
       types: card.types ?? [],
+      tags,
       imageUrl: card.imageUrl ?? null,
       imageUrlHi: card.imageUrlHi ?? null,
       marketPrice: card.marketPrice ?? null,

@@ -19,8 +19,15 @@ export async function GET(request: Request): Promise<NextResponse> {
   const parsedIntent = intentParam ? WantIntentEnum.safeParse(intentParam) : null;
   const intent = parsedIntent?.success ? parsedIntent.data : undefined;
 
-  const items = await listWantList(guard.session.user.id, intent);
-  return NextResponse.json({ data: items }, { headers: { "Cache-Control": "no-store" } });
+  // Defensive: a DB hiccup should degrade to an empty list, not a 500 that
+  // breaks the want-list tabs / dashboard / search star.
+  try {
+    const items = await listWantList(guard.session.user.id, intent);
+    return NextResponse.json({ data: items }, { headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    console.error("[want-list] GET failed:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ data: [] }, { headers: { "Cache-Control": "no-store" } });
+  }
 }
 
 export async function POST(request: Request): Promise<NextResponse> {

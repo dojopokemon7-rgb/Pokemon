@@ -168,4 +168,10 @@ export const RedisKeys = {
    */
   ebaySearch: (query: string): string =>
     `ebay:search:${query.toLowerCase().trim()}`,
+
+  /**
+   * Cached "Sellers on the Floor" listings for a card detail page.
+   * TTL: 1 hour (listings change, but not every request needs a live call).
+   */
+  ebaySold: (key: string): string => `ebay:sold:${key.toLowerCase().trim()}`,
 } as const;

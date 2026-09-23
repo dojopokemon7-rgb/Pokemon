@@ -191,6 +191,8 @@ interface EbayItemSummary {
   image?: { imageUrl?: string };
   thumbnailImages?: Array<{ imageUrl?: string }>;
   itemWebUrl?: string;
+  seller?: { username?: string; feedbackScore?: number };
+  itemLocation?: { city?: string; stateOrProvince?: string; country?: string };
 }
 
 interface EbaySearchResponse {
@@ -364,4 +366,102 @@ function normaliseItem(item: EbayItemSummary): NormalizedEbayListing | null {
     imageUrl,
     itemWebUrl,
   };
+}
+
+// =============================================================
+// "Sellers on the Floor" — real eBay listings for the detail page
+// =============================================================
+//
+// IMPORTANT — active listings, not sold history:
+//   The task asked for SOLD/completed sales, but eBay's Browse API only
+//   returns ACTIVE listings — it has no sold/completed filter (confirmed
+//   by eBay's own developer forum, 2026). Sold history lives behind the
+//   restricted Marketplace Insights API (business application required),
+//   which we don't have access to. So "Sellers on the Floor" shows REAL,
+//   CURRENT listings for this card (seller, price, location, real listing
+//   URL) — genuine eBay data, never mocked. When Marketplace Insights
+//   access is granted, swap the endpoint here to return true sold sales.
+
+/** A seller currently listing this card on eBay (real Browse data). */
+export interface EbaySellerListing {
+  itemId: string;
+  /** Seller's eBay username (e.g. "cardvault_jp"), or null if hidden. */
+  sellerUsername: string | null;
+  price: number;
+  currency: string | null;
+  /** Human-readable location, e.g. "Mumbai, IN" — null when eBay omits it. */
+  location: string | null;
+  /** Deep-link to the real eBay listing (opens in a new tab). */
+  itemWebUrl: string;
+  title: string;
+}
+
+function formatLocation(loc: EbayItemSummary["itemLocation"]): string | null {
+  if (!loc) return null;
+  const parts = [loc.city, loc.stateOrProvince, loc.country].filter(Boolean);
+  return parts.length ? parts.join(", ") : null;
+}
+
+/**
+ * Fetches up to `limit` real, currently-active eBay listings for a card,
+ * carrying the seller + location fields the "Sellers on the Floor" section
+ * renders. Cache-agnostic (the route owns the 1h cache). Never mocks:
+ * returns [] when eBay has no matches, throws on eBay HTTP errors so the
+ * route degrades to "No recent sales found".
+ */
+export async function searchEbaySellerListings(
+  params: EbaySearchParams,
+  limit: number = 4
+): Promise<EbaySellerListing[]> {
+  const query = buildEbayQuery(params);
+  if (!query) return [];
+
+  const token = await getEbayAccessToken();
+  const baseUrl = process.env.EBAY_API_URL ?? DEFAULT_BASE_URL;
+  const categoryId = CATEGORY_IDS[params.game];
+
+  const url =
+    `${baseUrl}/buy/browse/v1/item_summary/search?` +
+    `q=${encodeURIComponent(query)}` +
+    `&category_ids=${categoryId}` +
+    `&filter=${encodeURIComponent("buyingOptions:{FIXED_PRICE|AUCTION}")}` +
+    `&limit=${limit}`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+      Accept: "application/json",
+    },
+  });
+
+  if (res.status === 429) throw new Error("eBay rate limit hit (HTTP 429)");
+  if (!res.ok) {
+    const bodyText = await res.text().catch(() => "");
+    throw new Error(
+      `eBay Browse API failed: HTTP ${res.status} ${res.statusText}${
+        bodyText ? ` — ${bodyText.slice(0, 300)}` : ""
+      }`
+    );
+  }
+
+  const payload = (await res.json()) as EbaySearchResponse;
+  const summaries = payload.itemSummaries ?? [];
+
+  return summaries
+    .map((item): EbaySellerListing | null => {
+      if (!item.itemId || !item.title || !item.itemWebUrl) return null;
+      const raw = item.price?.value;
+      const parsed = raw != null ? Number.parseFloat(raw) : NaN;
+      return {
+        itemId: item.itemId,
+        sellerUsername: item.seller?.username ?? null,
+        price: Number.isFinite(parsed) ? parsed : 0,
+        currency: item.price?.currency ?? null,
+        location: formatLocation(item.itemLocation),
+        itemWebUrl: item.itemWebUrl,
+        title: item.title,
+      };
+    })
+    .filter((l): l is EbaySellerListing => l !== null);
 }

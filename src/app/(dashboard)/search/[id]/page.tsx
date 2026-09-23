@@ -30,8 +30,7 @@ import { useState, useMemo, Suspense, useEffect, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
-import { useFavorites } from "@/lib/hooks/useFavorites";
-import { buildEbaySearchUrl, evaluateDeal, lowestEbayPrice } from "@/lib/utils/price-comparison";
+import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 
 // ── Icons ──────────────────────────────────────────────────────────
 function ChevronLeft() {
@@ -75,11 +74,6 @@ const SERIES = [
   { id: "bgs9", label: "BGS 9", grade: "9", group: "BGS", priceFmt: "$5.2K", color: "#EE9A1F" },
 ];
 const GROUPS = ["Raw", "PSA", "BGS"];
-
-const POP = [
-  { grader: "PSA", total: 983, cells: [["10", 945], ["9", 28], ["8", 4], ["7", 3]] },
-  { grader: "BGS", total: 468, cells: [["BL10", 94], ["10", 367], ["9.5", 5], ["9", 2]] },
-];
 
 // ADD_ROWS structure template — prices are populated dynamically per card
 // in CardDetailInner based on the card's actual marketPrice, not hardcoded.
@@ -294,144 +288,169 @@ function DojoChart({
   );
 }
 
-// ── eBay Deal Finder (restored) ─────────────────────────────────────
-// F-16 removed the Dojo-vs-eBay comparison UI, but the backend was kept:
-// /api/ebay/search returns live listings and buildEbaySearchUrl builds a
-// targeted outbound link. This section wires that backend back up:
-//   - Always shows a "Find on eBay" button (works even if the API is down).
-//   - Fetches the cheapest live listings; if the lowest beats our market
-//     price by ≥10% it flags a "Good Deal" (evaluateDeal), the original
-//     product behaviour.
-// Degrades gracefully: any eBay failure (fallback/empty) just leaves the
-// outbound link — never blocks the page.
-interface EbayListing {
+// ── Sellers on the Floor (Task 6) ───────────────────────────────────
+// Real, current eBay listings for this card (seller / price / location /
+// listing URL) from /api/cards/[id]/ebay-sold. eBay's Browse API only
+// exposes active listings (no sold-history filter), so these are live
+// listings — genuine data, never mocked. Empty / error → "No recent sales
+// found".
+interface FloorListing {
   itemId: string;
-  title: string;
+  sellerUsername: string | null;
   price: number;
   currency: string | null;
-  imageUrl: string | null;
+  location: string | null;
   itemWebUrl: string;
+  title: string;
 }
 
-function EbayDealSection({
-  name,
-  setName,
-  cardNumber,
-  game,
-  marketPrice,
+function SellersOnFloor({
+  id, name, setName, rarity, game,
 }: {
-  name: string;
-  setName: string;
-  cardNumber: string;
-  game: "pokemon" | "onepiece";
-  marketPrice: number;
+  id: string; name: string; setName: string; rarity: string; game: "pokemon" | "onepiece";
 }) {
-  const outboundUrl = buildEbaySearchUrl(name, setName || undefined, cardNumber || undefined, game);
-
-  const { data, isLoading } = useQuery<{ listings: EbayListing[] }>({
-    queryKey: ["ebay-search", name, setName, cardNumber, game],
+  const { data, isLoading } = useQuery<{ listings: FloorListing[] }>({
+    queryKey: ["ebay-sold", id, name, setName, rarity, game],
     queryFn: async () => {
       const qs = new URLSearchParams({ name, game });
       if (setName) qs.set("set", setName);
-      if (cardNumber) qs.set("number", cardNumber);
-      const res = await fetch(`/api/ebay/search?${qs.toString()}`);
-      // The API returns { listings: [] } on its own error path, so a non-ok
-      // still parses; treat any failure as "no listings" (link still shows).
+      if (rarity) qs.set("grade", rarity);
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold?${qs.toString()}`);
       if (!res.ok) return { listings: [] };
       return res.json();
     },
-    staleTime: 5 * 60_000,
+    staleTime: 60 * 60_000, // matches the route's 1h server cache
+    enabled: !!name,
   });
 
   const listings = data?.listings ?? [];
-  const lowest = lowestEbayPrice(listings.map((l) => l.price));
-  const deal = lowest != null ? evaluateDeal(marketPrice, lowest) : null;
-
-  // Open the actual cheapest listing's item page when we have one — eBay has
-  // no single "card" page, so the best "this card on eBay" target is the
-  // lowest live listing. Fall back to the targeted search only when eBay
-  // returned nothing (API down / no matches).
-  const cheapest = listings
-    .filter((l) => Number.isFinite(l.price) && l.price > 0)
-    .sort((a, b) => a.price - b.price)[0];
-  const primaryUrl = cheapest?.itemWebUrl ?? outboundUrl;
-  const opensListing = !!cheapest;
-
-  const label = { fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" as const, color: "var(--color-dojo-body)" };
+  const heading = { fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" as const, color: "var(--color-dojo-body)" };
 
   return (
-    <div style={{ marginTop: "20px" }}>
-      <div style={{ display: "flex", alignItems: "baseline" }}>
-        <span style={label}>Find on eBay</span>
-        {deal?.isGoodDeal && (
-          <span
-            data-testid="ebay-good-deal"
-            style={{
-              marginLeft: "10px", padding: "3px 8px",
-              fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px",
-              letterSpacing: "0.12em", textTransform: "uppercase",
-              color: "var(--color-dojo-jade)", border: "1px solid var(--color-dojo-jade)",
-              background: "rgba(10,194,126,.1)",
-            }}
-          >
-            🔥 Good Deal · Save {fmtUSD(deal.savings)}
+    <>
+      <div style={{ marginTop: "22px", display: "flex", alignItems: "baseline" }}>
+        <span style={heading}>Sellers on the Floor</span>
+        {!isLoading && listings.length > 0 && (
+          <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            {listings.length} listing{listings.length !== 1 ? "s" : ""}
           </span>
         )}
       </div>
 
-      {/* Lowest live listing (when we got one). */}
-      {lowest != null && (
-        <div style={{ marginTop: "10px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-body)" }}>
-          Lowest listing:{" "}
-          <span style={{ color: "var(--color-dojo-gold)", fontVariantNumeric: "tabular-nums" }}>{fmtUSD(lowest)}</span>
+      {isLoading ? (
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>Checking eBay…</span>
+        </div>
+      ) : listings.length === 0 ? (
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>No recent sales found</span>
+        </div>
+      ) : (
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "2px 15px 6px" }}>
+          {listings.map((l) => {
+            const seller = l.sellerUsername ?? "seller";
+            const sub = [l.location, setName, rarity].filter(Boolean).join(" · ");
+            const priceStr = l.price > 0 ? new Intl.NumberFormat("en-US", { style: "currency", currency: l.currency ?? "USD" }).format(l.price) : "—";
+            return (
+              <div key={l.itemId} style={{ display: "flex", alignItems: "center", gap: "11px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                {/* Gold square avatar with the seller's initial. */}
+                <div aria-hidden="true" style={{ flex: "none", width: "34px", height: "34px", background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "15px" }}>
+                  {seller.charAt(0).toUpperCase()}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    @{seller}
+                  </div>
+                  {sub && (
+                    <div style={{ marginTop: "2px", fontSize: "10.5px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
+                  )}
+                </div>
+                <div style={{ textAlign: "right", flex: "none" }}>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>{priceStr}</div>
+                  <a href={l.itemWebUrl} target="_blank" rel="noopener noreferrer" style={{ marginTop: "3px", display: "inline-block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}>
+                    View on Floor ›
+                  </a>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
-      <div style={{ marginTop: "12px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "14px" }}>
-        {isLoading ? (
-          // Don't expose a clickable link until the lookup resolves — a
-          // premature click would fall through to the search URL, which is
-          // exactly the "opens the search page" bug. Show a disabled button
-          // that becomes the real deep-link once listings arrive.
-          <button
-            type="button"
-            disabled
-            data-testid="ebay-find-loading"
-            className="dojo-btn dojo-btn-outline"
-            style={{ display: "inline-flex", padding: "10px 18px", opacity: 0.6, cursor: "wait" }}
-          >
-            CHECKING EBAY…
-          </button>
-        ) : (
-          <a
-            href={primaryUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-testid="ebay-find-link"
-            className="dojo-btn dojo-btn-outline"
-            style={{ display: "inline-flex", textDecoration: "none", padding: "10px 18px" }}
-          >
-            {opensListing ? "VIEW ON EBAY ›" : "FIND ON EBAY ›"}
-          </a>
-        )}
-        {/* When we deep-link to a single listing, still offer the full
-            targeted search as a secondary "see all listings" escape. */}
-        {opensListing && (
-          <a
-            href={outboundUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-testid="ebay-search-link"
-            style={{
-              fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px",
-              letterSpacing: "0.14em", textTransform: "uppercase",
-              color: "var(--color-dojo-gold)", textDecoration: "none",
-            }}
-          >
-            See all listings ›
-          </a>
-        )}
-      </div>
-    </div>
+    </>
+  );
+}
+
+// ── Population report (PSA-primary, reference fallback) ─────────────
+// Fetches /api/cards/[id]/population, which tries a real PSA pop source
+// (none available on the public API today) then falls back to reference
+// data so the grade breakdown shows "like it did before". Only renders
+// "No population data available" if the API returns nothing at all.
+interface PopCompany { company: "PSA" | "BGS"; total: number; grades: { grade: string; count: number }[]; }
+interface PopReport { source: "psa" | "reference"; companies: PopCompany[]; }
+
+function PopulationReport({ id }: { id: string }) {
+  const [grader, setGrader] = useState<"PSA" | "BGS">("PSA");
+  const { data, isLoading } = useQuery<{ report: PopReport | null }>({
+    queryKey: ["population", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/population`);
+      if (!res.ok) return { report: null };
+      return res.json();
+    },
+    staleTime: 24 * 60 * 60_000,
+  });
+
+  const report = data?.report ?? null;
+  const heading = { marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" as const, color: "var(--color-dojo-body)" };
+  const active = report?.companies.find((c) => c.company === grader) ?? report?.companies[0];
+
+  return (
+    <>
+      <div style={heading}>Population report</div>
+      {isLoading ? (
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>Loading…</span>
+        </div>
+      ) : !report || !active ? (
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>No population data available</span>
+        </div>
+      ) : (
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "14px 15px 6px" }}>
+          <div style={{ display: "flex", gap: "10px" }}>
+            {report.companies.map((c) => (
+              <button
+                key={c.company}
+                onClick={() => setGrader(c.company)}
+                style={{
+                  display: "flex", flexDirection: "column", gap: "2px",
+                  border: `1.5px solid ${grader === c.company ? "rgba(255,255,255,.55)" : "var(--color-dojo-stroke)"}`,
+                  padding: "8px 14px", cursor: "pointer",
+                  color: grader === c.company ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+                  background: "transparent",
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px" }}>{c.company}</span>
+                <span style={{ fontSize: "11px", color: "var(--color-dojo-body)" }}>{c.total.toLocaleString()} total</span>
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", columnGap: "10px", marginTop: "10px" }}>
+            {active.grades.map((g) => (
+              <div key={g.grade} style={{ padding: "10px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>{g.grade}</div>
+                <div style={{ marginTop: "4px", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", color: "var(--color-dojo-faint)" }}>{g.count.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+          {report.source === "reference" && (
+            <div style={{ marginTop: "8px", fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+              Sample reference data
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -460,31 +479,32 @@ function CardDetailInner() {
         ? "onepiece"
         : "pokemon";
 
-  // The eBay-searchable card number.
-  //
-  //   - One Piece Bandai ids ("OP01-001", "ST12-020", …) appear
-  //     verbatim in seller titles, so we pass the full id as `number`.
-  //   - Pokémon TCG API ids ("base1-4", "swsh4-20") do NOT appear on
-  //     listings (sellers write "4/102", not "base1-4"), so sending
-  //     just the trailing segment would introduce false negatives via
-  //     exact-phrase matching. Better to omit `number` for those and
-  //     let name + set do the work.
-  const isBandaiCode = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(id ?? "");
-  const cardNumber = isBandaiCode ? (id ?? "").toUpperCase() : "";
+  // Franchise display name for the "{Game} · {Set}" line (Task 1).
+  const gameName = game === "onepiece" ? "One Piece" : "Pokémon";
+
+  // Serial line "{rarity} · {number}" (Task 2). One Piece ids are the
+  // serial sellers use (OP01-001); Pokémon's serial is the `number` field
+  // ("4/102"). Prefer the passed `number`, else fall back to the id for
+  // Bandai-coded One Piece cards.
+  const rarity = searchParams.get("rarity") ?? "";
+  const isBandai = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(id ?? "");
+  // Prefer the real DB `number` param. Fall back to the id: One Piece ids
+  // ARE the serial (OP01-001); for other ids show the whole id (e.g.
+  // "sv3-224") rather than "undefined". Empty only when there's no id.
+  const serialNumber =
+    searchParams.get("number") ||
+    (isBandai ? (id ?? "").toUpperCase() : (id ?? ""));
 
   const [flipped, setFlipped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  // Favorites are now server-backed (persist across sessions) via the
-  // shared hook — replaces the old local `starred` state that reset on
-  // refresh and had nowhere to be viewed.
-  const { isFavorite, toggle: toggleFavorite } = useFavorites();
-  const starred = isFavorite(id);
-  const [wantToBuy, setWantToBuy] = useState(false);
+  // The "track this card" star adds to Want to Buy (server-backed) — this
+  // replaced the removed favourites feature.
+  const { isWanted, toggle: toggleWant } = useWantToBuy();
+  const starred = isWanted(id);
   const [activeSeries, setActiveSeries] = useState<Set<string>>(new Set(["raw"]));
   const [range, setRange] = useState<string>("1M");
   const [addQty, setAddQty] = useState<Record<string, number>>({ raw: 0, psa10: 1 });
-  const [popGrader, setPopGrader] = useState("PSA");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   // Single toast channel for this page: add confirmations, favorites
@@ -609,7 +629,6 @@ function CardDetailInner() {
   }, [range, activeSeries, realPts]);
 
   const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * d.price, 0);
-  const pop = POP.find((p) => p.grader === popGrader) ?? POP[0];
 
   return (
     <div style={{ paddingBottom: "24px" }}>
@@ -711,16 +730,10 @@ function CardDetailInner() {
           <button
             onClick={() => {
               // Persisted toggle; hook returns the new state for the toast.
-              const next = toggleFavorite({
-                externalId: id,
-                name,
-                setName: setName || undefined,
-                imageUrl: img && img.startsWith("http") ? img : undefined,
-                marketPrice: price || null,
-              });
-              setToast(next ? "Added to favorites" : "Removed from favorites");
+              const next = toggleWant({ externalId: id, name });
+              setToast(next ? "Added to Want to Buy" : "Removed from Want to Buy");
             }}
-            title={starred ? "Remove from favorites" : "Add to favorites"}
+            title={starred ? "Remove from Want to Buy" : "Add to Want to Buy"}
             aria-pressed={starred}
             style={{
               flex: "none", width: "34px", height: "34px", fontSize: "16px",
@@ -734,11 +747,18 @@ function CardDetailInner() {
             {starred ? "★" : "☆"}
           </button>
         </div>
+        {/* Task 1: "{Game} · {Set}" (real franchise name, not the generic
+            "Trading Card Game"). */}
         <div style={{ marginTop: "8px", fontSize: "12.5px", color: "var(--color-dojo-body)" }}>
-          {setName ? <>Trading Card Game · <span style={{ color: "var(--color-dojo-gold)" }}>{setName}</span></> : "Trading Card Game"}
+          {gameName}{setName ? <> · <span style={{ color: "var(--color-dojo-gold)" }}>{setName}</span></> : null}
         </div>
-        {/* Card "ID · <id>" line removed — internal identifier, not
-            useful to users (Phase 3 QA). */}
+        {/* Task 2: serial line "{rarity} · {number}" (e.g. "SR · ST01-012").
+            Only shown when we have at least one of the two. */}
+        {(rarity || serialNumber) && (
+          <div style={{ marginTop: "4px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            {[rarity, serialNumber].filter(Boolean).join(" · ")}
+          </div>
+        )}
 
         <div style={{ marginTop: "16px", display: "flex", alignItems: "flex-end", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -750,47 +770,33 @@ function CardDetailInner() {
             </div>
           </div>
           <button
-            onClick={async () => {
-              // F-07: persist to the Want List (Want to Buy) rather than a
-              // local-only toggle. Optimistically flip; the /wantlist page
-              // reads the real rows.
-              setWantToBuy(true);
-              try {
-                await fetch("/api/want-list", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  credentials: "include",
-                  body: JSON.stringify({ cardId: id, intent: "BUY" }),
-                });
-              } catch {
-                setWantToBuy(false);
-              }
+            data-testid="want-to-buy-btn"
+            onClick={() => {
+              // Card detail is the search/explore view (a card not owned) —
+              // its primary want-list action is WANT TO BUY (intent BUY).
+              // Persisted via the shared want-list hook; toggling off removes
+              // it. Toast matches the design copy exactly.
+              const next = toggleWant({ externalId: id, name });
+              setToast(next ? "Added to Want to Buy" : "Removed from Want to Buy");
             }}
+            aria-pressed={starred}
             style={{
               flex: "none", display: "inline-flex", alignItems: "center", justifyContent: "center",
               height: "38px", padding: "0 18px",
-              border: wantToBuy ? "1.5px solid var(--color-dojo-gold)" : "1.5px solid var(--color-dojo-stroke)",
-              background: wantToBuy ? "rgba(233,180,59,.1)" : "transparent",
-              color: wantToBuy ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
+              border: starred ? "1.5px solid var(--color-dojo-gold)" : "1.5px solid var(--color-dojo-stroke)",
+              background: starred ? "rgba(233,180,59,.1)" : "transparent",
+              color: starred ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
               cursor: "pointer", transition: "all 150ms", whiteSpace: "nowrap",
               fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10.5px", letterSpacing: "0.14em",
             }}
           >
-            {wantToBuy ? "✓ WANT TO BUY" : "WANT TO BUY"}
+            {starred ? "✓ WANT TO BUY" : "WANT TO BUY"}
           </button>
         </div>
 
-        {/* eBay Deal Finder (restored) — the F-16 removal took out the
-            Dojo-vs-eBay comparison UI; this brings back a "Find on eBay"
-            link plus a live lowest-listing + good-deal check off the
-            existing /api/ebay/search backend. */}
-        <EbayDealSection
-          name={name}
-          setName={setName}
-          cardNumber={cardNumber}
-          game={game}
-          marketPrice={price}
-        />
+        {/* eBay comparison sections removed per design (Find on eBay /
+            Good Deal / lowest listing / View on eBay). Live listings now
+            surface via "Sellers on the Floor" lower on the page. */}
 
         <div style={{ height: "1px", background: "var(--color-dojo-divider)", margin: "20px -22px 0" }} />
 
@@ -955,48 +961,13 @@ function CardDetailInner() {
           )}
         </div>
 
-        {/* ── Population report ── */}
-        <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-          Population report
-        </div>
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "14px 15px 6px" }}>
-          <div style={{ display: "flex", gap: "10px" }}>
-            {POP.map((p) => (
-              <button
-                key={p.grader}
-                onClick={() => setPopGrader(p.grader)}
-                style={{
-                  display: "flex", flexDirection: "column", gap: "2px",
-                  border: `1.5px solid ${popGrader === p.grader ? "rgba(255,255,255,.55)" : "var(--color-dojo-stroke)"}`,
-                  padding: "8px 14px", cursor: "pointer",
-                  color: popGrader === p.grader ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
-                  background: "transparent",
-                }}
-              >
-                <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px" }}>{p.grader}</span>
-                <span style={{ fontSize: "11px", color: "var(--color-dojo-body)" }}>{p.total} total</span>
-              </button>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", columnGap: "10px", marginTop: "10px" }}>
-            {pop.cells.map(([g, n]) => (
-              <div key={g} style={{ padding: "10px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-                <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>{g}</div>
-                <div style={{ marginTop: "4px", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", color: "var(--color-dojo-faint)" }}>{n}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* ── Population report (Task 2) — PSA primary, reference fallback ── */}
+        <PopulationReport id={id} />
 
-        <button
-          className="dojo-btn dojo-btn-outline"
-          style={{ marginTop: "22px", height: "44px" }}
-          onClick={() => setToast("Sold history coming soon")}
-        >
-          SOLD LIST
-        </button>
+        {/* ── Sellers on the Floor (Task 6) — real eBay listings ── */}
+        <SellersOnFloor id={id} name={name} setName={setName} rarity={rarity} game={game} />
 
-        {/* ── Accessories ── */}
+        {/* ── Accessories (Task 7 — kept) ── */}
         <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
           Accessories
         </div>

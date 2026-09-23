@@ -21,28 +21,32 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id: externalId } = await params;
 
-  const card = await prisma.card.findUnique({
-    where: { externalId },
-    select: { id: true },
-  });
+  // Always resolve to a points array. Unknown card, no history, or a DB
+  // error all return `{ points: [] }` (200) so the detail page's chart
+  // falls back to its mock series instead of surfacing a 404/500.
+  try {
+    const card = await prisma.card.findUnique({
+      where: { externalId },
+      select: { id: true },
+    });
+    if (!card) {
+      return NextResponse.json({ points: [] }, { headers: { "Cache-Control": "no-store" } });
+    }
 
-  if (!card) {
-    return NextResponse.json(
-      { error: "Not Found", message: "Card not found." },
-      { status: 404 }
-    );
+    const rows = await prisma.pricingHistory.findMany({
+      where: { cardId: card.id },
+      orderBy: { recordedAt: "asc" },
+      select: { price: true, recordedAt: true },
+    });
+
+    const points = rows.map((r) => ({
+      date: r.recordedAt.toISOString().slice(0, 10),
+      price: r.price,
+    }));
+
+    return NextResponse.json({ points }, { headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    console.error("[cards/history] failed:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ points: [] }, { headers: { "Cache-Control": "no-store" } });
   }
-
-  const rows = await prisma.pricingHistory.findMany({
-    where: { cardId: card.id },
-    orderBy: { recordedAt: "asc" },
-    select: { price: true, recordedAt: true },
-  });
-
-  const points = rows.map((r) => ({
-    date: r.recordedAt.toISOString().slice(0, 10),
-    price: r.price,
-  }));
-
-  return NextResponse.json({ points }, { headers: { "Cache-Control": "no-store" } });
 }

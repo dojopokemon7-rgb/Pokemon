@@ -33,7 +33,7 @@ export async function listWantList(userId: string, intent?: WantIntent) {
 
   const cards = await prisma.card.findMany({
     where: { externalId: { in: items.map((i) => i.cardId) } },
-    select: { externalId: true, name: true, imageUrl: true },
+    select: { externalId: true, name: true, imageUrl: true, marketPrice: true, set: { select: { name: true } } },
   });
   const byExternalId = new Map(cards.map((c) => [c.externalId, c]));
 
@@ -43,6 +43,8 @@ export async function listWantList(userId: string, intent?: WantIntent) {
       ...item,
       name: card?.name ?? null,
       imageUrl: card?.imageUrl ?? null,
+      marketPrice: card?.marketPrice ?? null,
+      setName: card?.set?.name ?? null,
     };
   });
 }

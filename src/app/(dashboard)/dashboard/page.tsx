@@ -43,6 +43,9 @@ export default async function DashboardPage() {
         quantity: true,
         isFoil: true,
         purchasePrice: true,
+        // Free-text grade/condition — used to count graded cards per
+        // collection on the dashboard Collections tab ("… · N graded").
+        condition: true,
         // F-11: which named collection this owned copy is filed under
         // (null = uncategorized). Drives the dashboard collection selector.
         collectionId: true,

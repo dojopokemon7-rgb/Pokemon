@@ -48,16 +48,22 @@ test.describe("F-07 Want List", () => {
   });
 
   test("add a card to 'Want to Buy' from search, then it shows in that tab", async ({ page }) => {
-    // Add from the search catalog: open the first card and add it to Buy.
+    // The search quick-view popup was removed: tapping a card now navigates
+    // to the full card detail page (/search/[id]), whose primary want-list
+    // action is WANT TO BUY (intent BUY).
     await page.goto("/search");
     await page.getByTestId("card-result").first().click();
+    await expect(page).toHaveURL(/\/search\/[^/?]+(\?|$)/);
+
+    const buyBtn = page.getByTestId("want-to-buy-btn");
+    await expect(buyBtn).toBeVisible({ timeout: 30_000 });
     // Wait for the add POST to actually complete before navigating away, so
     // the row is committed by the time we read the want list.
     const [addRes] = await Promise.all([
       page.waitForResponse(
         (r) => r.url().includes("/api/want-list") && r.request().method() === "POST"
       ),
-      page.getByRole("button", { name: /want to buy/i }).click(),
+      buyBtn.click(),
     ]);
     expect(addRes.ok()).toBeTruthy();
 

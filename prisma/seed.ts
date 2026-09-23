@@ -38,6 +38,7 @@ import {
   searchOnePieceCards,
 } from "@/lib/services/card.service";
 import type { NormalizedCard } from "@/lib/validators/card.validator";
+import { buildTags } from "@/lib/utils/card-tags";
 
 // =============================================================
 // Seed Data
@@ -191,6 +192,15 @@ async function upsertCard(
       ? { marketPrice: card.marketPrice, lastPricedAt: new Date() }
       : {};
 
+  // Searchable keyword tags from the card/set metadata (shared with
+  // scripts/backfill-tags.ts) so new cards are searchable-by-tag on import.
+  const tags = buildTags({
+    rarity: card.rarity ?? null,
+    types: card.types ?? [],
+    number: deriveCardNumber(card.id),
+    set: { name: setName, series: null },
+  });
+
   await prisma.card.upsert({
     where: { externalId: card.id },
     update: {
@@ -198,6 +208,7 @@ async function upsertCard(
       number: deriveCardNumber(card.id),
       rarity: card.rarity,
       types: card.types,
+      tags,
       imageUrl: card.imageUrl,
       setId: cardSet.id,
       ...pricingFields,
@@ -208,6 +219,7 @@ async function upsertCard(
       number: deriveCardNumber(card.id),
       rarity: card.rarity,
       types: card.types,
+      tags,
       imageUrl: card.imageUrl,
       setId: cardSet.id,
       ...pricingFields,

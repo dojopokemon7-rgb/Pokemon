@@ -20,9 +20,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { authClient, useSession } from "@/lib/auth-client";
-import { useState } from "react";
 import { NotificationsPanel } from "@/components/NotificationsPanel";
+import { HeaderSlotProvider, useHeaderLeft } from "./header-slot";
 
 /** The scanner stays phone-width: it's an immersive, locked camera view that
  *  would look wrong stretched across a desktop viewport. Everything else is
@@ -86,16 +85,6 @@ function SearchIcon() {
   );
 }
 
-function LogOutIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
-      <polyline points="16 17 21 12 16 7" />
-      <line x1="21" y1="12" x2="9" y2="12" />
-    </svg>
-  );
-}
-
 // ── Nav item definition ────────────────────────────────────────────
 // "Explore" routes to /search — per the reference, the fourth tab's
 // A.tab handler maps `explore -> 'search'`; there is no separate
@@ -112,21 +101,18 @@ export default function DashboardClientShell({
 }: {
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
-  const [loggingOut, setLoggingOut] = useState(false);
-  const { data: session } = useSession();
-  const userName = session?.user?.name;
+  // Provider wraps the whole shell so any page can inject a control into
+  // the header's left slot (see header-slot.tsx).
+  return (
+    <HeaderSlotProvider>
+      <ShellInner>{children}</ShellInner>
+    </HeaderSlotProvider>
+  );
+}
 
-  async function handleLogOut() {
-    setLoggingOut(true);
-    try {
-      await authClient.signOut();
-    } catch (err) {
-      console.error("Header logout error:", err);
-    } finally {
-      window.location.href = "/login";
-    }
-  }
+function ShellInner({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const headerLeft = useHeaderLeft();
 
   // Defect 5: the scanner is an immersive, locked camera view — no app
   // header, no bottom tab bar, and no scrolling. Render it full-bleed in
@@ -168,57 +154,30 @@ export default function DashboardClientShell({
         position: "relative",
       }}
     >
-      {/* ── Top header ── (full-width; padding scales up on desktop) */}
+      {/* ── Top header ── (full-width; padding scales up on desktop)
+          No wordmark, no username, no bottom divider — it blends into the
+          content. Left slot hosts a page-injected control (e.g. the
+          dashboard collection selector); icons stay pinned right, so the
+          selector and icons share one horizontal line. */}
       <header
         style={{
           position: "sticky",
           top: 0,
           zIndex: 40,
           backgroundColor: "var(--color-dojo-app)",
-          borderBottom: "1px solid var(--color-dojo-divider)",
           display: "flex",
           alignItems: "center",
           padding: "14px clamp(16px, 4vw, 48px)",
           gap: "16px",
         }}
       >
-        {/* DOJO wordmark */}
-        <Link href="/dashboard" style={{ textDecoration: "none" }}>
-          <span
-            style={{
-              fontFamily: "var(--font-display)",
-              fontWeight: 800,
-              fontStretch: "125%",
-              fontSize: "15px",
-              letterSpacing: "0.26em",
-              textTransform: "uppercase",
-              color: "var(--color-dojo-ink)",
-            }}
-          >
-            DOJO
-          </span>
-        </Link>
+        {/* Left slot — page-injected (dashboard collection selector). */}
+        <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+          {headerLeft}
+        </div>
 
-        {/* Spacer */}
+        {/* Spacer pushes the icons to the right. */}
         <div style={{ flex: 1 }} />
-
-        {/* Logged-in user's name (from the session). */}
-        {userName && (
-          <span
-            style={{
-              fontFamily: "var(--font-display)",
-              fontWeight: 700,
-              fontSize: "12px",
-              color: "rgba(255,255,255,0.75)",
-              maxWidth: "40vw",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {userName}
-          </span>
-        )}
 
         {/* Right icons */}
         <Link
@@ -234,24 +193,6 @@ export default function DashboardClientShell({
           <SearchIcon />
         </Link>
         <NotificationsPanel />
-        <button
-          onClick={handleLogOut}
-          disabled={loggingOut}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            color: "var(--color-dojo-vermilion)",
-            display: "flex",
-            alignItems: "center",
-            padding: 0,
-            opacity: loggingOut ? 0.5 : 0.8,
-          }}
-          aria-label="Log Out"
-          title="Log Out"
-        >
-          <LogOutIcon />
-        </button>
       </header>
 
       {/* ── Scrollable content ──

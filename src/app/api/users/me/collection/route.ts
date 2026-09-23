@@ -101,6 +101,9 @@ const AddCardSchema = z.object({
   // Price the user actually paid — defaults to the card's current
   // market price if omitted (a reasonable default, not a fabricated one).
   purchasePrice: z.number().nullable().optional(),
+  // F-10: file this copy under a named collection (null/omitted = Main /
+  // uncategorized). The Add sheet's COLLECTION dropdown sets it.
+  collectionId: z.string().trim().optional(),
 });
 
 const AddCollectionRequestSchema = z.object({
@@ -214,6 +217,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         update: {
           quantity: { increment: item.quantity },
           ...(item.condition ? { condition: item.condition } : {}),
+          ...(item.collectionId ? { collectionId: item.collectionId } : {}),
           // Re-adding bumps the row to the front of the list too.
           addedAt,
         },
@@ -224,6 +228,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           isFoil: item.isFoil,
           condition: item.condition ?? null,
           purchasePrice,
+          ...(item.collectionId ? { collectionId: item.collectionId } : {}),
           addedAt,
         },
       });

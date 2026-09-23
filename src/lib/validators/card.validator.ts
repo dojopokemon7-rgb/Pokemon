@@ -48,6 +48,9 @@ import { z } from "zod";
 export const NormalizedCardSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
+  // Card number within its set (e.g. "001/165"). Used for the detail
+  // page's serial line; may be "" when the source doesn't report one.
+  number: z.string().default(""),
   setImage: z.string(),
   rarity: z.string(),
   hp: z.string().nullable(),

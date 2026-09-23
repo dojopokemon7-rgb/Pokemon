@@ -3,15 +3,16 @@
 /**
  * CardDetailsPopup (F-08) — in-place card details modal.
  *
- * Opens when a card tile is clicked (Home / Explore) instead of
- * navigating to the full /search/[id] page. Shows the card image,
- * price, and grade/condition, plus "Add to Collection" and "Add to
- * Favourites" actions.
+ * Opens when a card tile is clicked on HOME (/dashboard) instead of
+ * navigating away. (Explore/search no longer uses this popup — tapping a
+ * search card navigates straight to /search/[id].) Shows the card image,
+ * price, and grade/condition, plus "Add to Collection" and "Want to Buy"
+ * actions.
  *
  * Presentational + self-contained: the parent owns the add-to-collection
- * flow (it already has an AddCardSheet) and the favorites toggle, and
- * passes them in as callbacks. This keeps the popup reusable across the
- * search grid and the dashboard rows without duplicating that logic.
+ * flow (it already has an AddCardSheet) and passes it in as a callback.
+ * "Want to Buy" is self-contained
+ * (POSTs to /api/want-list) and replaced the old favourites/star action.
  *
  * A11y / behaviour:
  *   - role="dialog" + aria-modal, labelled by the card name.
@@ -41,20 +42,16 @@ export interface CardDetailsData {
 
 interface CardDetailsPopupProps {
   card: CardDetailsData;
-  isFavorite: boolean;
   onClose: () => void;
   onAddToCollection: () => void;
-  onToggleFavorite: () => void;
 }
 
 const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
 
 export function CardDetailsPopup({
   card,
-  isFavorite,
   onClose,
   onAddToCollection,
-  onToggleFavorite,
 }: CardDetailsPopupProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   // "Want to Buy" persists to the Want List (F-07). Self-contained POST so
@@ -257,14 +254,8 @@ export function CardDetailsPopup({
             >
               ADD TO COLLECTION
             </button>
-            <button
-              type="button"
-              onClick={onToggleFavorite}
-              aria-pressed={isFavorite}
-              className="dojo-btn dojo-btn-outline"
-            >
-              {isFavorite ? "★ REMOVE FROM FAVOURITES" : "☆ ADD TO FAVOURITES"}
-            </button>
+            {/* Want to Buy replaces the old favourites/star action — it's
+                the single "save this card" mechanism now. */}
             <button
               type="button"
               onClick={addToWantList}

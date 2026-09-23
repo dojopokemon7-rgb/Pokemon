@@ -40,8 +40,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect, Suspense } from "react";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
-import { useFavorites } from "@/lib/hooks/useFavorites";
-import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
+import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 
 
 // ── Icons for scan/filter buttons (new per client feedback) ────────
@@ -78,6 +77,7 @@ function SortIcon() {
 interface CardResult {
   id: string;
   name: string;
+  number?: string;
   set?: string;
   setName?: string;
   setImage?: string;
@@ -453,14 +453,16 @@ function CardTile({
   // in-memory CARD object already available to the whole app, not a
   // fresh network fetch per card.
   //
-  // `game` is threaded through so the detail page's eBay lookup can
-  // apply the correct category filter (Pokémon vs One Piece).
+  // `game` is threaded through so the detail page shows the right franchise
+  // name; `number`/`rarity` feed the detail page's serial line.
   const detailParams = new URLSearchParams({
     name: card.name,
     game,
     ...(setName ? { set: setName } : {}),
     ...(imgSrc ? { img: imgSrc } : {}),
     ...(price ? { price: String(price) } : {}),
+    ...(card.number ? { number: card.number } : {}),
+    ...(card.rarity ? { rarity: card.rarity } : {}),
   });
 
   return (
@@ -468,9 +470,10 @@ function CardTile({
       href={`/search/${card.id}?${detailParams.toString()}`}
       className="dojo-card-tile"
       data-testid="card-result"
-      // F-08: open the details popup in place instead of navigating. The
-      // href is kept so middle-click / open-in-new-tab still reaches the
-      // full page, but a plain click is intercepted.
+      // Tapping the tile navigates to the full card detail page. The href
+      // already points there (so middle-click / open-in-new-tab works); the
+      // plain click is intercepted only so we can route through goToCard,
+      // which threads price/image/etc. as query params.
       onClick={(e) => {
         e.preventDefault();
         onOpen();
@@ -497,9 +500,8 @@ function CardTile({
           initialsSize="26px"
           style={{ background: "var(--color-dojo-raised)", border: "none" }}
         />
-        {/* Star — track this card (favorites). Added so the search-results
-            tile matches the trending tile exactly (Phase 2 QA: favorites
-            button was missing / card design differed after search). */}
+        {/* Star — adds this card to Want to Buy (replaced favourites).
+            Matches the trending tile's star exactly. */}
         <button
           type="button"
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleTrack(); }}
@@ -918,11 +920,11 @@ function SearchPageInner() {
   const [sort, setSort] = useState<SortKey>("trending");
   const [filterOpen, setFilterOpen] = useState(false);
 
-  // "Track this card" (star) is now server-backed favorites (persist
-  // across sessions, viewable on the portfolio Favorites tab) via the
-  // shared hook — replaces the old local `tracked` Set. "add to
-  // selection" (plus) stays local.
-  const { isFavorite, toggle: toggleFavorite } = useFavorites();
+  // "Track this card" (star) adds the card to the user's Want to Buy list
+  // (server-backed, viewable on /wantlist and the dashboard tabs) — this
+  // replaced the removed favourites feature. "add to selection" (plus)
+  // stays local.
+  const { isWanted, toggle: toggleWant } = useWantToBuy();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Client feedback: + on a card now opens a bottom sheet to pick
@@ -932,8 +934,6 @@ function SearchPageInner() {
   // passes CardResult — both are handled by AddCardSheet.
   const [addSheetCard, setAddSheetCard] = useState<TrendingCard | CardResult | null>(null);
   const [addToast, setAddToast] = useState<string | null>(null);
-  // F-08: the card whose details popup is open (null = closed).
-  const [popupCard, setPopupCard] = useState<CardDetailsData | null>(null);
 
   const toggleSelected = (id: string) => {
     setSelected((prev) => {
@@ -942,6 +942,26 @@ function SearchPageInner() {
       else next.add(id);
       return next;
     });
+  };
+
+  // Tapping a card tile navigates straight to the full detail page
+  // (/search/[id]) — the intermediate quick-view popup was removed. Card
+  // identity/price/image ride along as query params (there is no
+  // get-by-id API; the detail page reads them from the URL).
+  const goToCard = (c: {
+    id: string;
+    name: string;
+    setName?: string;
+    imageUrl?: string;
+    marketPrice?: number | null;
+    rarity?: string;
+  }) => {
+    const params = new URLSearchParams({ name: c.name, game });
+    if (c.setName) params.set("set", c.setName);
+    if (c.imageUrl) params.set("img", c.imageUrl);
+    if (c.marketPrice != null) params.set("price", String(c.marketPrice));
+    if (c.rarity) params.set("rarity", c.rarity);
+    router.push(`/search/${encodeURIComponent(c.id)}?${params.toString()}`);
   };
 
   const doSearch = (q: string) => {
@@ -1225,31 +1245,27 @@ function SearchPageInner() {
                     key={card.id}
                     card={card}
                     game={game}
-                    tracked={isFavorite(card.externalId)}
+                    tracked={isWanted(card.externalId)}
                     onToggleTrack={() => {
-                      const next = toggleFavorite({
+                      const next = toggleWant({
                         externalId: card.externalId,
                         name: card.name,
-                        setName: card.setImage || undefined,
-                        imageUrl: card.imageUrl || undefined,
-                        marketPrice: card.price ?? null,
                       });
-                      setAddToast(next ? "Added to favorites" : "Removed from favorites");
+                      setAddToast(next ? "Added to Want to Buy" : "Removed from Want to Buy");
                     }}
                     selected={selected.has(card.id)}
                     // Client feedback: + now opens a bottom sheet to pick
                     // Ungraded / Graded for this specific card.
                     onToggleSelect={() => setAddSheetCard(card)}
-                    // F-08: tile click opens the details popup.
+                    // Tile click navigates straight to the card detail page.
                     onOpen={() =>
-                      setPopupCard({
-                        externalId: card.externalId,
+                      goToCard({
+                        id: card.externalId,
                         name: card.name,
                         setName: card.setImage || undefined,
                         imageUrl: card.imageUrl || undefined,
                         marketPrice: card.price ?? null,
-                        condition: card.rarity ?? undefined,
-                        game,
+                        rarity: card.rarity ?? undefined,
                       })
                     }
                   />
@@ -1478,27 +1494,23 @@ function SearchPageInner() {
                       index={i}
                       game={game}
                       onAdd={setAddSheetCard}
-                      tracked={isFavorite(card.id)}
+                      tracked={isWanted(card.id)}
                       onToggleTrack={() => {
-                        const next = toggleFavorite({
+                        const next = toggleWant({
                           externalId: card.id,
                           name: card.name,
-                          setName: card.setImage ?? card.setName ?? card.set ?? undefined,
-                          imageUrl: card.imageUrl ?? card.image ?? undefined,
-                          marketPrice: card.marketPrice ?? card.price ?? null,
                         });
-                        setAddToast(next ? "Added to favorites" : "Removed from favorites");
+                        setAddToast(next ? "Added to Want to Buy" : "Removed from Want to Buy");
                       }}
-                      // F-08: tile click opens the details popup.
+                      // Tile click navigates straight to the card detail page.
                       onOpen={() =>
-                        setPopupCard({
-                          externalId: card.id,
+                        goToCard({
+                          id: card.id,
                           name: card.name,
                           setName: card.setImage ?? card.setName ?? card.set ?? undefined,
                           imageUrl: card.imageUrl ?? card.image ?? undefined,
                           marketPrice: card.marketPrice ?? card.price ?? null,
-                          condition: card.rarity ?? undefined,
-                          game,
+                          rarity: card.rarity ?? undefined,
                         })
                       }
                     />
@@ -1522,41 +1534,6 @@ function SearchPageInner() {
           </>
         )}
       </div>
-
-      {/* F-08: card details popup — opens on tile click. "Add to
-          Collection" hands off to the existing AddCardSheet (Ungraded /
-          Graded picker); "Add to Favourites" toggles the server-backed
-          favorite. */}
-      {popupCard && (
-        <CardDetailsPopup
-          card={popupCard}
-          isFavorite={isFavorite(popupCard.externalId)}
-          onClose={() => setPopupCard(null)}
-          onAddToCollection={() => {
-            setAddSheetCard({
-              id: popupCard.externalId,
-              name: popupCard.name,
-              setImage: popupCard.setName ?? undefined,
-              imageUrl: popupCard.imageUrl ?? undefined,
-              price: popupCard.marketPrice ?? undefined,
-              // Carry the grade/condition so the Add sheet can open the
-              // graded flow (F-19) for a graded card.
-              rarity: popupCard.condition ?? undefined,
-            } as CardResult);
-            setPopupCard(null);
-          }}
-          onToggleFavorite={() => {
-            const next = toggleFavorite({
-              externalId: popupCard.externalId,
-              name: popupCard.name,
-              setName: popupCard.setName ?? undefined,
-              imageUrl: popupCard.imageUrl ?? undefined,
-              marketPrice: popupCard.marketPrice ?? null,
-            });
-            setAddToast(next ? "Added to favorites" : "Removed from favorites");
-          }}
-        />
-      )}
 
       {/* Client feedback: + on a card opens this bottom sheet to pick
           Ungraded / Graded before adding. */}
@@ -1603,17 +1580,32 @@ function SearchPageInner() {
 // Options for the graded form dropdowns (Phase 3.4). UI-only; real
 // grading integration is a Week 3 backend feature (schema change to
 // UserCollection + grader-specific fee/turnaround data).
+// Grading companies parseGraded() recognises in an incoming condition
+// string (the Add sheet UI itself only offers RAW / PSA per the design).
 const GRADERS = ["PSA", "BGS", "CGC", "SGC"] as const;
-const CONDITIONS = [
-  "Gem Mint 10",
-  "Mint 9",
-  "Near Mint 8",
-  "Excellent 7",
-  "Very Good 6",
-  "Good 5",
-  "Fair 3",
-  "Poor 1",
-] as const;
+// Raw (ungraded) condition options: value persisted on the row (short code),
+// label shown to the user (full name per the design).
+const RAW_CONDITIONS: { label: string; value: string }[] = [
+  { label: "Near mint", value: "NM" },
+  { label: "Lightly played", value: "LP" },
+  { label: "Moderately played", value: "MP" },
+  { label: "Heavily played", value: "HP" },
+  { label: "Damaged", value: "DMG" },
+];
+// PSA numeric-grade options: label shown, value carries the numeric grade
+// so `resolveCondition()` persists "PSA <grade>".
+const PSA_CONDITIONS: { label: string; value: string }[] = [
+  { label: "Gem Mint 10", value: "Grade 10" },
+  { label: "Mint 9", value: "Grade 9" },
+  { label: "NM-MT 8", value: "Grade 8" },
+  { label: "EX-MT 6", value: "Grade 6" },
+  { label: "EX 5", value: "Grade 5" },
+  { label: "VG-EX 4", value: "Grade 4" },
+  { label: "VG 3", value: "Grade 3" },
+  { label: "Good 2", value: "Grade 2" },
+  { label: "Fair 1.5", value: "Grade 1.5" },
+  { label: "Poor 1", value: "Grade 1" },
+];
 
 /** Parse a graded condition string like "PSA 10" / "BGS 9.5" into its
  *  grading company + grade. Returns null when the string names no known
@@ -1627,6 +1619,79 @@ function parseGraded(
   if (!grader) return null;
   const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "";
   return { grader, grade };
+}
+
+// Custom listbox (no native <select>) — dark box + chevron trigger that
+// opens a dark panel of full-name rows with thin dividers. Reuses the
+// .dojo-select-trigger/.dojo-menu styling already in globals.css; rows use
+// a dark-gray hover/selected highlight (no browser blue). Closes on outside
+// click or Escape.
+function DojoSelect({
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  placeholder,
+  testId,
+}: {
+  value: string;
+  options: { label: string; value: string }[];
+  onChange: (value: string) => void;
+  ariaLabel: string;
+  placeholder?: string;
+  testId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.value === value);
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        data-testid={testId}
+        className={`dojo-select-trigger${open ? " open" : ""}`}
+        style={{ width: "100%" }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`val${selected ? "" : " ph"}`}>{selected?.label ?? placeholder ?? "Select"}</span>
+        <span className="chev" aria-hidden="true">
+          <svg width="12" height="7" viewBox="0 0 12 7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square">
+            <path d="M1 1l5 5 5-5" />
+          </svg>
+        </span>
+      </button>
+      {open && (
+        <>
+          {/* Outside-click scrim closes the panel. */}
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 59 }} />
+          <div role="listbox" aria-label={ariaLabel} className="dojo-menu" style={{ top: "100%", marginTop: "4px", zIndex: 60 }}>
+            {options.map((o) => {
+              const on = o.value === value;
+              return (
+                <div
+                  key={o.value}
+                  role="option"
+                  aria-selected={on}
+                  className="row"
+                  // Dark-gray highlight for selected/hover (no gold tint, no
+                  // browser blue). Hover handled via inline pointer events so
+                  // we don't need a new CSS class.
+                  style={{ background: on ? "var(--color-dojo-raised-2, #2a2a2a)" : "transparent" }}
+                  onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = "var(--color-dojo-raised-2, #2a2a2a)"; }}
+                  onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}
+                  onClick={() => { onChange(o.value); setOpen(false); }}
+                >
+                  <span style={{ flex: 1 }}>{o.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function AddCardSheet({
@@ -1648,46 +1713,79 @@ function AddCardSheet({
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
   // Parse "PSA 10" → { grader: "PSA", grade: "10" } so a graded card
-  // pre-fills its own known values. Unknown companies fall back to PSA.
+  // pre-fills its grader + condition.
   const parsed = parseGraded(initialCondition);
 
-  // Phase 3.4 / F-19: which step of the sheet is showing.
-  //   "picker"  — Ungraded / Graded choice buttons (default for raw cards)
-  //   "graded"  — Grading Company / Grade form. Auto-selected when the card
-  //               already carries a graded condition (F-19).
-  const [step, setStep] = useState<"picker" | "graded">(parsed ? "graded" : "picker");
-  const [grader, setGrader] = useState<(typeof GRADERS)[number]>(parsed?.grader ?? "PSA");
-  const [condition, setCondition] = useState<(typeof CONDITIONS)[number]>("Gem Mint 10");
-  const [grade, setGrade] = useState(parsed?.grade ?? "10");
+  // GRADER: only RAW and PSA per the design. A graded card (initialCondition
+  // names a company) opens on PSA; everything else defaults to RAW.
+  const [grader, setGrader] = useState<"RAW" | "PSA">(parsed ? "PSA" : "RAW");
+  // CONDITION: the select value. For RAW it's a raw grade (NM…DMG); for PSA
+  // it's a "Gem Mint 10"-style option whose numeric grade we persist.
+  const [condition, setCondition] = useState<string>(
+    parsed ? `Grade ${parsed.grade}` : RAW_CONDITIONS[0].value
+  );
+  const [collectionId, setCollectionId] = useState<string>("");
+  const [qty, setQty] = useState(1);
+  const [showPayment, setShowPayment] = useState(false);
+  const [pricePaid, setPricePaid] = useState("");
 
-  // `id` is the internal DB id for TrendingCard, but the *search*
-  // API returns `id` as the externalId (see api/cards/search/route.ts).
-  // Use externalId when available (trending), else fall back to id (search).
+  // The user's named collections for the COLLECTION dropdown.
+  const { data: collections = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ["collections"],
+    queryFn: async () => {
+      const res = await fetch("/api/collections", { credentials: "include" });
+      if (!res.ok) return [];
+      return (await res.json()).data ?? [];
+    },
+  });
+
+  // `id` is the internal DB id for TrendingCard, but the *search* API
+  // returns `id` as the externalId. Use externalId when available.
   const externalId = "externalId" in card ? card.externalId : card.id;
-  // Price may live on `price` (trending) or `marketPrice`/`price` (search).
   const marketPrice = "marketPrice" in card ? (card.marketPrice ?? card.price ?? null) : (card.price ?? null);
+  const imgSrc = (card as { imageUrl?: string }).imageUrl;
+  const setLabel = (card as { setImage?: string; setName?: string }).setImage
+    ?? (card as { setName?: string }).setName ?? "";
+  const showSet = setLabel && setLabel.toLowerCase() !== "unknown set";
 
-  // Shared add path for both raw and graded cards. `condition` (e.g.
-  // "PSA 10") is the only difference — it's persisted on the collection
-  // row as the card's graded metadata (F-19). Omitted → an ungraded add.
-  async function addCard(condition?: string) {
+  // Condition options depend on the grader (Task 2 §5).
+  const conditionOptions = grader === "PSA" ? PSA_CONDITIONS : RAW_CONDITIONS;
+
+  // Keep the selected condition valid when the grader flips.
+  const onGraderChange = (g: "RAW" | "PSA") => {
+    setGrader(g);
+    setCondition(g === "PSA" ? PSA_CONDITIONS[0].value : RAW_CONDITIONS[0].value);
+  };
+
+  /** The `condition` string persisted on the collection row:
+   *  PSA → "PSA <grade>" (e.g. "PSA 10"); RAW → the raw grade (e.g. "NM"). */
+  function resolveCondition(): string {
+    if (grader === "PSA") {
+      const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "10";
+      return `PSA ${grade}`;
+    }
+    return condition;
+  }
+
+  async function handleAdd() {
     setAdding(true);
     setErrMsg(null);
     try {
-      // Build the payload, ensuring imageUrl is only included if it's a valid URL string
-      const cardPayload: any = {
+      const cardPayload: Record<string, unknown> = {
         externalId,
         name: card.name,
-        setName: (card as any).setName ?? (card as any).setImage ?? undefined,
+        setName: (card as { setName?: string; setImage?: string }).setName
+          ?? (card as { setImage?: string }).setImage ?? undefined,
         marketPrice,
-        quantity: 1,
+        quantity: qty,
         isFoil: false,
+        condition: resolveCondition(),
       };
-      if (condition) cardPayload.condition = condition;
-      // Only include imageUrl if it's a non-empty string (Zod requires URL format)
-      const imgUrl = (card as any).imageUrl;
-      if (imgUrl && typeof imgUrl === "string" && imgUrl.trim().length > 0) {
-        cardPayload.imageUrl = imgUrl;
+      if (collectionId) cardPayload.collectionId = collectionId;
+      const paid = Number.parseFloat(pricePaid);
+      if (showPayment && Number.isFinite(paid) && paid > 0) cardPayload.purchasePrice = paid;
+      if (imgSrc && typeof imgSrc === "string" && imgSrc.trim().length > 0) {
+        cardPayload.imageUrl = imgSrc;
       }
 
       const res = await fetch("/api/users/me/collection", {
@@ -1699,8 +1797,6 @@ function AddCardSheet({
       if (!res.ok || json.added === 0) {
         throw new Error(json?.message ?? "Could not add this card.");
       }
-      // Invalidate collection queries so Dashboard/Portfolio refetch
-      // immediately (Phase 1 fix for "card addition not working").
       queryClient.invalidateQueries({ queryKey: ["collection"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       onAdded(`Added ${card.name} to your portfolio`);
@@ -1710,48 +1806,41 @@ function AddCardSheet({
     }
   }
 
-  const addUngraded = () => addCard();
-  // Graded add: persist the company + grade as "PSA 10"-style condition.
-  const addGraded = () => addCard(`${grader} ${grade}`.trim());
+  const label: React.CSSProperties = { fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-faint)" };
 
   return (
     <>
       {/* Backdrop */}
       <div
         onClick={adding ? undefined : onClose}
-        style={{
-          position: "fixed", inset: 0, zIndex: 90,
-          background: "rgba(0,0,0,0.6)",
-          animation: "dojo-fade-in 180ms ease-out both",
-        }}
+        style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,0.6)", animation: "dojo-fade-in 180ms ease-out both" }}
       />
-      {/* Sheet */}
+      {/* Bottom sheet */}
       <div
         role="dialog"
         aria-label="Add card to portfolio"
+        data-testid="graded-add-modal"
         style={{
           position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 91,
           background: "var(--color-dojo-card)",
           borderTop: "1px solid var(--color-dojo-stroke)",
-          padding: "18px 22px 26px",
+          padding: "10px 22px 26px",
           paddingBottom: "calc(26px + env(safe-area-inset-bottom, 0px))",
+          maxHeight: "90vh", overflowY: "auto",
           animation: "dojo-slide-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", marginBottom: "14px" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-            Add to portfolio
-          </span>
+        {/* Drag handle */}
+        <div aria-hidden="true" style={{ width: "40px", height: "4px", borderRadius: "2px", background: "var(--color-dojo-stroke)", margin: "0 auto 14px" }} />
+
+        {/* Header row */}
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
+          <span style={label}>Add Card</span>
           <button
             onClick={onClose}
             disabled={adding}
             aria-label="Close"
-            style={{
-              marginLeft: "auto", background: "none", border: "none",
-              color: "var(--color-dojo-body)", cursor: "pointer",
-              display: "flex", alignItems: "center", padding: 0,
-              opacity: adding ? 0.4 : 1,
-            }}
+            style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--color-dojo-body)", cursor: "pointer", display: "flex", padding: 0, opacity: adding ? 0.4 : 1 }}
           >
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
               <line x1="3" y1="3" x2="15" y2="15" />
@@ -1760,12 +1849,25 @@ function AddCardSheet({
           </button>
         </div>
 
-        <h2 className="dojo-heading" style={{ fontSize: "18px", margin: "0 0 4px" }}>{card.name}</h2>
-        {card.setImage && card.setImage.toLowerCase() !== "unknown set" && (
-          <p style={{ margin: "0 0 20px", fontSize: "12px", color: "var(--color-dojo-body)" }}>
-            {card.setImage}
-          </p>
-        )}
+        {/* Card summary row */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "18px" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="dojo-heading" style={{ fontSize: "18px", lineHeight: 1.2 }}>{card.name}</div>
+            {showSet && (
+              <div style={{ marginTop: "4px", fontSize: "11.5px", color: "var(--color-dojo-body)" }}>
+                {setLabel}{grader === "PSA" ? ` · ${resolveCondition()}` : " · Raw"}
+              </div>
+            )}
+            <div style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "22px", fontVariantNumeric: "tabular-nums", color: marketPrice != null ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)" }}>
+              {marketPrice != null ? fmtUSD(marketPrice) : "—"}
+            </div>
+          </div>
+          {imgSrc && (
+            <div style={{ flex: "none", width: "62px" }}>
+              <CardImage src={imgSrc} alt={card.name} initials={cardInitials(card.name)} initialsSize="14px" style={{ background: "var(--color-dojo-raised)", border: "none" }} />
+            </div>
+          )}
+        </div>
 
         {errMsg && (
           <div style={{ background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", padding: "10px 12px", marginBottom: "16px" }}>
@@ -1773,93 +1875,105 @@ function AddCardSheet({
           </div>
         )}
 
-        {step === "picker" ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <button
-              onClick={addUngraded}
-              disabled={adding}
-              className="dojo-btn dojo-btn-primary"
-            >
-              {adding ? "ADDING…" : "UNGRADED"}
-            </button>
-            <button
-              onClick={() => setStep("graded")}
-              disabled={adding}
-              className="dojo-btn dojo-btn-outline"
-            >
-              GRADED
-            </button>
+        {/* GRADER — RAW / PSA segmented pills */}
+        <div style={{ ...label, marginBottom: "8px" }}>Grader</div>
+        <div role="radiogroup" aria-label="Grading Company" style={{ display: "flex", border: "1px solid var(--color-dojo-stroke)", marginBottom: "18px" }}>
+          {(["RAW", "PSA"] as const).map((g) => {
+            const on = grader === g;
+            return (
+              <button
+                key={g}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => onGraderChange(g)}
+                style={{
+                  flex: 1, padding: "11px 0", cursor: "pointer", border: "none",
+                  background: on ? "var(--color-dojo-gold)" : "var(--color-dojo-card)",
+                  color: on ? "var(--color-dojo-app)" : "var(--color-dojo-faint)",
+                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.14em",
+                }}
+              >
+                {g}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* CONDITION — custom listbox (no native <select>). Options depend
+            on the grader. */}
+        <div style={{ ...label, marginBottom: "8px" }}>Condition</div>
+        <div style={{ marginBottom: "18px" }}>
+          <DojoSelect
+            ariaLabel="Condition"
+            testId="condition-select"
+            placeholder="Select condition"
+            value={condition}
+            options={conditionOptions}
+            onChange={setCondition}
+          />
+        </div>
+
+        {/* COLLECTION + QTY row */}
+        <div style={{ display: "flex", gap: "12px", marginBottom: "18px" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ ...label, marginBottom: "8px" }}>Collection</div>
+            <DojoSelect
+              ariaLabel="Collection"
+              testId="collection-select"
+              value={collectionId}
+              options={[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))]}
+              onChange={setCollectionId}
+            />
           </div>
-        ) : (
-          /* F-19: Graded Add Flow — capture the grading company + grade and
-             persist them as the collection row's `condition` ("PSA 10"). */
-          <div
-            data-testid="graded-add-modal"
-            style={{ display: "flex", flexDirection: "column", gap: "14px" }}
-          >
-            <div className="dojo-input-wrap">
-              <label className="dojo-label" htmlFor="grader-select">Grading Company</label>
-              <select
-                id="grader-select"
-                aria-label="Grading Company"
-                value={grader}
-                onChange={(e) => setGrader(e.target.value as (typeof GRADERS)[number])}
-                className="dojo-select"
-              >
-                {GRADERS.map((g) => (
-                  <option key={g} value={g}>{g}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="dojo-input-wrap">
-              <label className="dojo-label" htmlFor="condition-select">Condition</label>
-              <select
-                id="condition-select"
-                value={condition}
-                onChange={(e) => setCondition(e.target.value as (typeof CONDITIONS)[number])}
-                className="dojo-select"
-              >
-                {CONDITIONS.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="dojo-input-wrap">
-              <label className="dojo-label" htmlFor="grade-input">Grade</label>
-              <input
-                id="grade-input"
-                type="text"
-                inputMode="decimal"
-                placeholder="10"
-                value={grade}
-                onChange={(e) => setGrade(e.target.value)}
-                className="dojo-input"
-              />
-            </div>
-
-            <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
-              <button
-                type="button"
-                onClick={() => setStep("picker")}
-                className="dojo-btn dojo-btn-outline"
-                style={{ flex: 1 }}
-              >
-                BACK
-              </button>
-              <button
-                type="button"
-                onClick={addGraded}
-                disabled={adding}
-                className="dojo-btn dojo-btn-primary"
-                style={{ flex: 2 }}
-              >
-                {adding ? "ADDING…" : "ADD TO COLLECTION"}
-              </button>
+          <div style={{ flex: "none" }}>
+            <div style={{ ...label, marginBottom: "8px" }}>Qty</div>
+            <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--color-dojo-stroke)" }}>
+              <button type="button" aria-label="Decrease quantity" onClick={() => setQty((q) => Math.max(1, q - 1))}
+                style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>−</button>
+              <div style={{ width: "34px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "14px", color: "var(--color-dojo-ink)" }}>{qty}</div>
+              <button type="button" aria-label="Increase quantity" onClick={() => setQty((q) => q + 1)}
+                style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>+</button>
             </div>
           </div>
+        </div>
+
+        {/* RECORD PAYMENT (optional) */}
+        <div style={{ display: "flex", alignItems: "center", marginBottom: showPayment ? "8px" : "20px" }}>
+          <span style={label}>Record Payment</span>
+          <span style={{ marginLeft: "6px", fontSize: "9px", color: "var(--color-dojo-faint)", textTransform: "lowercase", letterSpacing: 0 }}>optional</span>
+          {!showPayment && (
+            <button type="button" onClick={() => setShowPayment(true)}
+              style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}>
+              + Add
+            </button>
+          )}
+        </div>
+        {showPayment && (
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="0.01"
+            placeholder="Price paid (USD)"
+            aria-label="Price paid"
+            value={pricePaid}
+            onChange={(e) => setPricePaid(e.target.value)}
+            className="dojo-input"
+            style={{ width: "100%", marginBottom: "20px" }}
+          />
         )}
+
+        {/* ADD TO PORTFOLIO */}
+        <button
+          type="button"
+          onClick={handleAdd}
+          disabled={adding}
+          className="dojo-btn dojo-btn-primary"
+          style={{ width: "100%" }}
+        >
+          {adding ? "ADDING…" : "ADD TO PORTFOLIO"}
+        </button>
       </div>
     </>
   );

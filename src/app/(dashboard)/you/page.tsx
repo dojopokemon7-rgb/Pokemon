@@ -24,7 +24,6 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSession, authClient } from "@/lib/auth-client";
 import { CollectionsSection } from "./_components/CollectionsSection";
-import { CompareCollectionsSection } from "./_components/CompareCollectionsSection";
 import { ContactSupport } from "./_components/ContactSupport";
 
 // Same shape + query key as the dashboard uses. React Query dedupes
@@ -246,9 +245,6 @@ export default function YouAccountPage() {
 
       {/* ── Collections (F-10) ── */}
       <CollectionsSection />
-
-      {/* ── Compare Collections (F-22) ── */}
-      <CompareCollectionsSection />
 
       {/* ── Connected accounts ── */}
       <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>

@@ -145,8 +145,10 @@ export function CollectionsSection() {
   });
 
   const [adding, setAdding] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  // Which row is expanded (shows the Delete option), and which collection
+  // has the delete-confirmation modal open.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
@@ -169,27 +171,30 @@ export function CollectionsSection() {
     }
   }
 
-  async function handleUpdate(id: string, v: FormValues) {
+  async function handleDelete(id: string) {
     setBusy(true);
     try {
-      await fetch(`/api/collections/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(v),
-      });
-      setEditingId(null);
+      await fetch(`/api/collections/${id}`, { method: "DELETE", credentials: "include" });
+      setPendingDelete(null);
+      setExpandedId(null);
       await refresh();
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleDelete(id: string) {
+  // Row-level PUBLIC/PRIVATE toggle — a partial PATCH of just `isPrivate`.
+  // No-op when already in the requested state so the pills don't refetch
+  // needlessly.
+  async function handleSetPrivacy(id: string, isPrivate: boolean) {
     setBusy(true);
     try {
-      await fetch(`/api/collections/${id}`, { method: "DELETE", credentials: "include" });
-      setConfirmingId(null);
+      await fetch(`/api/collections/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ isPrivate }),
+      });
       await refresh();
     } finally {
       setBusy(false);
@@ -206,7 +211,7 @@ export function CollectionsSection() {
           <button
             type="button"
             aria-label="Add collection"
-            onClick={() => { setAdding(true); setEditingId(null); }}
+            onClick={() => { setAdding(true); setExpandedId(null); }}
             style={{
               display: "inline-flex", alignItems: "center", gap: "6px",
               padding: "6px 12px", cursor: "pointer",
@@ -243,7 +248,7 @@ export function CollectionsSection() {
           </p>
           <button
             type="button"
-            onClick={() => { setAdding(true); setEditingId(null); }}
+            onClick={() => { setAdding(true); setExpandedId(null); }}
             className="dojo-btn dojo-btn-primary"
             style={{ width: "auto", height: "40px", padding: "0 20px", margin: "0 auto" }}
           >
@@ -252,66 +257,100 @@ export function CollectionsSection() {
         </div>
       )}
 
-      {collections.map((c) =>
-        editingId === c.id ? (
-          <CollectionForm
-            key={c.id}
-            initial={{ name: c.name, isPrivate: c.isPrivate, typeTag: c.typeTag }}
-            submitLabel="Save"
-            busy={busy}
-            onSubmit={(v) => handleUpdate(c.id, v)}
-            onCancel={() => setEditingId(null)}
-          />
-        ) : (
-          <div
-            key={c.id}
-            data-testid="collection-row"
-            style={{ display: "flex", alignItems: "center", gap: "10px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}
-          >
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>
-                {c.name}
+      {collections.map((c) => {
+        const expanded = expandedId === c.id;
+        return (
+          <div key={c.id} data-testid="collection-row" style={{ borderBottom: "1px solid var(--color-dojo-divider)" }}>
+            {/* Row — click anywhere (except the pills) to expand the Delete
+                panel. Only name + caption + PUBLIC/PRIVATE pills show here. */}
+            <div
+              role="button"
+              tabIndex={0}
+              aria-expanded={expanded}
+              aria-label={`${c.name} — expand for options`}
+              onClick={() => setExpandedId(expanded ? null : c.id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(expanded ? null : c.id); } }}
+              style={{ display: "flex", alignItems: "center", gap: "10px", padding: "13px 0", cursor: "pointer" }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>
+                  {c.name}
+                </div>
+                <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+                  {c.isPrivate ? "Only you" : "Visible to everyone"}
+                </div>
               </div>
-              <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-                {c.isPrivate ? "Private" : "Public"} · {c.typeTag}
+
+              {/* PUBLIC / PRIVATE pills — stop propagation so toggling privacy
+                  doesn't also expand/collapse the row. */}
+              <div style={{ display: "flex", flex: "none", border: "1px solid var(--color-dojo-stroke)" }}>
+                {([
+                  { label: "Public", value: false },
+                  { label: "Private", value: true },
+                ] as const).map((opt) => {
+                  const active = c.isPrivate === opt.value;
+                  return (
+                    <button
+                      key={opt.label}
+                      type="button"
+                      disabled={busy}
+                      aria-pressed={active}
+                      aria-label={`Set ${opt.label.toLowerCase()}`}
+                      onClick={(e) => { e.stopPropagation(); if (!active) handleSetPrivacy(c.id, opt.value); }}
+                      style={{
+                        padding: "6px 12px", cursor: active ? "default" : "pointer", border: "none",
+                        background: active ? "var(--color-dojo-gold)" : "var(--color-dojo-card)",
+                        color: active ? "var(--color-dojo-app)" : "var(--color-dojo-faint)",
+                        fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "8.5px",
+                        letterSpacing: "0.14em", textTransform: "uppercase",
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => { setEditingId(c.id); setAdding(false); }}
-              style={{ ...linkBtn, color: "var(--color-dojo-gold)" }}
-            >
-              Edit
-            </button>
-            {confirmingId === c.id ? (
-              <>
+
+            {/* Expanded panel — single Delete action. */}
+            {expanded && (
+              <div style={{ padding: "0 0 13px", display: "flex" }}>
                 <button
                   type="button"
-                  disabled={busy}
-                  onClick={() => handleDelete(c.id)}
+                  onClick={() => setPendingDelete({ id: c.id, name: c.name })}
                   style={{ ...linkBtn, color: "var(--color-dojo-vermilion)" }}
                 >
-                  Confirm Delete
+                  Delete
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingId(null)}
-                  style={{ ...linkBtn, color: "var(--color-dojo-faint)" }}
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmingId(c.id)}
-                style={{ ...linkBtn, color: "var(--color-dojo-vermilion)" }}
-              >
-                Delete
-              </button>
+              </div>
             )}
           </div>
-        )
+        );
+      })}
+
+      {/* Double-confirm delete modal (Task 3). */}
+      {pendingDelete && (
+        <>
+          <div onClick={() => !busy && setPendingDelete(null)} style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,0.6)" }} />
+          <div role="dialog" aria-modal="true" aria-label="Confirm delete collection" style={{ position: "fixed", inset: 0, zIndex: 91, display: "flex", alignItems: "center", justifyContent: "center", padding: "22px", pointerEvents: "none" }}>
+            <div style={{ pointerEvents: "auto", width: "100%", maxWidth: "340px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "20px" }}>
+              <h2 className="dojo-heading" style={{ fontSize: "18px", margin: "0 0 10px" }}>Delete collection?</h2>
+              <p className="dojo-body" style={{ margin: "0 0 18px", fontSize: "13px", lineHeight: 1.5 }}>
+                Are you sure you want to delete &ldquo;{pendingDelete.name}&rdquo;? This cannot be undone.
+              </p>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button type="button" disabled={busy} onClick={() => setPendingDelete(null)}
+                  className="dojo-btn dojo-btn-outline" style={{ flex: 1, width: "auto", height: "44px" }}>
+                  Cancel
+                </button>
+                <button type="button" disabled={busy} onClick={() => handleDelete(pendingDelete.id)}
+                  style={{ flex: 1, height: "44px", cursor: "pointer", border: "1px solid var(--color-dojo-vermilion)", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+                  {busy ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

@@ -20,9 +20,8 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, useMemo, useRef } from "react";
-import { aggregateCollectionStats, ALL_COLLECTIONS } from "@/lib/utils/collection-aggregation";
 import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
-import { useFavorites } from "@/lib/hooks/useFavorites";
+import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
 export interface CollectionItem {
@@ -31,6 +30,8 @@ export interface CollectionItem {
   quantity: number;
   isFoil: boolean;
   purchasePrice: number | null;
+  /** Free-text grade/condition (e.g. "PSA 10") — drives graded counts. */
+  condition?: string | null;
   /** F-11: named collection this copy is filed under (null = uncategorized). */
   collectionId?: string | null;
   card: {
@@ -54,14 +55,29 @@ function toPopupCard(item: CollectionItem): CardDetailsData {
   };
 }
 
-type TabId = "mv" | "coll" | "gain" | "lose";
+type TabId = "mv" | "coll" | "gain" | "lose" | "buy" | "sell" | "trade";
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "mv", label: "Most valuable" },
-  { id: "coll", label: "By set" },
+  { id: "mv", label: "Most Valuable" },
+  { id: "coll", label: "Collections" },
   { id: "gain", label: "Gainers" },
   { id: "lose", label: "Losers" },
+  { id: "buy", label: "Want to Buy" },
+  { id: "sell", label: "Want to Sell" },
+  { id: "trade", label: "Want to Trade" },
 ];
+
+// Want-list item shape from GET /api/want-list (service resolves name /
+// price / set from the catalog by externalId).
+interface WantListApiItem {
+  id: string;
+  cardId: string;
+  intent: "BUY" | "SELL" | "TRADE";
+  name: string | null;
+  imageUrl: string | null;
+  marketPrice: number | null;
+  setName: string | null;
+}
 
 // ── Chart ranges ───────────────────────────────────────────────────
 const RANGES = ["1D", "7D", "1M", "3M", "6M", "MAX"] as const;
@@ -377,9 +393,14 @@ function SectionRow({ name, sub, price, delta, up, onOpen }: {
 }
 
 // ── Collection row (for Collections tab) ───────────────────────────
-function CollectionRow({ name, count, value, delta, up }: {
-  name: string; count: number; value: number; delta: string; up: boolean;
+// Sub line matches the design's "120 cards · 4 graded" format; the graded
+// count is omitted when zero so ungraded collections read cleanly.
+function CollectionRow({ name, count, graded, value, delta, up }: {
+  name: string; count: number; graded: number; value: number; delta: string; up: boolean;
 }) {
+  const sub = graded > 0
+    ? `${count} card${count !== 1 ? "s" : ""} · ${graded} graded`
+    : `${count} card${count !== 1 ? "s" : ""}`;
   return (
     <div style={{ display: "flex", alignItems: "center", height: "57px", borderTop: "1px solid var(--color-dojo-divider)", cursor: "pointer" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -387,7 +408,7 @@ function CollectionRow({ name, count, value, delta, up }: {
           {name}
         </div>
         <div style={{ marginTop: "3px", fontSize: "11px", color: "var(--color-dojo-body)" }}>
-          {count} card{count !== 1 ? "s" : ""}
+          {sub}
         </div>
       </div>
       <div style={{ textAlign: "right" }}>
@@ -417,16 +438,19 @@ interface DashboardClientProps {
 export default function DashboardClient({
   firstName,
   initialItems,
-  collections = [],
+  collections: collectionList = [],
 }: DashboardClientProps) {
   const [activeTab, setActiveTab] = useState<TabId>("mv");
   const [activeRange, setActiveRange] = useState<RangeId>("1M");
   const [hidden, setHidden] = useState(false);
-  // F-11: which collection the dashboard headline is scoped to.
-  const [selectedCollection, setSelectedCollection] = useState<string>(ALL_COLLECTIONS);
+  // Multi-select collection filter (F-11). A set of collection ids that are
+  // currently included; an EMPTY set means "all collections" (no filter).
+  // The "__uncat__" sentinel selects uncategorized (loose) cards.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Whether the selector dropdown panel is open.
+  const [collMenuOpen, setCollMenuOpen] = useState(false);
   // F-08: the card whose details popup is open (null = closed).
   const [popupCard, setPopupCard] = useState<CardDetailsData | null>(null);
-  const { isFavorite, toggle: toggleFavorite } = useFavorites();
 
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   const dateString = `${today} · Markets open`;
@@ -447,6 +471,46 @@ export default function DashboardClient({
   });
 
   const hasCollection = collectionData && collectionData.length > 0;
+
+  // Want List (F-07) for the Want to Buy / Sell / Trade tabs. One fetch of
+  // all intents (the service resolves name / price / set per item); the UI
+  // filters by intent below. Shares the ["want-list"] key family the
+  // wantlist page uses, so adds/moves there keep this in sync.
+  const { data: wantItems = [] } = useQuery<WantListApiItem[]>({
+    queryKey: ["want-list", "all"],
+    queryFn: async () => {
+      const res = await fetch("/api/want-list", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch want list");
+      const json = await res.json();
+      return (json.data ?? []) as WantListApiItem[];
+    },
+  });
+
+  // Map want-list items of one intent into SectionRow shape (real price +
+  // set; mocked delta for MVP, same as the other card lists). Opening the
+  // popup uses the card's externalId (cardId).
+  const wantRows = useMemo(() => {
+    const toRows = (intent: "BUY" | "SELL" | "TRADE") =>
+      wantItems
+        .filter((w) => w.intent === intent)
+        .map((w) => {
+          const { delta, pct } = mockDelta(Math.random() > 0.5);
+          return {
+            name: w.name ?? w.cardId,
+            sub: w.setName ?? "—",
+            price: w.marketPrice != null ? fmt(w.marketPrice) : "—",
+            delta,
+            up: pct >= 0,
+            card: {
+              externalId: w.cardId,
+              name: w.name ?? w.cardId,
+              setName: w.setName ?? undefined,
+              marketPrice: w.marketPrice,
+            } as CardDetailsData,
+          };
+        });
+    return { BUY: toRows("BUY"), SELL: toRows("SELL"), TRADE: toRows("TRADE") };
+  }, [wantItems]);
 
   // ── Computed stats from REAL data ────────────────────────────────
   const stats = useMemo(() => {
@@ -475,23 +539,29 @@ export default function DashboardClient({
         };
       });
 
-    // Collections: group by CardSet.name (REAL data)
-    const setGroups = new Map<string, { count: number; value: number }>();
+    // Collections: REAL named collections (F-10). Each owned copy carries
+    // a `collectionId` (null = uncategorized). Aggregate count / graded /
+    // value per named collection, plus an "Uncategorized" bucket for the
+    // loose cards so nothing owned is hidden.
+    const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
+    const nameById = new Map(collectionList.map((c) => [c.id, c.name]));
+    const groups = new Map<string, { count: number; graded: number; value: number }>();
     for (const item of items) {
-      const setName = item.card.set?.name ?? "Unknown Set";
-      const existing = setGroups.get(setName) ?? { count: 0, value: 0 };
-      setGroups.set(setName, {
-        count: existing.count + item.quantity,
-        value: existing.value + (item.card.marketPrice ?? 0) * item.quantity,
-      });
+      const key = item.collectionId ?? "__uncat__";
+      const g = groups.get(key) ?? { count: 0, graded: 0, value: 0 };
+      g.count += item.quantity;
+      if (item.condition && GRADED_RE.test(item.condition)) g.graded += item.quantity;
+      g.value += (item.card.marketPrice ?? 0) * item.quantity;
+      groups.set(key, g);
     }
-    const collections = Array.from(setGroups.entries())
-      .sort((a, b) => b[1].value - a[1].value)
-      .slice(0, 5)
-      .map(([name, data]) => {
+    const collections = Array.from(groups.entries())
+      .map(([key, data]) => {
         const { delta, pct } = mockDelta(Math.random() > 0.4);
-        return { name, ...data, delta, up: pct >= 0 };
-      });
+        const name = key === "__uncat__" ? "Uncategorized" : nameById.get(key) ?? "Collection";
+        return { key, name, ...data, delta, up: pct >= 0 };
+      })
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
 
     // Gainers: real cards with mocked POSITIVE deltas
     // TODO Week 3: Replace mocked deltas with real PricingHistory calculations
@@ -546,35 +616,78 @@ export default function DashboardClient({
     const overallDelta = marketValue * (overallPct / 100);
 
     return { marketValue, paid, unrealized, mostValuable, collections, gainers, losers, chartData, overallPct, overallDelta };
-  }, [collectionData, activeRange]);
+  }, [collectionData, activeRange, collectionList]);
 
-  // F-11: headline value / count / chart scoped to the selected collection.
-  // Uses the shared aggregator so the selector re-scopes the top-of-page
-  // figures. When "All Collections" is selected this equals the full total.
+  // F-11: headline value / count / chart scoped to the selected collections.
+  // Empty selection = all cards (no filter). Otherwise include only owned
+  // copies whose collection membership is in the selected set (loose cards
+  // ride the "__uncat__" sentinel).
   const scoped = useMemo(() => {
-    const agg = aggregateCollectionStats(
-      (collectionData ?? []).map((i) => ({
-        quantity: i.quantity,
-        purchasePrice: i.purchasePrice,
-        collectionId: i.collectionId ?? null,
-        card: { marketPrice: i.card.marketPrice },
-      })),
-      selectedCollection
-    );
-    // Re-shape the sparkline via the existing range-aware generator so it
-    // still varies by range; falls back to the aggregator's empty series
-    // when the scoped total is zero (empty state → no line, no crash).
-    const chartData =
-      agg.totalValue > 0 ? generateMockChartData(agg.totalValue, activeRange) : [];
-    return { marketValue: agg.totalValue, cardCount: agg.cardCount, chartData };
-  }, [collectionData, selectedCollection, activeRange]);
+    const all = collectionData ?? [];
+    const filtered =
+      selectedIds.size === 0
+        ? all
+        : all.filter((i) => selectedIds.has(i.collectionId ?? "__uncat__"));
 
-  // Get rows for the active tab
+    let marketValue = 0;
+    let cardCount = 0;
+    for (const i of filtered) {
+      marketValue += (i.card.marketPrice ?? 0) * i.quantity;
+      cardCount += i.quantity;
+    }
+    marketValue = Math.round(marketValue * 100) / 100;
+
+    // Range-aware sparkline; empty series when the scoped total is zero
+    // (empty state → no line, no crash).
+    const chartData = marketValue > 0 ? generateMockChartData(marketValue, activeRange) : [];
+    return { marketValue, cardCount, chartData };
+  }, [collectionData, selectedIds, activeRange]);
+
+  // Selectable filter options: every named collection plus an
+  // "Uncategorized" bucket for loose cards. Each gets a stable color square
+  // (deterministic from index) matching the design's colored indicators.
+  const COLL_COLORS = ["#E9B43B", "#0AC27E", "#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A"];
+  const collOptions = useMemo(() => {
+    const opts = collectionList.map((c, i) => ({
+      id: c.id,
+      name: c.name,
+      color: COLL_COLORS[i % COLL_COLORS.length],
+    }));
+    opts.push({ id: "__uncat__", name: "Uncategorized", color: "#9AA0A6" });
+    return opts;
+    // COLL_COLORS is a module-stable literal; only the list drives this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collectionList]);
+
+  // Pill label: "All Collections" when nothing is filtered, the single
+  // collection's name when exactly one is picked, else "N selected".
+  const pillLabel = (() => {
+    if (selectedIds.size === 0) return "All Collections";
+    if (selectedIds.size === 1) {
+      const only = [...selectedIds][0];
+      return collOptions.find((o) => o.id === only)?.name ?? "1 selected";
+    }
+    return `${selectedIds.size} selected`;
+  })();
+
+  const toggleId = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // Get card rows for the active tab (Collections is handled separately
+  // since it renders CollectionRow, not SectionRow).
   const getActiveRows = () => {
     switch (activeTab) {
       case "mv": return stats.mostValuable;
       case "gain": return stats.gainers;
       case "lose": return stats.losers;
+      case "buy": return wantRows.BUY;
+      case "sell": return wantRows.SELL;
+      case "trade": return wantRows.TRADE;
       default: return [];
     }
   };
@@ -582,12 +695,22 @@ export default function DashboardClient({
   const getTabTitle = () => {
     switch (activeTab) {
       case "mv": return "Most valuable cards";
-      // Grouped by set, not a card list — title says so explicitly to
-      // avoid the "set name where a card name is expected" confusion
-      // (Phase 2 QA). The CollectionRow rows are deliberately set names.
-      case "coll": return "Grouped by set";
+      case "coll": return "Your collections";
       case "gain": return "Top gainers this week";
       case "lose": return "Top losers this week";
+      case "buy": return "Want to buy";
+      case "sell": return "Want to sell";
+      case "trade": return "Want to trade";
+    }
+  };
+
+  // Empty-state copy per tab so a blank list reads clearly.
+  const getEmptyText = () => {
+    switch (activeTab) {
+      case "buy": return "Nothing on your buy list yet";
+      case "sell": return "Nothing on your sell list yet";
+      case "trade": return "Nothing on your trade list yet";
+      default: return "No cards yet";
     }
   };
 
@@ -596,35 +719,111 @@ export default function DashboardClient({
       {hasCollection ? (
         /* ══════════ POPULATED STATE ══════════ */
         <>
-          {/* Defect 3: removed the dead "Main ▾" pill (a static control with
-              no onClick that duplicated the functional selector below) along
-              with the duplicate search/bell icons already provided by the
-              global shell header. Only the real F-11 selector remains. */}
+          {/* ── Collection selector (F-11) — injected into the shell
+              header's left slot so it shares one row with the search/bell
+              icons. A compact pill that opens a multi-select filter panel
+              (SELECT COLLECTIONS · checkbox + color square per item · DONE).
+              Empty selection = all collections. */}
+          <HeaderLeftSlot>
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                data-testid="collection-select"
+                aria-haspopup="listbox"
+                aria-expanded={collMenuOpen}
+                onClick={() => setCollMenuOpen((v) => !v)}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "8px",
+                  padding: "7px 12px", cursor: "pointer",
+                  border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)",
+                  color: "var(--color-dojo-ink)",
+                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px",
+                  letterSpacing: "0.12em", textTransform: "uppercase", whiteSpace: "nowrap",
+                }}
+              >
+                {pillLabel}
+                <span aria-hidden="true" style={{ fontSize: "9px", opacity: 0.7 }}>▾</span>
+              </button>
 
-          {/* ── Collection selector (F-11) ── */}
-          <div style={{ marginTop: "16px" }}>
-            <label htmlFor="collection-select" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
-              Collection
-            </label>
-            <select
-              id="collection-select"
-              aria-label="Collection"
-              data-testid="collection-select"
-              value={selectedCollection}
-              onChange={(e) => setSelectedCollection(e.target.value)}
-              style={{
-                fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px",
-                letterSpacing: "0.08em", color: "var(--color-dojo-ink)",
-                background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)",
-                padding: "8px 10px", cursor: "pointer",
-              }}
-            >
-              <option value={ALL_COLLECTIONS}>All Collections</option>
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
+              {collMenuOpen && (
+                <>
+                  {/* Click-away scrim */}
+                  <div
+                    onClick={() => setCollMenuOpen(false)}
+                    style={{ position: "fixed", inset: 0, zIndex: 60 }}
+                  />
+                  <div
+                    role="listbox"
+                    aria-label="Select collections"
+                    style={{
+                      position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61,
+                      minWidth: "240px", background: "var(--color-dojo-card)",
+                      border: "1px solid var(--color-dojo-stroke)",
+                      boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    <div style={{ padding: "12px 14px 8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-faint)", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                      Select Collections
+                    </div>
+                    <div style={{ maxHeight: "260px", overflowY: "auto" }}>
+                      {collOptions.map((o) => {
+                        const on = selectedIds.has(o.id);
+                        return (
+                          <button
+                            key={o.id}
+                            type="button"
+                            role="option"
+                            aria-selected={on}
+                            onClick={() => toggleId(o.id)}
+                            style={{
+                              display: "flex", alignItems: "center", gap: "10px", width: "100%",
+                              padding: "10px 14px", cursor: "pointer", background: "none", border: "none",
+                              borderBottom: "1px solid var(--color-dojo-divider)", textAlign: "left",
+                            }}
+                          >
+                            {/* Checkbox */}
+                            <span
+                              aria-hidden="true"
+                              style={{
+                                flex: "none", width: "16px", height: "16px",
+                                border: "1px solid " + (on ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+                                background: on ? "var(--color-dojo-gold)" : "transparent",
+                                color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center",
+                                fontSize: "11px", fontWeight: 900,
+                              }}
+                            >
+                              {on ? "✓" : ""}
+                            </span>
+                            {/* Color square indicator */}
+                            <span aria-hidden="true" style={{ flex: "none", width: "10px", height: "10px", background: o.color }} />
+                            <span style={{ flex: 1, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>
+                              {o.name}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ padding: "10px 14px", display: "flex", justifyContent: "flex-end", gap: "12px", borderTop: "1px solid var(--color-dojo-divider)" }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedIds(new Set())}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCollMenuOpen(false)}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </HeaderLeftSlot>
 
           {/* ── Portfolio value + eye toggle ── */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "16px" }}>
@@ -715,24 +914,30 @@ export default function DashboardClient({
             ))}
           </div>
 
-          {/* ── Tab selector (Most valuable / Collections / Gainers / Losers) ── */}
-          <div style={{ display: "flex", gap: "8px", overflowX: "auto", marginTop: "20px", paddingBottom: "2px" }}>
-            {TABS.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  flex: "none", whiteSpace: "nowrap", padding: "9px 12px", cursor: "pointer",
-                  border: "1px solid var(--color-dojo-stroke)",
-                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
-                  background: activeTab === tab.id ? "var(--color-dojo-gold)" : "transparent",
-                  color: activeTab === tab.id ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
-                  boxShadow: "none",
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
+          {/* ── Tab selector — horizontally scrollable pill row. Active
+              tab is gold-highlighted with a gold underline (task 4). ── */}
+          <div className="dojo-scroll-hidden" style={{ display: "flex", gap: "8px", overflowX: "auto", marginTop: "20px", paddingBottom: "2px" }}>
+            {TABS.map((tab) => {
+              const on = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  aria-pressed={on}
+                  style={{
+                    flex: "none", whiteSpace: "nowrap", padding: "9px 12px", cursor: "pointer",
+                    border: "1px solid " + (on ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+                    borderBottom: on ? "2px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)",
+                    fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+                    background: on ? "var(--color-dojo-gold)" : "transparent",
+                    color: on ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
+                    boxShadow: "none",
+                  }}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
 
           {/* ── Tab content ── */}
@@ -741,8 +946,15 @@ export default function DashboardClient({
               <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
                 {getTabTitle()}
               </span>
+              {/* "ALL ›" deep-links to the fuller view for the active tab:
+                  collections → /you (manager), want tabs → /wantlist,
+                  card lists → /portfolio. */}
               <Link
-                href="/portfolio"
+                href={
+                  activeTab === "coll" ? "/you"
+                  : activeTab === "buy" || activeTab === "sell" || activeTab === "trade" ? "/wantlist"
+                  : "/portfolio"
+                }
                 style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}
               >
                 All ›
@@ -750,10 +962,10 @@ export default function DashboardClient({
             </div>
 
             {activeTab === "coll" ? (
-              /* Collections tab — grouped by CardSet */
+              /* Collections tab — real named collections (F-10) */
               stats.collections.length > 0 ? (
-                stats.collections.map((coll) => (
-                  <CollectionRow key={coll.name} {...coll} />
+                stats.collections.map(({ key, ...coll }) => (
+                  <CollectionRow key={key} {...coll} />
                 ))
               ) : (
                 <div style={{ padding: "20px 0", textAlign: "center", color: "var(--color-dojo-faint)", fontSize: "12px" }}>
@@ -761,14 +973,14 @@ export default function DashboardClient({
                 </div>
               )
             ) : (
-              /* Most valuable / Gainers / Losers tabs */
+              /* Card lists — Most valuable / Gainers / Losers / Want to Buy/Sell/Trade */
               getActiveRows().length > 0 ? (
-                getActiveRows().map(({ card, ...row }) => (
-                  <SectionRow key={row.name} {...row} onOpen={() => setPopupCard(card)} />
+                getActiveRows().map(({ card, ...row }, i) => (
+                  <SectionRow key={`${row.name}-${i}`} {...row} onOpen={() => setPopupCard(card)} />
                 ))
               ) : (
                 <div style={{ padding: "20px 0", textAlign: "center", color: "var(--color-dojo-faint)", fontSize: "12px" }}>
-                  No cards yet
+                  {getEmptyText()}
                 </div>
               )
             )}
@@ -837,23 +1049,13 @@ export default function DashboardClient({
 
       {/* F-08: card details popup — opens when a Most Valuable / Gainers /
           Losers row is clicked. Add-to-collection routes the user to the
-          search flow (the dashboard has no inline add sheet); favourites
-          toggle in place. */}
+          search flow (the dashboard has no inline add sheet). */}
       {popupCard && (
         <CardDetailsPopup
           card={popupCard}
-          isFavorite={isFavorite(popupCard.externalId)}
           onClose={() => setPopupCard(null)}
           onAddToCollection={() => {
             window.location.href = "/search";
-          }}
-          onToggleFavorite={() => {
-            toggleFavorite({
-              externalId: popupCard.externalId,
-              name: popupCard.name,
-              setName: popupCard.setName ?? undefined,
-              marketPrice: popupCard.marketPrice ?? null,
-            });
           }}
         />
       )}

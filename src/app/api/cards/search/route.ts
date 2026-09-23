@@ -131,9 +131,23 @@ export async function GET(request: Request): Promise<NextResponse> {
         }
       : {};
 
+  // Multi-field query match: name / card number / set name / set code
+  // (the externalId encodes the code, e.g. "pokemon-sv3") / keyword tags.
+  // Only applied when there's a query; an empty query lists the game's
+  // catalog (unchanged). Wrapped in an AND so it composes with the graded
+  // OR + game/price filters below without the two ORs colliding.
+  const queryOr = query
+    ? [
+        { name: { contains: query, mode: "insensitive" as const } },
+        { number: { contains: query, mode: "insensitive" as const } },
+        { tags: { has: query.toLowerCase() } },
+        { set: { name: { contains: query, mode: "insensitive" as const } } },
+        { set: { externalId: { contains: query.toLowerCase() } } },
+      ]
+    : undefined;
+
   const rows = await prisma.card.findMany({
     where: {
-      name: { contains: query, mode: "insensitive" },
       set: {
         externalId: { startsWith: `${game}-` },
         // F-06: narrow to a single set (by name) when the filter is active.
@@ -146,12 +160,15 @@ export async function GET(request: Request): Promise<NextResponse> {
       ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
       // F-06: price range.
       ...priceFilter,
+      // Multi-field query match (AND with the filters above).
+      ...(queryOr ? { AND: [{ OR: queryOr }] } : {}),
     },
     take: RESULT_LIMIT,
     orderBy: orderByForCardSort(sort),
     select: {
       externalId: true,
       name: true,
+      number: true,
       rarity: true,
       types: true,
       imageUrl: true,
@@ -178,6 +195,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   const cards: NormalizedCard[] = rows.map((r) => ({
     id: r.externalId,
     name: r.name,
+    number: r.number ?? "",
     setImage: r.set?.name ?? "",
     rarity: r.rarity ?? "Unknown",
     hp: null,
