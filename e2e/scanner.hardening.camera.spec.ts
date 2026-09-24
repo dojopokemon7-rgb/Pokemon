@@ -30,15 +30,14 @@ test.describe("scanner hardening", () => {
   });
 
   test("no confident match shows a not-recognized state with a manual search fallback", async ({ page }) => {
-    await page.addInitScript(() => {
-      (window as unknown as { __mockOcrText?: string }).__mockOcrText = "blurry unreadable text";
-    });
-    // Recognizer finds nothing above threshold → empty candidates.
+    // Recognizer OCR'd the image (vision) but nothing scored above threshold
+    // → empty candidates. ocrSource is a real source (not "unavailable"), so
+    // the client trusts this result rather than falling back to tesseract.
     await page.route("**/api/cards/recognize", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ success: true, candidates: [] }),
+        body: JSON.stringify({ success: true, ocrSource: "vision", feedbackId: "scan-e2e-2", candidates: [] }),
       })
     );
 

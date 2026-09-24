@@ -16,10 +16,16 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            // Data stays fresh for 60 seconds before a background refetch
-            staleTime: 60 * 1000,
-            // Keep cached data for 5 minutes after the component unmounts
-            gcTime: 5 * 60 * 1000,
+            // Data stays fresh for 5 minutes before a background refetch —
+            // switching between the bottom-nav tabs (dashboard / portfolio /
+            // search / want-list) reads straight from cache instead of
+            // refetching, so a tab switch is instant. Explicit
+            // invalidateQueries on mutations still updates immediately.
+            staleTime: 5 * 60 * 1000,
+            // Keep cached data for 10 minutes after the last observer
+            // unmounts, so tabbing away and back within that window is a
+            // cache hit (no loading spinner, no network round-trip).
+            gcTime: 10 * 60 * 1000,
             // Retry once on failure (external APIs can be flaky)
             retry: 1,
             // Don't refetch every time the user tabs back — for a mobile

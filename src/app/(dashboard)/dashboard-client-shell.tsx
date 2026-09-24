@@ -20,6 +20,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { NotificationsPanel } from "@/components/NotificationsPanel";
 import { HeaderSlotProvider, useHeaderLeft } from "./header-slot";
 
@@ -113,6 +114,36 @@ export default function DashboardClientShell({
 function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const headerLeft = useHeaderLeft();
+  const queryClient = useQueryClient();
+
+  // Warm the destination tab's data on hover/focus of its nav link, so the
+  // page it opens reads from cache instead of firing its query on mount.
+  // <Link prefetch> already warms the route's JS; this warms the DATA.
+  // Dashboard / Portfolio / You all read the same collection endpoint under
+  // shared query keys, so one fetch primes every one of them. Best-effort:
+  // prefetchQuery is a no-op if the data is already fresh (staleTime), and
+  // a failed fetch just means the page loads it normally.
+  const prefetchForHref = (href: string) => {
+    const fetchCollection = () =>
+      fetch("/api/users/me/collection", { credentials: "include" }).then((r) => {
+        if (!r.ok) throw new Error("prefetch failed");
+        return r.json();
+      });
+    if (href === "/portfolio") {
+      queryClient.prefetchQuery({ queryKey: ["portfolio-collection"], queryFn: fetchCollection });
+    } else if (href === "/dashboard" || href === "/you") {
+      // The dashboard/you pages read ["collection"] as CollectionItem[]; the
+      // endpoint returns { items }, so map to the array shape they expect.
+      queryClient.prefetchQuery({
+        queryKey: ["collection"],
+        queryFn: () => fetchCollection().then((d) => d.items ?? []),
+      });
+    }
+    // /search is an infinite query (trending) — prefetching an infinite
+    // query needs its full pageParam contract; <Link prefetch> already warms
+    // its bundle, and the trending API is Redis-cached, so we skip the data
+    // prewarm here rather than risk a cache-shape mismatch.
+  };
 
   // Defect 5: the scanner is an immersive, locked camera view — no app
   // header, no bottom tab bar, and no scrolling. Render it full-bleed in
@@ -257,6 +288,8 @@ function ShellInner({ children }: { children: React.ReactNode }) {
               key={href}
               href={href}
               prefetch
+              onMouseEnter={() => prefetchForHref(href)}
+              onFocus={() => prefetchForHref(href)}
               style={{
                 position: "relative",
                 flex: 1,

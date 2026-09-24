@@ -1,14 +1,18 @@
 "use client";
 
 /**
- * Card Scanner (/scanner) — F-14.
+ * Card Scanner (/scanner) — F-14, multi-signal recognition.
  *
- * Flow: rear-camera live preview → "Scan" captures a frame → preprocess on a
- * canvas (crop to card area, grayscale, contrast) → tesseract.js OCR extracts
- * text → POST the text to /api/cards/recognize, which fuzzy-matches real
- * catalog names → show the TOP 3 candidates ("Is this your card?"). The user
- * taps the right one to add it. No hardcoded results; low-confidence / no
- * match shows "Card not recognized" with a manual search fallback.
+ * Flow: rear-camera live preview with a card-shaped framing outline →
+ * "Scan" captures a frame → auto-crop to the outline → preprocess (2x
+ * upscale, grayscale, contrast) → a glare/brightness check warns if the
+ * shot is unusable → the base64 image is POSTed to /api/cards/recognize,
+ * which OCRs it with Google Cloud Vision and runs the multi-signal matching
+ * engine (number + set + name). If the server has no Vision key it replies
+ * `ocrSource: "unavailable"`, and the client falls back to on-device
+ * tesseract.js OCR and re-submits the text. The TOP 5 candidates show as
+ * tappable rows (image + name + set + confidence); picking one adds it and
+ * records the choice for the recognition tuning loop.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,8 +28,11 @@ interface Candidate {
 
 type Phase = "scan" | "recognizing" | "confirm" | "not-recognized";
 
-// Product threshold: below this the top match isn't trusted (Task 2 §4).
+// Below this top-match confidence we don't auto-trust the result (Task 2 §4).
 const CONFIDENCE_THRESHOLD = 0.4;
+// Crop region as a fraction of the frame — matches the on-screen outline
+// (a portrait card box centered in the viewfinder).
+const CARD_CROP = { wFrac: 0.72, hFrac: 0.9 };
 
 export default function ScannerPage() {
   const router = useRouter();
@@ -34,7 +41,9 @@ export default function ScannerPage() {
 
   const [phase, setPhase] = useState<Phase>("scan");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [feedbackId, setFeedbackId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [cameraDenied, setCameraDenied] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
 
@@ -42,15 +51,10 @@ export default function ScannerPage() {
   const [manualQuery, setManualQuery] = useState("");
   const [manualResults, setManualResults] = useState<Candidate[]>([]);
 
-  // Requests the REAR camera and attaches the stream to the <video>.
-  // Prefers a rear-facing device by deviceId when enumerable, else uses the
-  // `environment` facingMode hint, else falls back to any camera (desktop).
   const startCamera = useCallback(async () => {
     try {
       let stream: MediaStream;
       try {
-        // Try to explicitly pick a rear videoinput device when the browser
-        // exposes device labels/facing info.
         let rearDeviceId: string | undefined;
         try {
           const devices = await navigator.mediaDevices.enumerateDevices();
@@ -60,17 +64,14 @@ export default function ScannerPage() {
         } catch {
           /* enumerateDevices may be unavailable/blocked — ignore */
         }
-
         stream = await navigator.mediaDevices.getUserMedia({
           video: rearDeviceId
             ? { deviceId: { exact: rearDeviceId }, facingMode: { ideal: "environment" } }
             : { facingMode: { ideal: "environment" } },
         });
       } catch {
-        // Desktop / no rear camera → fall back to any available camera.
         stream = await navigator.mediaDevices.getUserMedia({ video: true });
       }
-
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
       setCameraDenied(false);
@@ -86,98 +87,167 @@ export default function ScannerPage() {
     };
   }, [startCamera]);
 
-  /** Capture the current frame, preprocess it, and return grayscale image data
-   *  as a canvas the OCR engine can read. Crops to the centre card area. */
-  function captureProcessedCanvas(): HTMLCanvasElement | null {
+  /**
+   * Capture → auto-crop to the card outline → 2x upscale → grayscale +
+   * contrast. Returns the processed canvas plus a brightness-variance signal
+   * used to warn about glare / too-dark shots.
+   */
+  function captureProcessedCanvas(): { canvas: HTMLCanvasElement; quality: QualitySignal } | null {
     const video = videoRef.current;
     if (!video) return null;
-    // Some environments report 0 dimensions until the first frame decodes
-    // (and headless/synthetic streams may never report real ones). Fall
-    // back to a small canvas so the pipeline still runs — OCR simply reads
-    // whatever is there (in tests OCR is injected, so this is harmless).
     const vw = video.videoWidth || 320;
     const vh = video.videoHeight || 320;
-    // Crop to the centre ~70% (the card area the viewfinder frames).
-    const cropW = Math.round(vw * 0.7);
-    const cropH = Math.round(vh * 0.7);
+
+    // Crop to the card outline region (centered portrait box).
+    const cropW = Math.round(vw * CARD_CROP.wFrac);
+    const cropH = Math.round(vh * CARD_CROP.hFrac);
     const sx = Math.round((vw - cropW) / 2);
     const sy = Math.round((vh - cropH) / 2);
 
+    // 2x upscale so small set/number text survives OCR.
+    const scale = 2;
     const canvas = document.createElement("canvas");
-    canvas.width = cropW;
-    canvas.height = cropH;
+    canvas.width = cropW * scale;
+    canvas.height = cropH * scale;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    // Best-effort frame grab: a not-yet-ready / synthetic video source can
-    // throw here — don't let that abort the (possibly injected) OCR step.
     try {
-      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
     } catch {
-      /* proceed with a blank canvas */
+      /* proceed with a blank canvas (synthetic/not-ready source) */
     }
 
-    // Grayscale + contrast boost so OCR reads the card name cleanly.
-    const img = ctx.getImageData(0, 0, cropW, cropH);
+    // Grayscale + contrast; collect brightness stats for the glare check.
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const d = img.data;
-    const contrast = 1.4; // >1 increases contrast
+    const contrast = 1.4;
     const intercept = 128 * (1 - contrast);
+    let sum = 0;
+    let sumSq = 0;
+    const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) {
       const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       const v = Math.max(0, Math.min(255, contrast * gray + intercept));
       d[i] = d[i + 1] = d[i + 2] = v;
+      sum += gray;
+      sumSq += gray * gray;
     }
     ctx.putImageData(img, 0, 0);
-    return canvas;
+
+    const mean = sum / n;
+    const variance = sumSq / n - mean * mean;
+    return { canvas, quality: { mean, variance } };
   }
 
-  async function runOcr(canvas: HTMLCanvasElement): Promise<string> {
-    // Test seam: E2E can inject OCR output via window.__mockOcrText so the
-    // heavy tesseract.js WASM engine never has to run in the harness. In
-    // production this is undefined and real OCR runs.
+  /** Returns a warning string if the capture looks unusable, else null. */
+  function qualityWarning(q: QualitySignal): string | null {
+    // Very low variance = flat image (blank / severe glare washout or a dark
+    // frame). Very high mean with low variance = blown-out glare. Thresholds
+    // are heuristic — tuned to flag obviously-bad shots, not borderline ones.
+    // ponytail: fixed thresholds, no per-device calibration; a proper
+    // auto-exposure probe would adapt, but this catches the common cases.
+    if (q.variance < 120) {
+      return q.mean > 200
+        ? "Too much glare — tilt the card or move away from the light."
+        : "Too dark or blurry — move closer and steady the card.";
+    }
+    return null;
+  }
+
+  /** On-device OCR fallback (tesseract.js). Test seam: window.__mockOcrText. */
+  async function runTesseract(canvas: HTMLCanvasElement): Promise<string> {
     const injected = (window as unknown as { __mockOcrText?: string }).__mockOcrText;
     if (typeof injected === "string") return injected.trim();
-
-    // Dynamic import: tesseract.js is heavy and browser-only.
-    const { recognize } = await import("tesseract.js");
-    const { data } = await recognize(canvas, "eng");
+    const { recognize: ocr } = await import("tesseract.js");
+    const { data } = await ocr(canvas, "eng");
     return (data.text ?? "").trim();
   }
 
-  async function matchText(text: string): Promise<Candidate[]> {
+  /** Recognize by IMAGE (server-side Vision). Returns null when the server
+   *  has no Vision key / it failed, signaling the tesseract fallback. */
+  async function recognizeByImage(
+    canvas: HTMLCanvasElement
+  ): Promise<{ candidates: Candidate[]; feedbackId: string | null } | null> {
+    const image = canvas.toDataURL("image/jpeg", 0.85);
     const res = await fetch("/api/cards/recognize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ image, game: "pokemon" }),
     });
     if (!res.ok) throw new Error("recognize failed");
     const data = await res.json().catch(() => null);
-    return (data?.candidates ?? []) as Candidate[];
+    if (data?.ocrSource === "unavailable") return null; // → tesseract fallback
+    return {
+      candidates: (data?.candidates ?? []) as Candidate[],
+      feedbackId: data?.feedbackId ?? null,
+    };
+  }
+
+  /** Recognize by TEXT (tesseract fallback / manual). */
+  async function recognizeByText(
+    text: string,
+    source: "tesseract" | "manual"
+  ): Promise<{ candidates: Candidate[]; feedbackId: string | null }> {
+    const res = await fetch("/api/cards/recognize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, game: "pokemon", source }),
+    });
+    if (!res.ok) throw new Error("recognize failed");
+    const data = await res.json().catch(() => null);
+    return {
+      candidates: (data?.candidates ?? []) as Candidate[],
+      feedbackId: data?.feedbackId ?? null,
+    };
   }
 
   async function handleScan() {
     setError(null);
+    setWarning(null);
     setPhase("recognizing");
     try {
-      const canvas = captureProcessedCanvas();
-      if (!canvas) {
+      const captured = captureProcessedCanvas();
+      if (!captured) {
         setError("Couldn't capture a frame. Try again.");
         setPhase("scan");
         return;
       }
-      const text = await runOcr(canvas);
-      const found = await matchText(text);
-      const top = found[0];
+      const warn = qualityWarning(captured.quality);
+      if (warn) setWarning(warn); // non-blocking: still attempt recognition
+
+      // Vision-first: send the image; fall back to on-device tesseract when
+      // the server has no Vision key or Vision returned nothing.
+      let result = await recognizeByImage(captured.canvas);
+      if (result == null) {
+        const text = await runTesseract(captured.canvas);
+        result = await recognizeByText(text, "tesseract");
+      }
+
+      const top = result.candidates[0];
+      setFeedbackId(result.feedbackId);
       if (!top || top.confidence < CONFIDENCE_THRESHOLD) {
         setCandidates([]);
         setPhase("not-recognized");
         return;
       }
-      setCandidates(found);
+      setCandidates(result.candidates);
       setPhase("confirm");
     } catch {
       setError("Scanner error, please try again.");
       setPhase("scan");
     }
+  }
+
+  /** Records the user's pick for the recognition tuning loop (best-effort). */
+  function logPick(cardId: string) {
+    if (!feedbackId) return;
+    void fetch("/api/cards/recognize", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedbackId, pickedCardId: cardId }),
+    }).catch(() => {});
   }
 
   async function addCard(c: Candidate) {
@@ -196,6 +266,7 @@ export default function ScannerPage() {
         body: JSON.stringify({ cards: [payload] }),
       });
       if (!res.ok) throw new Error("add failed");
+      logPick(c.id);
       setAdded(`Added ${c.name} to your portfolio`);
     } catch {
       setError("Could not add this card. Try again.");
@@ -236,7 +307,9 @@ export default function ScannerPage() {
     setManualResults([]);
     setManualQuery("");
     setError(null);
+    setWarning(null);
     setAdded(null);
+    setFeedbackId(null);
     setPhase("scan");
   }
 
@@ -258,7 +331,7 @@ export default function ScannerPage() {
         onClick={() => router.back()}
         aria-label="Close"
         title="Close"
-        style={{ position: "absolute", top: "18px", right: "22px", zIndex: 2, width: "38px", height: "38px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", color: "var(--color-dojo-ink)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+        style={{ position: "absolute", top: "18px", right: "22px", zIndex: 3, width: "38px", height: "38px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", color: "var(--color-dojo-ink)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
       >
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
           <line x1="3" y1="3" x2="15" y2="15" />
@@ -270,17 +343,37 @@ export default function ScannerPage() {
         Card Scanner
       </h1>
       <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", margin: 0 }}>
-        Point your camera at a card, then tap Scan.
+        Line the card up inside the frame, then tap Scan.
       </p>
 
-      <video
-        ref={videoRef}
-        data-testid="camera-preview"
-        autoPlay
-        muted
-        playsInline
-        style={{ width: "100%", maxHeight: "320px", background: "#000", border: "1px solid var(--color-dojo-stroke)", objectFit: "cover" }}
-      />
+      {/* Camera preview with a card-shaped framing outline overlay. */}
+      <div style={{ position: "relative", width: "100%", maxHeight: "360px", flex: "none" }}>
+        <video
+          ref={videoRef}
+          data-testid="camera-preview"
+          autoPlay
+          muted
+          playsInline
+          style={{ width: "100%", maxHeight: "360px", background: "#000", border: "1px solid var(--color-dojo-stroke)", objectFit: "cover", display: "block" }}
+        />
+        {/* Guide outline — a portrait card box centered in the frame, matching
+            the CARD_CROP region the capture step crops to. */}
+        <div
+          data-testid="card-outline"
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            top: `${((1 - CARD_CROP.hFrac) / 2) * 100}%`,
+            left: `${((1 - CARD_CROP.wFrac) / 2) * 100}%`,
+            width: `${CARD_CROP.wFrac * 100}%`,
+            height: `${CARD_CROP.hFrac * 100}%`,
+            border: "2px dashed var(--color-dojo-gold)",
+            borderRadius: "10px",
+            boxShadow: "0 0 0 100vmax rgba(0,0,0,0.35)",
+            pointerEvents: "none",
+          }}
+        />
+      </div>
 
       {cameraDenied ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
@@ -297,6 +390,9 @@ export default function ScannerPage() {
         <button disabled style={{ ...goldBtn, cursor: "default", opacity: 0.7 }}>Scanning…</button>
       ) : null}
 
+      {warning && (
+        <p role="status" style={{ color: "var(--color-dojo-gold)", fontSize: "13px", margin: 0 }}>{warning}</p>
+      )}
       {error && (
         <p role="alert" style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>{error}</p>
       )}
@@ -304,32 +400,48 @@ export default function ScannerPage() {
         <p role="status" style={{ color: "var(--color-dojo-jade)", fontSize: "13px", margin: 0 }}>{added}</p>
       )}
 
-      {/* Confirmation: top-3 candidates ("Is this your card?"). */}
+      {/* Confirmation: top-5 candidates ("Is this your card?"). */}
       {phase === "confirm" && !added && (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto" }}>
           <p style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
             Is this your card?
           </p>
           {candidates.map((c) => (
-            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "12px" }}>
+            <button
+              key={c.id}
+              onClick={() => addCard(c)}
+              style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
+            >
+              {/* Candidate thumbnail (initials fallback when no image). */}
+              <div style={{ flex: "none", width: "40px", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                {c.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={c.imageUrl} alt={c.name} decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : (
+                  <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", color: "var(--color-dojo-gold)" }}>
+                    {c.name.slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+              </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ margin: 0, fontWeight: 700 }}>{c.name}</p>
                 <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--color-dojo-body)" }}>
-                  {c.set} · {Math.round(c.confidence * 100)}% match
+                  {c.set ? `${c.set} · ` : ""}{Math.round(c.confidence * 100)}% match
                 </p>
               </div>
-              <button onClick={() => addCard(c)} style={{ ...goldBtn, padding: "10px 14px" }}>
-                Add to Collection
-              </button>
-            </div>
+            </button>
           ))}
-          <button onClick={resetToScan} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", alignSelf: "flex-start" }}>
-            None of these · Rescan
+          {/* Not your card? Search manually. */}
+          <button
+            onClick={() => { setCandidates([]); setPhase("not-recognized"); }}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", alignSelf: "flex-start" }}
+          >
+            Not your card? Search manually
           </button>
         </div>
       )}
 
-      {/* Not recognized: manual search fallback. */}
+      {/* Not recognized / manual search fallback. */}
       {phase === "not-recognized" && !added && (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto" }}>
           <p role="alert" style={{ margin: 0, fontWeight: 700 }}>Card not recognized</p>
@@ -346,19 +458,26 @@ export default function ScannerPage() {
             style={{ width: "100%" }}
           />
           {manualResults.map((c) => (
-            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "12px" }}>
+            <button
+              key={c.id}
+              onClick={() => addCard(c)}
+              style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
+            >
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ margin: 0, fontWeight: 700 }}>{c.name}</p>
                 {c.set && <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--color-dojo-body)" }}>{c.set}</p>}
               </div>
-              <button onClick={() => addCard(c)} style={{ ...goldBtn, padding: "10px 14px" }}>
-                Add to Collection
-              </button>
-            </div>
+              <span style={{ ...goldBtn, padding: "10px 14px" }}>Add</span>
+            </button>
           ))}
           <button onClick={resetToScan} style={goldBtn}>Rescan</button>
         </div>
       )}
     </div>
   );
+}
+
+interface QualitySignal {
+  mean: number;
+  variance: number;
 }

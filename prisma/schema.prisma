@@ -121,6 +121,9 @@ model CardSet {
 
   cards Card[]
 
+  // Search's F-06 set filter matches `set: { name: { equals, insensitive } }`
+  // and the filter dropdown lists set names; index the column those hit.
+  @@index([name])
   @@map("card_set")
 }
 
@@ -164,6 +167,10 @@ model Card {
   // catalog; without this index the sync's daily writes force a full
   // sequential scan on every trending fetch.
   @@index([updatedAt])
+  // Search matches `tags: { has: <query> }` on every keyword search. A GIN
+  // index is the structure Postgres uses for array membership; without it
+  // the `has` predicate is a sequential scan of the whole catalog.
+  @@index([tags], type: Gin)
   @@map("card")
 }
 
@@ -331,4 +338,29 @@ model WantListItem {
   @@unique([userId, cardId, intent])
   @@index([userId, intent])
   @@map("want_list_item")
+}
+
+// =============================================================
+// SCAN FEEDBACK (F-14 — recognition tuning loop)
+// =============================================================
+// One row per completed scan: the OCR text, the ranked candidates we
+// offered, and the card the user actually picked (null if they abandoned
+// or searched manually). This is the ground-truth dataset for tuning the
+// scoring weights in card-recognition.service.ts later — we never guess at
+// weights, we measure against what users confirmed.
+model ScanFeedback {
+  id           String   @id @default(cuid())
+  userId       String?  // null for anonymous / unauthenticated scans
+  ocrText      String   // raw OCR output the engine scored
+  ocrSource    String   @default("vision") // "vision" | "tesseract" | "manual"
+  // The ranked candidates shown to the user: [{ id, name, set, confidence }].
+  candidates   Json
+  // externalId of the card the user confirmed; null = none picked yet.
+  pickedCardId String?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([pickedCardId])
+  @@index([createdAt])
+  @@map("scan_feedback")
 }

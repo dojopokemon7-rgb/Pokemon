@@ -53,10 +53,26 @@ import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import { CardSortEnum, orderByForCardSort, type CardSortKey } from "@/lib/utils/card-sort";
 
-// A Card row with the set name joined — the shape every branch below
-// produces (all use `include: { set: { select: { name: true } } }`).
+// Only the columns the response mapping actually reads. `include: { set }`
+// used to pull every Card + CardSet column (hi-res URLs, lastEbayPrice,
+// audit timestamps, set logo/symbol/release date) on every trending row —
+// dead payload the grid never renders. This narrow select is the exact
+// projection the `cards.map(...)` below consumes.
+const TRENDING_SELECT = {
+  id: true,
+  externalId: true,
+  name: true,
+  imageUrl: true,
+  imageUrlHi: true,
+  marketPrice: true,
+  rarity: true,
+  set: { select: { name: true } },
+} satisfies Prisma.CardSelect;
+
+// A Card row narrowed to the fields the trending grid renders — the shape
+// every branch below produces (all use `select: TRENDING_SELECT`).
 type CardWithSetName = Prisma.CardGetPayload<{
-  include: { set: { select: { name: true } } };
+  select: typeof TRENDING_SELECT;
 }>;
 
 // Trending is the same query for every logged-in user (global feed
@@ -198,7 +214,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       const ranked = rankedIds.length
         ? await prisma.card.findMany({
             where: { id: { in: rankedIds }, ...gameFilter },
-            include: { set: { select: { name: true } } },
+            select: TRENDING_SELECT,
           })
         : [];
       // Restore the popularity order lost by the `in` query.
@@ -213,7 +229,7 @@ export async function GET(request: Request): Promise<NextResponse> {
           where: { ...gameFilter, id: { notIn: ranked.map((c) => c.id) } },
           orderBy: [{ updatedAt: "desc" }],
           take: limit - ranked.length,
-          include: { set: { select: { name: true } } },
+          select: TRENDING_SELECT,
         });
         rows = [...ranked, ...backfill];
       }
@@ -231,7 +247,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         skip: offset,
         where: gameFilter,
         orderBy: [{ updatedAt: "desc" }],
-        include: { set: { select: { name: true } } },
+        select: TRENDING_SELECT,
       });
       hasMore = fetched.length > limit;
       rows = hasMore ? fetched.slice(0, limit) : fetched;
@@ -241,7 +257,7 @@ export async function GET(request: Request): Promise<NextResponse> {
         skip: offset, // offset pagination — correct for any orderBy
         where: gameFilter,
         orderBy: orderByForCardSort(sort),
-        include: { set: { select: { name: true } } },
+        select: TRENDING_SELECT,
       });
       hasMore = fetched.length > limit;
       rows = hasMore ? fetched.slice(0, limit) : fetched;

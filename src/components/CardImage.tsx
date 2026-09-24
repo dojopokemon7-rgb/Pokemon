@@ -82,6 +82,10 @@ export function CardImage({
           src={src ?? undefined}
           alt={alt}
           loading={loading}
+          // Off-main-thread decode so a grid of tiles doesn't jank the
+          // scroll/paint while images decode. The container's aspect-ratio
+          // already reserves the box, so there's no layout shift to guard.
+          decoding="async"
           onError={() => setErrored(true)}
           style={{
             width: "100%",
