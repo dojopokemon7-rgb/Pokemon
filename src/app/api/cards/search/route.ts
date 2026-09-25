@@ -37,6 +37,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { CardSortEnum, orderByForCardSort } from "@/lib/utils/card-sort";
+import { onePieceImageChain } from "@/lib/utils/card-image";
 import type { NormalizedCard } from "@/lib/validators/card.validator";
 
 /** Flip to `true` to gate search behind a valid Better Auth session. */
@@ -200,7 +201,16 @@ export async function GET(request: Request): Promise<NextResponse> {
     rarity: r.rarity ?? "Unknown",
     hp: null,
     types: r.types ?? [],
-    imageUrl: r.imageUrl ?? r.imageUrlHi ?? "",
+    // One Piece: emit the best image from the fallback chain (clean stored
+    // URL first, then CDN, then Bandai proxy). The client rebuilds the full
+    // chain from the card code for <img onError> stepping.
+    imageUrl:
+      (game === "onepiece"
+        ? onePieceImageChain(r.externalId, r.imageUrl, r.imageUrlHi)[0]
+        : null) ??
+      r.imageUrl ??
+      r.imageUrlHi ??
+      "",
     marketPrice: r.marketPrice,
   }));
 

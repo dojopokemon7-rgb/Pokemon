@@ -31,7 +31,7 @@ export async function GET(
   const sp = request.nextUrl.searchParams;
   const name = (sp.get("name") ?? "").trim();
   const set = (sp.get("set") ?? "").trim();
-  const grade = (sp.get("grade") ?? "").trim();
+  const number = (sp.get("number") ?? "").trim();
   const gameParam = sp.get("game");
   const game: EbayGame = gameParam === "onepiece" ? "onepiece" : "pokemon";
 
@@ -39,10 +39,14 @@ export async function GET(
     return NextResponse.json({ listings: [], error: "Missing card name" }, { status: 200 });
   }
 
-  // Grade rides along as an extra quoted phrase (via `number`) so a graded
-  // search narrows to slabbed listings; the service quotes each phrase.
-  const searchParams = { name, game, ...(set ? { set } : {}), ...(grade ? { number: grade } : {}) };
-  const cacheKey = RedisKeys.ebaySold([id, name, set, grade, game].join("|"));
+  // The card NUMBER is the strongest search token — the "125/197" print for
+  // Pokémon, the Bandai code (OP01-001) for One Piece (which is exactly `id`).
+  // Prefer the passed `number`; fall back to `id` for One Piece where the id
+  // IS the code. The service decides how to weight it per game, and (crucially
+  // for One Piece) drops the set/grade phrases that used to zero out results.
+  const cardNumber = number || (game === "onepiece" ? id : "");
+  const searchParams = { name, game, ...(set ? { set } : {}), ...(cardNumber ? { number: cardNumber } : {}) };
+  const cacheKey = RedisKeys.ebaySold([id, name, set, cardNumber, game].join("|"));
 
   // Best-effort cache read; a Redis miss/outage falls through to live.
   try {

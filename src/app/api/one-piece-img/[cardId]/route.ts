@@ -26,7 +26,10 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 
-const CARD_ID_PATTERN = /^(OP|ST)\d{2}-\d{3}$/;
+// Real One Piece card codes on Bandai's CDN: set-coded (OP01-001, ST01-012,
+// EB03-035, PRB01-001) and P-### promos. Verified each prefix serves clean
+// official art (150–290KB PNGs) vs TCGplayer's ~19KB "SAMPLE" placeholder.
+const CARD_ID_PATTERN = /^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/;
 const UPSTREAM_BASE = "https://en.onepiece-cardgame.com/images/cardlist/card/";
 
 export async function GET(

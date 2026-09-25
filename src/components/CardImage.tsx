@@ -24,6 +24,13 @@ import { useState } from "react";
 interface CardImageProps {
   src?: string | null;
   alt: string;
+  /**
+   * Ordered image URLs to try, best first. On <img onError> the component
+   * advances to the next entry before giving up to initials. When omitted,
+   * `src` is the only URL tried. Used for One Piece cards, where a source
+   * can 404 or be CORP-blocked and the next tier should be attempted.
+   */
+  fallbackChain?: string[];
   /** Two-letter initials derived from the card name, e.g. "CZ" for Charizard. */
   initials: string;
   /** CSS aspect-ratio for the container. Card art defaults to Pokémon's 660×921. */
@@ -48,6 +55,7 @@ export function cardInitials(name: string): string {
 export function CardImage({
   src,
   alt,
+  fallbackChain,
   initials,
   aspectRatio = "660 / 921",
   className,
@@ -55,11 +63,19 @@ export function CardImage({
   initialsSize = "22px",
   loading = "lazy",
 }: CardImageProps) {
-  // `errored` flips to true when the browser fires <img onError> — either
-  // the URL 404s, the CDN blocks the request (CORP/CORS), or the file
-  // returned isn't a valid image. Either way, we swap to initials.
-  const [errored, setErrored] = useState(false);
-  const showImage = Boolean(src) && !errored;
+  // The ordered list of URLs to try. Prefer an explicit chain; otherwise the
+  // single `src`. De-duped, empties dropped.
+  const chain = (fallbackChain?.length ? fallbackChain : [src]).filter(
+    (u): u is string => typeof u === "string" && u.length > 0
+  );
+  // Index into `chain`. On <img onError> (404, CORP/CORS block, non-image
+  // body) we advance to the next candidate; once past the end we give up to
+  // the initials placeholder.
+  const [idx, setIdx] = useState(0);
+  const current = chain[idx];
+  const showImage = Boolean(current);
+
+  const handleError = () => setIdx((i) => i + 1);
 
   return (
     <div
@@ -79,14 +95,17 @@ export function CardImage({
       {showImage ? (
         /* eslint-disable-next-line @next/next/no-img-element */
         <img
-          src={src ?? undefined}
+          // key on the URL so React remounts the <img> when we advance the
+          // chain — guarantees the browser refetches the next candidate.
+          key={current}
+          src={current}
           alt={alt}
           loading={loading}
           // Off-main-thread decode so a grid of tiles doesn't jank the
           // scroll/paint while images decode. The container's aspect-ratio
           // already reserves the box, so there's no layout shift to guard.
           decoding="async"
-          onError={() => setErrored(true)}
+          onError={handleError}
           style={{
             width: "100%",
             height: "100%",
@@ -109,5 +128,29 @@ export function CardImage({
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * NoPriceText — the shared "no price data" label.
+ *
+ * Renders small gray "No price data" text in place of a bare "—" when a
+ * card has no market price (marketPrice null/0 with no upstream source).
+ * Used on the search/trending grid tiles so a priceless card reads as an
+ * explicit state rather than a cryptic dash. Font-size is overridable so it
+ * can sit where a price number would on tiles of different sizes.
+ */
+export function NoPriceText({ fontSize = "11px" }: { fontSize?: string }) {
+  return (
+    <span
+      style={{
+        fontFamily: "var(--font-body)",
+        fontWeight: 400,
+        fontSize,
+        color: "var(--color-dojo-faint)",
+      }}
+    >
+      No price data
+    </span>
   );
 }

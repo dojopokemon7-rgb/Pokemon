@@ -38,7 +38,8 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState, useRef, useEffect, Suspense } from "react";
-import { CardImage, cardInitials } from "@/components/CardImage";
+import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
+import { onePieceImageChain } from "@/lib/utils/card-image";
 import { Toast } from "@/components/Toast";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 
@@ -221,10 +222,17 @@ function TrendCardTile({
         {tracked ? "★" : "☆"}
       </button>
 
-      {/* Card art — CardImage handles missing/broken src fallbacks to initials */}
+      {/* Card art — CardImage handles missing/broken src fallbacks to initials.
+          For One Piece, pass the image fallback chain so a 404/blocked source
+          auto-advances to the next tier (clean → CDN → Bandai proxy). */}
       <div style={{ width: "62%", alignSelf: "center" }}>
         <CardImage
           src={card.imageUrl}
+          fallbackChain={
+            game === "onepiece"
+              ? onePieceImageChain(card.externalId, card.imageUrl)
+              : undefined
+          }
           alt={card.name}
           initials={initials}
           initialsSize="22px"
@@ -245,7 +253,7 @@ function TrendCardTile({
       <div style={{ marginTop: "12px", display: "flex", alignItems: "flex-end", gap: "8px" }}>
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "3px" }}>
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "15px", color: card.price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
-            {card.price != null ? fmtUSD(card.price) : "—"}
+            {card.price != null ? fmtUSD(card.price) : <NoPriceText fontSize="11px" />}
           </div>
           {/* Client feedback: show value deviation on every tile. If the API
               returned a real delta, use it. Otherwise fall back to a
@@ -494,6 +502,9 @@ function CardTile({
       <div style={{ position: "relative" }}>
         <CardImage
           src={imgSrc}
+          fallbackChain={
+            game === "onepiece" ? onePieceImageChain(card.id, imgSrc) : undefined
+          }
           alt={card.name}
           initials={initials}
           aspectRatio="660 / 921"
@@ -596,7 +607,7 @@ function CardTile({
           >
             {price > 0
               ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(price)
-              : "—"}
+              : <NoPriceText fontSize="12px" />}
           </span>
           {/* Client feedback: display value deviation delta on each tile.
               Deterministic mock derived from card.id so the same card always
@@ -1000,7 +1011,7 @@ function SearchPageInner() {
   // Flatten paginated trending pages, de-duplicating by externalId so a
   // card can never render twice even if the curated page 1 and a later
   // catalog page happen to overlap (F-04: zero duplicates on Show More).
-  const trendingCards = (() => {
+  const rawTrendingCards = (() => {
     const seen = new Set<string>();
     const out: TrendingCard[] = [];
     for (const p of trendingPages?.pages ?? []) {
@@ -1033,7 +1044,61 @@ function SearchPageInner() {
     enabled: initialQ.trim().length > 0,
   });
 
-  const cards = data?.cards ?? [];
+  const rawCards = data?.cards ?? [];
+
+  // Background repricing (Pokémon): the search/trending APIs read the local
+  // DB and never block on an external price call, so brand-new cards can land
+  // with no price ("—"). After the grid renders we ask /api/cards/reprice to
+  // fill those in (Redis-cached + DB-backfilled server-side), merge the
+  // returned prices here, and the tiles update live. Never blocks initial
+  // load. One Piece is ~98% priced already, so this targets Pokémon.
+  const [repriced, setRepriced] = useState<Record<string, number>>({});
+  const visibleForReprice = hasQuery ? rawCards : rawTrendingCards;
+  useEffect(() => {
+    if (game !== "pokemon") return;
+    const missing = visibleForReprice
+      .map((c) => ("externalId" in c ? c.externalId : c.id) as string)
+      .filter((id) => id && repriced[id] == null)
+      // only those that currently show no price
+      .filter((id) => {
+        const c = visibleForReprice.find((x) => ("externalId" in x ? x.externalId : x.id) === id) as
+          | { price?: number | null; marketPrice?: number | null }
+          | undefined;
+        return c != null && c.marketPrice == null && c.price == null;
+      })
+      .slice(0, 20);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    fetch("/api/cards/reprice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ externalIds: missing }),
+    })
+      .then((r) => (r.ok ? r.json() : { prices: {} }))
+      .then((d: { prices?: Record<string, number> }) => {
+        if (!cancelled && d.prices && Object.keys(d.prices).length) {
+          setRepriced((prev) => ({ ...prev, ...d.prices }));
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // Keyed on the visible id set (stable string) so it re-runs on
+    // page-through / new search, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, visibleForReprice.map((c) => ("externalId" in c ? c.externalId : c.id)).join(","), repriced]);
+
+  // Apply any repriced values onto the visible cards.
+  const applyReprice = <T extends { externalId?: string; id?: string; price?: number | null; marketPrice?: number | null }>(list: T[]): T[] =>
+    Object.keys(repriced).length === 0
+      ? list
+      : list.map((c) => {
+          const id = (c.externalId ?? c.id) as string;
+          const p = repriced[id];
+          return p == null ? c : { ...c, price: c.price ?? p, marketPrice: c.marketPrice ?? p };
+        });
+
+  const cards = applyReprice(rawCards);
+  const trendingCards = applyReprice(rawTrendingCards);
 
   // F-06: options for the "Filter by set" dropdown. When no set filter is
   // active the current results span every set, so we remember that full set

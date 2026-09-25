@@ -231,30 +231,56 @@ const CATEGORY_IDS: Record<EbayGame, string> = {
 };
 
 /**
- * Builds the eBay `q` parameter using exact-phrase quoting so we match
- * this exact card rather than every listing that mentions the character
- * anywhere in the title. eBay honours double-quoted tokens in `q` as
- * required phrases.
+ * Builds the eBay `q` parameter. The strategy is GAME-SPECIFIC because the
+ * two catalogs are titled very differently on eBay (verified against the live
+ * Browse API, 2026):
  *
- * Examples:
- *   { name: "Charizard", set: "Base Set", number: "4/102" }
- *     → q="Charizard" "Base Set" "4/102"
- *   { name: "Monkey D. Luffy", number: "OP01-001" }
- *     → q="Monkey D. Luffy" "OP01-001"
+ *   POKÉMON — sellers title with the name + set + the "125/197"-style number.
+ *     Quoting name + set + number as exact phrases pins the right print:
+ *       { name:"Charizard ex", set:"Obsidian Flames", number:"125/197" }
+ *         → q="Charizard ex" "Obsidian Flames" "125/197"
  *
- * Empty/whitespace-only optional fields are skipped so we don't emit
- * `""` bare quotes (which eBay treats as a literal match on nothing).
+ *   ONE PIECE — the Bandai code (OP01-001) is the reliable token sellers put
+ *     in titles; set names + rarity codes ("SR"/"L") are rarely in the title
+ *     verbatim, so quoting them as REQUIRED phrases returned ZERO results.
+ *     We quote the name and append the code UNQUOTED (a keyword, not a forced
+ *     phrase), and drop set/grade:
+ *       { name:"Monkey D. Luffy", number:"OP01-001" }
+ *         → q="Monkey D. Luffy" OP01-001
+ *
+ * Empty/whitespace-only fields are skipped so we never emit bare `""`.
  */
 export function buildEbayQuery(params: EbaySearchParams): string {
+  const name = params.name?.trim();
+  const set = params.set?.trim();
+  const number = params.number?.trim();
+
+  if (params.game === "onepiece") {
+    const parts: string[] = [];
+    if (name) parts.push(`"${name}"`);
+    // Bandai code as a loose keyword — forcing it as a phrase over-narrows.
+    if (number) parts.push(number);
+    return parts.join(" ");
+  }
+
+  // Pokémon (and default): exact-phrase name + set + number.
   const parts: string[] = [];
-  const push = (v: string | undefined) => {
-    const t = v?.trim();
-    if (t) parts.push(`"${t}"`);
-  };
-  push(params.name);
-  push(params.set);
-  push(params.number);
+  if (name) parts.push(`"${name}"`);
+  if (set) parts.push(`"${set}"`);
+  if (number) parts.push(`"${number}"`);
   return parts.join(" ");
+}
+
+/**
+ * Whether to constrain the search to a trading-card CATEGORY. Pokémon's
+ * "Individual Cards" category (183454) cleanly excludes plushies/sealed
+ * product. One Piece's only available category (261186) is a broad parent
+ * that (verified live) returns noise or zero for individual cards, so we
+ * search WITHOUT a category for One Piece and let the Bandai code narrow it.
+ * Returns null when no category should be applied.
+ */
+function categoryForGame(game: EbayGame): string | null {
+  return game === "onepiece" ? null : CATEGORY_IDS[game];
 }
 
 /**
@@ -282,20 +308,18 @@ export async function searchEbayListings(
   const token = await getEbayAccessToken();
   const baseUrl = process.env.EBAY_API_URL ?? DEFAULT_BASE_URL;
 
-  // Category IDs are strictly required by the client spec:
-  //   - Pokémon TCG (Individual Cards): 183454
-  //   - Trading Card Games / One Piece: 261186
-  // These exclude plushies, video games, sealed products, and other
-  // non-card noise that would otherwise drag the eBay average price
-  // toward meaningless values.
-  const categoryId = CATEGORY_IDS[params.game];
+  // Category filter narrows Pokémon to Individual Cards (183454), excluding
+  // plushies/sealed/video-game noise. One Piece's only category is a broad
+  // parent that returns noise/zero for single cards (verified live), so we
+  // omit it there and let the Bandai code in the query do the narrowing.
+  const categoryId = categoryForGame(params.game);
 
   // `filter=buyingOptions:{FIXED_PRICE|AUCTION}` skips classified-ad
   // listings (which have no price and would break the numeric average).
   const url =
     `${baseUrl}/buy/browse/v1/item_summary/search?` +
     `q=${encodeURIComponent(query)}` +
-    `&category_ids=${categoryId}` +
+    (categoryId ? `&category_ids=${categoryId}` : "") +
     `&filter=${encodeURIComponent("buyingOptions:{FIXED_PRICE|AUCTION}")}` +
     `&limit=${limit}`;
 
@@ -418,12 +442,12 @@ export async function searchEbaySellerListings(
 
   const token = await getEbayAccessToken();
   const baseUrl = process.env.EBAY_API_URL ?? DEFAULT_BASE_URL;
-  const categoryId = CATEGORY_IDS[params.game];
+  const categoryId = categoryForGame(params.game);
 
   const url =
     `${baseUrl}/buy/browse/v1/item_summary/search?` +
     `q=${encodeURIComponent(query)}` +
-    `&category_ids=${categoryId}` +
+    (categoryId ? `&category_ids=${categoryId}` : "") +
     `&filter=${encodeURIComponent("buyingOptions:{FIXED_PRICE|AUCTION}")}` +
     `&limit=${limit}`;
 

@@ -34,6 +34,29 @@
 
 import { prisma } from "@/lib/db";
 import { buildTags } from "@/lib/utils/card-tags";
+import { pickPokemonMarketPrice } from "@/lib/utils/card-price";
+import { isOnePieceCode } from "@/lib/utils/card-image";
+import { resolveOnePieceCleanImage } from "@/lib/utils/card-image.server";
+
+/**
+ * Resolves a clean (non-"SAMPLE") One Piece image on import when a licensed
+ * source is configured, else returns the source URL unchanged. Never throws —
+ * a resolver failure just keeps the original image so the sync never breaks.
+ */
+async function cleanImageOnImport(
+  code: string,
+  sourceUrl: string | null | undefined
+): Promise<string | null | undefined> {
+  // Skip the network call entirely when no clean source is configured.
+  if (!process.env.TCGCOLLECTOR_API_KEY && !process.env.CARDMARKET_APP_TOKEN) {
+    return sourceUrl;
+  }
+  try {
+    return (await resolveOnePieceCleanImage(code)) ?? sourceUrl;
+  } catch {
+    return sourceUrl;
+  }
+}
 
 // -----------------------------------------------------------------
 // Types
@@ -310,6 +333,15 @@ async function upsertCard(card: SyncCardInput, setId: string, setName: string): 
     set: { name: setName, series: null },
   });
 
+  // One Piece images from the source (apitcg → TCGplayer CDN) carry a
+  // "SAMPLE" watermark. If a licensed clean source is configured, resolve a
+  // clean URL here so the DAILY CRON stores clean art on import — no separate
+  // backfill needed. cleanImageOnImport() is a no-op (returns the given URL)
+  // when no key is set, so this adds zero cost to the common case.
+  const cleanImage = isOnePieceCode(card.externalId)
+    ? await cleanImageOnImport(card.externalId, card.imageUrl)
+    : card.imageUrl;
+
   await prisma.card.upsert({
     where: { externalId: card.externalId },
     update: {
@@ -318,7 +350,7 @@ async function upsertCard(card: SyncCardInput, setId: string, setName: string): 
       rarity: card.rarity ?? undefined,
       types: card.types ?? undefined,
       tags,
-      imageUrl: card.imageUrl ?? undefined,
+      imageUrl: cleanImage ?? undefined,
       imageUrlHi: card.imageUrlHi ?? undefined,
       ...(card.marketPrice != null
         ? { marketPrice: card.marketPrice, lastPricedAt: new Date() }
@@ -332,7 +364,7 @@ async function upsertCard(card: SyncCardInput, setId: string, setName: string): 
       rarity: card.rarity ?? null,
       types: card.types ?? [],
       tags,
-      imageUrl: card.imageUrl ?? null,
+      imageUrl: cleanImage ?? null,
       imageUrlHi: card.imageUrlHi ?? null,
       marketPrice: card.marketPrice ?? null,
       lastPricedAt: card.marketPrice != null ? new Date() : null,
@@ -373,6 +405,17 @@ interface PokemonTcgCard {
       string,
       { market?: number }
     >;
+  };
+  // Cardmarket is the fallback price source: brand-new sets often ship
+  // before tcgplayer has a market price, but cardmarket already has a
+  // trend/average. Reading it keeps newest-set cards from showing "—".
+  cardmarket?: {
+    prices?: {
+      averageSellPrice?: number;
+      trendPrice?: number;
+      avg7?: number;
+      avg30?: number;
+    };
   };
 }
 interface PokemonTcgCardsResponse {
@@ -449,7 +492,7 @@ async function listPokemonCardsInSet(
         types: c.types ?? [],
         imageUrl: c.images?.small ?? null,
         imageUrlHi: c.images?.large ?? null,
-        marketPrice: pickTcgplayerMarket(c.tcgplayer?.prices),
+        marketPrice: pickPokemonMarketPrice(c),
       });
     }
 
@@ -459,18 +502,6 @@ async function listPokemonCardsInSet(
   }
 
   return collected;
-}
-
-function pickTcgplayerMarket(
-  prices?: Record<string, { market?: number } | undefined>
-): number | null {
-  if (!prices) return null;
-  for (const variant of Object.values(prices)) {
-    if (variant && typeof variant.market === "number" && !Number.isNaN(variant.market)) {
-      return variant.market;
-    }
-  }
-  return null;
 }
 
 // =================================================================

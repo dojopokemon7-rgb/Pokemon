@@ -52,6 +52,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import { CardSortEnum, orderByForCardSort, type CardSortKey } from "@/lib/utils/card-sort";
+import { onePieceImageChain } from "@/lib/utils/card-image";
 
 // Only the columns the response mapping actually reads. `include: { set }`
 // used to pull every Card + CardSet column (hi-res URLs, lastEbayPrice,
@@ -280,7 +281,20 @@ export async function GET(request: Request): Promise<NextResponse> {
       externalId: c.externalId,
       name: c.name,
       setImage: c.set?.name ?? "",
-      imageUrl: c.imageUrl ?? c.imageUrlHi ?? null,
+      // One Piece: emit the ordered image fallback chain (clean stored URL
+      // first, then CDN, then Bandai proxy). The UI steps through it on
+      // <img onError>. chain[0] is the primary imageUrl for non-chain callers.
+      imageUrl:
+        (game === "onepiece"
+          ? onePieceImageChain(c.externalId, c.imageUrl, c.imageUrlHi)[0]
+          : null) ??
+        c.imageUrl ??
+        c.imageUrlHi ??
+        null,
+      imageChain:
+        game === "onepiece"
+          ? onePieceImageChain(c.externalId, c.imageUrl, c.imageUrlHi)
+          : undefined,
       price: c.marketPrice ?? null,
       // Graded-ness rides on `rarity` ("PSA 10") — the popup uses it to
       // open the graded add flow (F-19). No dedicated grade column yet.

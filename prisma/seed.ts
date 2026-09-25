@@ -39,6 +39,7 @@ import {
 } from "@/lib/services/card.service";
 import type { NormalizedCard } from "@/lib/validators/card.validator";
 import { buildTags } from "@/lib/utils/card-tags";
+import { backfillPrices } from "../scripts/backfill-prices";
 
 // =============================================================
 // Seed Data
@@ -162,9 +163,17 @@ async function upsertCard(
   stats: SeedStats,
   seenSetExternalIds: Set<string>
 ): Promise<void> {
-  const setName =
-    card.setImage.trim() ||
-    (game === "pokemon" ? "Unknown Set" : "Unknown Set (One Piece)");
+  // Skip cards with no resolvable set name instead of dumping them into a
+  // catch-all "Unknown Set" bucket. That bucket used to collect 1000+
+  // set-less records from the breadth-first search adapters (TCGdex/Scrydex
+  // list views omit the set), which then showed as "[Unknown Set]" tiles and
+  // spawned duplicate rows alongside the same card's real-set copy. A card
+  // with no set is a low-value partial record — don't persist it.
+  const setName = card.setImage.trim();
+  if (!setName) {
+    stats.failures += 1;
+    return;
+  }
   const setExternalId = `${game}-${slugify(setName)}`;
 
   const cardSet = await prisma.cardSet.upsert({
@@ -300,6 +309,16 @@ async function main(): Promise<void> {
   console.log(
     `🎉 Seeding complete! ${stats.cardsUpserted} cards upserted into ${stats.setsUpserted} sets` +
       (stats.failures > 0 ? ` (${stats.failures} individual failures — see logs above).` : ".")
+  );
+
+  // Backfill prices for every card the search adapters left unpriced (the
+  // NormalizedCard search shape often omits marketPrice), so a freshly seeded
+  // DB never ships cards stuck on "—" when a real upstream price exists. Also
+  // seeds one PricingHistory anchor per priced card so charts render.
+  console.log("💵 Backfilling prices for the seeded catalog…");
+  const priced = await backfillPrices();
+  console.log(
+    `   → ${priced.pokemonUpdated + priced.onePieceUpdated} priced, ${priced.stillMissing} left without an upstream price.`
   );
 }
 

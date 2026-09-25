@@ -56,3 +56,9 @@ dist/
 /test-results/
 /playwright-report/
 /e2e/.auth/
+
+# Python cache
+__pycache__/
+*.py[cod]
+ebay_service.py
+test_last_sold.py

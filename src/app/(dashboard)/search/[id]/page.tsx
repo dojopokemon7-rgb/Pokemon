@@ -305,16 +305,19 @@ interface FloorListing {
 }
 
 function SellersOnFloor({
-  id, name, setName, rarity, game,
+  id, name, setName, rarity, number, game,
 }: {
-  id: string; name: string; setName: string; rarity: string; game: "pokemon" | "onepiece";
+  id: string; name: string; setName: string; rarity: string; number: string; game: "pokemon" | "onepiece";
 }) {
   const { data, isLoading } = useQuery<{ listings: FloorListing[] }>({
-    queryKey: ["ebay-sold", id, name, setName, rarity, game],
+    queryKey: ["ebay-sold", id, name, setName, rarity, number, game],
     queryFn: async () => {
       const qs = new URLSearchParams({ name, game });
       if (setName) qs.set("set", setName);
-      if (rarity) qs.set("grade", rarity);
+      // The card number is the strongest eBay token ("125/197" for Pokémon,
+      // the OP01-001 code for One Piece). The route weights it per game and,
+      // for One Piece, drops the set/rarity phrases that used to zero results.
+      if (number) qs.set("number", number);
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold?${qs.toString()}`);
       if (!res.ok) return { listings: [] };
       return res.json();
@@ -445,7 +448,7 @@ function PopulationReport({ id }: { id: string }) {
           </div>
           {report.source === "reference" && (
             <div style={{ marginTop: "8px", fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Sample reference data
+              Typical grade distribution · live PSA/BGS population coming soon
             </div>
           )}
         </div>
@@ -965,7 +968,7 @@ function CardDetailInner() {
         <PopulationReport id={id} />
 
         {/* ── Sellers on the Floor (Task 6) — real eBay listings ── */}
-        <SellersOnFloor id={id} name={name} setName={setName} rarity={rarity} game={game} />
+        <SellersOnFloor id={id} name={name} setName={setName} rarity={rarity} number={serialNumber} game={game} />
 
         {/* ── Accessories (Task 7 — kept) ── */}
         <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
