@@ -38,6 +38,9 @@ export async function GET(request: Request): Promise<NextResponse> {
         // F-22: which named collection this copy is filed under (null =
         // uncategorized) — drives the Compare Collections stats.
         collectionId: true,
+        isSold: true,
+        soldPrice: true,
+        soldAt: true,
         addedAt: true,
         updatedAt: true,
         card: {
@@ -180,69 +183,108 @@ export async function POST(request: Request): Promise<NextResponse> {
         create: { externalId: setExternalId, name: setName },
       });
 
-      const card = await prisma.card.upsert({
-        where: { externalId: item.externalId },
-        update: {
-          name: item.name,
-          ...(item.rarity ? { rarity: item.rarity } : {}),
-          ...(item.types ? { types: item.types } : {}),
-          ...(item.imageUrl ? { imageUrl: item.imageUrl } : {}),
-          ...(item.marketPrice != null
-            ? { marketPrice: item.marketPrice, lastPricedAt: new Date() }
-            : {}),
-        },
-        create: {
-          externalId: item.externalId,
-          name: item.name,
-          number: deriveCardNumber(item.externalId),
-          rarity: item.rarity ?? "Unknown",
-          types: item.types ?? [],
-          imageUrl: item.imageUrl ?? null,
-          marketPrice: item.marketPrice ?? null,
-          lastPricedAt: item.marketPrice != null ? new Date() : null,
-          setId: cardSet.id,
+      // Look up card by externalId OR by id (in case externalId is passed as cuid)
+      let card = await prisma.card.findFirst({
+        where: {
+          OR: [
+            { externalId: item.externalId },
+            { id: item.externalId },
+          ],
         },
       });
+
+      if (card) {
+        card = await prisma.card.update({
+          where: { id: card.id },
+          data: {
+            name: item.name,
+            ...(item.rarity ? { rarity: item.rarity } : {}),
+            ...(item.types ? { types: item.types } : {}),
+            ...(item.imageUrl ? { imageUrl: item.imageUrl } : {}),
+            ...(item.marketPrice != null
+              ? { marketPrice: item.marketPrice, lastPricedAt: new Date() }
+              : {}),
+          },
+        });
+      } else {
+        card = await prisma.card.create({
+          data: {
+            externalId: item.externalId,
+            name: item.name,
+            number: deriveCardNumber(item.externalId),
+            rarity: item.rarity ?? "Unknown",
+            types: item.types ?? [],
+            imageUrl: item.imageUrl ?? null,
+            marketPrice: item.marketPrice ?? null,
+            lastPricedAt: item.marketPrice != null ? new Date() : null,
+            setId: cardSet.id,
+          },
+        });
+      }
 
       const purchasePrice = item.purchasePrice ?? item.marketPrice ?? card.marketPrice ?? null;
-
-      // @@unique([userId, cardId, isFoil]) — adding the same card+foil
-      // combo again increments quantity instead of creating a duplicate row.
       const addedAt = addedAtByExternalId.get(item.externalId) ?? new Date();
 
-      await prisma.userCollection.upsert({
+      // Look for an existing active (not sold) copy of this card for the user
+      // Respect graded condition vs raw and specific collection
+      const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
+      const isItemGraded = !!item.condition && GRADED_RE.test(item.condition);
+
+      const existingItems = await prisma.userCollection.findMany({
         where: {
-          userId_cardId_isFoil: { userId, cardId: card.id, isFoil: item.isFoil },
-        },
-        update: {
-          quantity: { increment: item.quantity },
-          ...(item.condition ? { condition: item.condition } : {}),
-          ...(item.collectionId ? { collectionId: item.collectionId } : {}),
-          // Re-adding bumps the row to the front of the list too.
-          addedAt,
-        },
-        create: {
           userId,
           cardId: card.id,
-          quantity: item.quantity,
           isFoil: item.isFoil,
-          condition: item.condition ?? null,
-          purchasePrice,
-          ...(item.collectionId ? { collectionId: item.collectionId } : {}),
-          addedAt,
+          isSold: false,
+          collectionId: item.collectionId ?? null,
         },
       });
+
+      const existingItem = existingItems.find((existing) => {
+        const isExistingGraded = !!existing.condition && GRADED_RE.test(existing.condition);
+        if (isItemGraded || isExistingGraded) {
+          return (existing.condition ?? "").trim().toUpperCase() === (item.condition ?? "").trim().toUpperCase();
+        }
+        return true;
+      });
+
+      if (existingItem) {
+        await prisma.userCollection.update({
+          where: { id: existingItem.id },
+          data: {
+            quantity: existingItem.quantity + item.quantity,
+            ...(item.condition ? { condition: item.condition } : {}),
+            collectionId: item.collectionId ?? null,
+            addedAt,
+          },
+        });
+      } else {
+        await prisma.userCollection.create({
+          data: {
+            userId,
+            cardId: card.id,
+            quantity: item.quantity,
+            isFoil: item.isFoil,
+            condition: item.condition ?? null,
+            purchasePrice,
+            isSold: false,
+            collectionId: item.collectionId ?? null,
+            addedAt,
+          },
+        });
+      }
 
       results.push({ externalId: item.externalId, ok: true });
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : "Could not add this card.";
       console.error(
         `[api/users/me/collection] Failed to add card "${item.externalId}":`,
-        error instanceof Error ? error.message : error
+        errMsg
       );
       results.push({
         externalId: item.externalId,
         ok: false,
-        error: "Could not add this card.",
+        error: errMsg,
       });
     }
   }
@@ -251,7 +293,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   const allFailed = addedCount === 0;
 
   return NextResponse.json(
-    { added: addedCount, total: results.length, results },
+    {
+      message: allFailed ? (results[0]?.error ?? "Could not add this card.") : undefined,
+      added: addedCount,
+      total: results.length,
+      results,
+    },
     { status: allFailed ? 500 : 200 }
   );
 }

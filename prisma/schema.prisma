@@ -220,6 +220,11 @@ model UserCollection {
   addedAt  DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Sold tracking (Collectr portfolio feature)
+  isSold    Boolean   @default(false)
+  soldPrice Float?
+  soldAt    DateTime?
+
   // Optional membership in a named Collection (F-10). Null = the user's
   // default/uncategorized set. SetNull so deleting a collection unfiles
   // its cards rather than deleting the owned-copy rows.
@@ -229,7 +234,6 @@ model UserCollection {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, cardId, isFoil]) // One entry per card+variant per user
   @@index([userId])
   @@index([cardId])
   @@index([collectionId])

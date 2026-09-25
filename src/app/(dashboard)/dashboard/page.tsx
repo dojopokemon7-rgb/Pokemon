@@ -49,9 +49,13 @@ export default async function DashboardPage() {
         // F-11: which named collection this owned copy is filed under
         // (null = uncategorized). Drives the dashboard collection selector.
         collectionId: true,
+        isSold: true,
+        soldPrice: true,
+        soldAt: true,
         card: {
           select: {
             id: true,
+            externalId: true,
             name: true,
             marketPrice: true,
             set: { select: { name: true } },

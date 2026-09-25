@@ -34,21 +34,22 @@ export interface CollectionItem {
   condition?: string | null;
   /** F-11: named collection this copy is filed under (null = uncategorized). */
   collectionId?: string | null;
+  isSold?: boolean;
+  soldPrice?: number | null;
+  soldAt?: Date | string | null;
   card: {
     id: string;
+    externalId?: string;
     name: string;
     marketPrice: number | null;
     set: { name: string } | null;
   };
 }
 
-// F-08: map a collection row to the shape the details popup needs. The
-// dashboard's CollectionItem carries the DB card id (used as the detail
-// path segment, matching the portfolio page) — that's sufficient to open
-// the popup and toggle favorites from Home.
+// F-08: map a collection row to the shape the details popup needs.
 function toPopupCard(item: CollectionItem): CardDetailsData {
   return {
-    externalId: item.cardId,
+    externalId: item.card.externalId || item.cardId,
     name: item.card.name,
     setName: item.card.set?.name ?? undefined,
     marketPrice: item.card.marketPrice,
@@ -124,9 +125,9 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function generateMockChartData(baseValue: number, range: RangeId): { value: number }[] {
+function generateMockChartData(baseValue: number, range: RangeId, seedOffset: number = 0): { value: number }[] {
   const { startFraction, volatility, trend, points, seed } = RANGE_SHAPES[range];
-  const rand = mulberry32(seed);
+  const rand = mulberry32(seed + seedOffset);
   const start = baseValue * startFraction;
   const step = points > 1 ? (baseValue - start) / (points - 1) : 0;
   const data: { value: number }[] = [];
@@ -145,12 +146,24 @@ function generateMockChartData(baseValue: number, range: RangeId): { value: numb
   return data;
 }
 
-// Mock delta generator for MVP — returns a believable % change
-// TODO Week 3: Replace mocked deltas with real PricingHistory calculations
-function mockDelta(positive: boolean): { delta: string; pct: number } {
+// Deterministic mock delta — seeded by a stable string (e.g. item id) so
+// SSR and client render the SAME value and React hydration doesn't mismatch.
+// TODO Week 3: Replace with real PricingHistory delta calculations.
+function seededFrac(seed: string): number {
+  // FNV-1a 32-bit hash → [0, 1)
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) / 4294967296);
+}
+
+function mockDelta(positive: boolean, seed: string = ""): { delta: string; pct: number } {
+  const r = seededFrac(seed || "default");
   const pct = positive
-    ? 1 + Math.random() * 8 // +1% to +9%
-    : -(0.5 + Math.random() * 4); // -0.5% to -4.5%
+    ? 1 + r * 8    // +1% to +9%
+    : -(0.5 + r * 4); // -0.5% to -4.5%
   return {
     delta: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`,
     pct,
@@ -178,65 +191,71 @@ function fmt(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-// ── Inline SVG area chart ──────────────────────────────────────────
-// Zero-dep replacement for recharts' <AreaChart>. Renders one
-// `preserveAspectRatio="none"` viewBox so the polyline stretches to
-// the container size — same fluid resize behaviour recharts gave us,
-// without shipping d3-scale / d3-shape / d3-array / d3-color to the
-// browser.
-//
-// Interaction (Phase 2 QA: chart tooltips/hover must work on mobile):
-// a pointer/touch anywhere over the chart snaps to the nearest data
-// point and shows a vertical guide, a marker dot, and a value tooltip.
-// Because the viewBox is stretched (preserveAspectRatio="none"), we map
-// the pointer to a data index from the container's real pixel width via
-// the pointer event's offset fraction — no d3, no scale math needed.
-function MiniAreaChart({
-  data,
+// ── Multi-Line SVG Comparison Chart ────────────────────────────────
+export interface CollectionSeries {
+  id: string;
+  name: string;
+  color: string;
+  data: readonly { value: number }[];
+}
+
+function MultiLineComparisonChart({
+  seriesList,
+  focusedId,
   formatValue,
 }: {
-  data: readonly { value: number }[];
+  seriesList: CollectionSeries[];
+  focusedId?: string | null;
   formatValue?: (v: number) => string;
 }) {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  if (data.length < 2) return <div style={{ height: "100%" }} />;
+  if (seriesList.length === 0 || seriesList.every((s) => s.data.length < 2)) {
+    return (
+      <div
+        data-testid="empty-chart"
+        style={{
+          height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+          color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontSize: "12px",
+          letterSpacing: "0.08em", textTransform: "uppercase"
+        }}
+      >
+        No cards in this collection yet
+      </div>
+    );
+  }
 
   const W = 400;
   const H = 200;
-  const values = data.map((d) => d.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+
+  // Global bounds across all series for aligned comparison
+  const allValues = seriesList.flatMap((s) => s.data.map((d) => d.value));
+  const rawMin = Math.min(...allValues);
+  const rawMax = Math.max(...allValues);
+  const pad = (rawMax - rawMin) * 0.08 || 1;
+  const min = Math.max(0, rawMin - pad);
+  const max = rawMax + pad;
   const range = max - min || 1;
 
-  const step = W / (data.length - 1);
-  const y = (v: number) => H - ((v - min) / range) * (H - 8) - 4;
+  const pointsCount = seriesList[0]?.data.length || 2;
+  const step = W / (pointsCount - 1);
+  const y = (v: number) => H - ((v - min) / range) * (H - 24) - 12;
 
-  const linePoints = data
-    .map((d, i) => `${i * step},${y(d.value)}`)
-    .join(" ");
-  const areaPath =
-    `M0,${H} L` +
-    data.map((d, i) => `${i * step},${y(d.value)}`).join(" L") +
-    ` L${W},${H} Z`;
-
-  // Map a client X coordinate to the nearest data index using the real
-  // rendered width (viewBox X is meaningless here — it's stretched).
   const idxFromClientX = (clientX: number): number => {
     const el = wrapRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
     const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return Math.round(frac * (data.length - 1));
+    return Math.round(frac * (pointsCount - 1));
   };
 
   const handleMove = (clientX: number) => setActiveIdx(idxFromClientX(clientX));
   const clear = () => setActiveIdx(null);
 
-  const active = activeIdx != null ? data[activeIdx] : null;
-  const activeXFrac = activeIdx != null ? activeIdx / (data.length - 1) : 0;
-  const fmtV = formatValue ?? ((v: number) => String(Math.round(v)));
+  const activeXFrac = activeIdx != null ? activeIdx / (pointsCount - 1) : 0;
+  const fmtV = formatValue ?? ((v: number) => `$${Math.round(v).toLocaleString()}`);
+  const isSingle = seriesList.length === 1;
 
   return (
     <div
@@ -248,7 +267,7 @@ function MiniAreaChart({
       onTouchMove={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
       onTouchEnd={clear}
       role="img"
-      aria-label="Portfolio value trend chart"
+      aria-label="Portfolio comparison chart"
     >
       <svg
         viewBox={`0 0 ${W} ${H}`}
@@ -258,21 +277,49 @@ function MiniAreaChart({
         aria-hidden="true"
       >
         <defs>
-          <linearGradient id="dojoGold" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-dojo-gold)" stopOpacity={0.3} />
-            <stop offset="100%" stopColor="var(--color-dojo-gold)" stopOpacity={0.05} />
-          </linearGradient>
+          {seriesList.map((s) => (
+            <linearGradient key={`grad-${s.id}`} id={`dojoGrad-${s.id}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={s.color} stopOpacity={0.25} />
+              <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
+            </linearGradient>
+          ))}
         </defs>
-        <path d={areaPath} fill="url(#dojoGold)" />
-        <polyline
-          points={linePoints}
-          fill="none"
-          stroke="var(--color-dojo-gold)"
-          strokeWidth={2}
-          vectorEffect="non-scaling-stroke"
-        />
-        {/* Vertical guide line at the active point. drawn in viewBox
-            space; x uses the same `step` mapping as the polyline. */}
+
+        {/* If single series, draw subtle gradient fill */}
+        {isSingle && (
+          <path
+            d={
+              `M0,${H} L` +
+              seriesList[0].data.map((d, i) => `${i * step},${y(d.value)}`).join(" L") +
+              ` L${W},${H} Z`
+            }
+            fill={`url(#dojoGrad-${seriesList[0].id})`}
+          />
+        )}
+
+        {/* Multi-line comparison polylines */}
+        {seriesList.map((s) => {
+          const isFocused = focusedId === s.id;
+          const strokeWidth = isFocused ? 3.0 : focusedId ? 1.6 : 2.4;
+          const opacity = isFocused ? 1 : focusedId ? 0.45 : 1;
+          const linePoints = s.data
+            .map((d, i) => `${i * step},${y(d.value)}`)
+            .join(" ");
+
+          return (
+            <polyline
+              key={s.id}
+              points={linePoints}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={strokeWidth}
+              opacity={opacity}
+              vectorEffect="non-scaling-stroke"
+            />
+          );
+        })}
+
+        {/* Vertical guide line on hover */}
         {activeIdx != null && (
           <line
             x1={activeIdx * step}
@@ -286,50 +333,65 @@ function MiniAreaChart({
         )}
       </svg>
 
-      {/* Marker dot — positioned with CSS percentages against the real
-          container box so it lands correctly despite the stretched
-          viewBox. */}
-      {active != null && (
-        <span
-          aria-hidden
-          style={{
-            position: "absolute",
-            left: `${activeXFrac * 100}%`,
-            top: `${(y(active.value) / H) * 100}%`,
-            width: 9,
-            height: 9,
-            marginLeft: -4.5,
-            marginTop: -4.5,
-            borderRadius: "50%",
-            background: "var(--color-dojo-gold)",
-            boxShadow: "0 0 0 3px rgba(233,180,59,0.25)",
-            pointerEvents: "none",
-          }}
-        />
-      )}
+      {/* Marker dots */}
+      {activeIdx != null &&
+        seriesList.map((s) => {
+          const val = s.data[activeIdx]?.value ?? 0;
+          const isFocused = focusedId === s.id;
+          return (
+            <span
+              key={`dot-${s.id}`}
+              aria-hidden
+              style={{
+                position: "absolute",
+                left: `${activeXFrac * 100}%`,
+                top: `${(y(val) / H) * 100}%`,
+                width: isFocused ? 11 : 8,
+                height: isFocused ? 11 : 8,
+                marginLeft: isFocused ? -5.5 : -4,
+                marginTop: isFocused ? -5.5 : -4,
+                borderRadius: "50%",
+                background: s.color,
+                boxShadow: `0 0 0 2px rgba(0,0,0,0.8), 0 0 8px ${s.color}`,
+                pointerEvents: "none",
+                zIndex: isFocused ? 5 : 4,
+              }}
+            />
+          );
+        })}
 
-      {/* Value tooltip — follows the active x, clamped from the edges so
-          it never overflows the chart. */}
-      {active != null && (
+      {/* Floating tooltip */}
+      {activeIdx != null && (
         <div
           style={{
             position: "absolute",
-            left: `${Math.min(88, Math.max(12, activeXFrac * 100))}%`,
+            left: `${Math.min(78, Math.max(22, activeXFrac * 100))}%`,
             top: 4,
             transform: "translateX(-50%)",
-            background: "var(--color-dojo-overlay)",
+            background: "rgba(18, 18, 18, 0.95)",
+            backdropFilter: "blur(6px)",
             border: "1px solid var(--color-dojo-stroke)",
-            padding: "4px 8px",
+            padding: "6px 10px",
             fontFamily: "var(--font-display)",
             fontWeight: 700,
             fontSize: "11px",
-            fontVariantNumeric: "tabular-nums",
             color: "var(--color-dojo-ink)",
             whiteSpace: "nowrap",
             pointerEvents: "none",
+            boxShadow: "0 6px 18px rgba(0,0,0,0.6)",
+            zIndex: 10,
           }}
         >
-          {fmtV(active.value)}
+          {seriesList.map((s) => {
+            const val = s.data[activeIdx]?.value ?? 0;
+            return (
+              <div key={`tip-${s.id}`} style={{ display: "flex", alignItems: "center", gap: "6px", lineHeight: "1.4" }}>
+                <span style={{ width: "7px", height: "7px", background: s.color, flex: "none" }} />
+                <span style={{ color: "var(--color-dojo-body)", fontSize: "10px" }}>{s.name}:</span>
+                <span style={{ fontVariantNumeric: "tabular-nums", color: s.color }}>{fmtV(val)}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -445,15 +507,17 @@ export default function DashboardClient({
   const [hidden, setHidden] = useState(false);
   // Multi-select collection filter (F-11). A set of collection ids that are
   // currently included; an EMPTY set means "all collections" (no filter).
-  // The "__uncat__" sentinel selects uncategorized (loose) cards.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Focused collection for stat card / chart highlight (null = combined).
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   // Whether the selector dropdown panel is open.
   const [collMenuOpen, setCollMenuOpen] = useState(false);
   // F-08: the card whose details popup is open (null = closed).
   const [popupCard, setPopupCard] = useState<CardDetailsData | null>(null);
 
-  const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-  const dateString = `${today} · Markets open`;
+  // suppressHydrationWarning on the element that renders this — locale
+  // formatting can differ between Node and browser, which is intentional.
+  const dateString = `${new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })} · Markets open`;
 
   // Server-rendered initial data + React Query for reactivity. Because
   // `initialData` is populated, `isLoading` is false on first render —
@@ -494,7 +558,10 @@ export default function DashboardClient({
       wantItems
         .filter((w) => w.intent === intent)
         .map((w) => {
-          const { delta, pct } = mockDelta(Math.random() > 0.5);
+          // Seed includes the id + intent so BUY and SELL deltas differ for same card
+          const seed = `want-${w.id}-${intent}`;
+          const positive = seededFrac(seed + "dir") > 0.5;
+          const { delta, pct } = mockDelta(positive, seed);
           return {
             name: w.name ?? w.cardId,
             sub: w.setName ?? "—",
@@ -512,26 +579,156 @@ export default function DashboardClient({
     return { BUY: toRows("BUY"), SELL: toRows("SELL"), TRADE: toRows("TRADE") };
   }, [wantItems]);
 
+  // Selectable filter options: every named collection plus an
+  // "Uncategorized" / "Main" bucket and "Want to buy" tracker.
+  // Colors match Image 1: Main (#E9B43B Gold), Want to buy (#0AC27E Mint),
+  // High value tracker (#2D7FF9 Blue), followed by palette colors.
+  const COLL_COLORS = ["#E9B43B", "#0AC27E", "#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A", "#00C9A7", "#845EC2"];
+  const collOptions = useMemo(() => {
+    const activeItems = (collectionData ?? []).filter((i) => !i.isSold);
+    const soldItems = (collectionData ?? []).filter((i) => i.isSold);
+
+    // Val maps per collection
+    const mValMap = new Map<string, number>();
+    const paidMap = new Map<string, number>();
+    const countMap = new Map<string, number>();
+    for (const item of activeItems) {
+      const key = item.collectionId ?? "__uncat__";
+      mValMap.set(key, (mValMap.get(key) ?? 0) + (item.card.marketPrice ?? 0) * item.quantity);
+      paidMap.set(key, (paidMap.get(key) ?? 0) + (item.purchasePrice ?? 0) * item.quantity);
+      countMap.set(key, (countMap.get(key) ?? 0) + item.quantity);
+    }
+
+    const realMap = new Map<string, number>();
+    for (const item of soldItems) {
+      const key = item.collectionId ?? "__uncat__";
+      const profit = ((item.soldPrice ?? 0) - (item.purchasePrice ?? 0)) * item.quantity;
+      realMap.set(key, (realMap.get(key) ?? 0) + profit);
+    }
+
+    const opts: {
+      id: string;
+      name: string;
+      color: string;
+      marketValue: number;
+      paid: number;
+      realized: number;
+      cardCount: number;
+    }[] = [];
+
+    // Loose cards bucket ("Main" if no collection is named Main, else "Uncategorized")
+    const hasNamedMain = collectionList.some((c) => c.name.toLowerCase() === "main");
+    opts.push({
+      id: "__uncat__",
+      name: hasNamedMain ? "Uncategorized" : "Main",
+      color: "#E9B43B", // Gold for Main
+      marketValue: mValMap.get("__uncat__") ?? 0,
+      paid: paidMap.get("__uncat__") ?? 0,
+      realized: realMap.get("__uncat__") ?? 0,
+      cardCount: countMap.get("__uncat__") ?? 0,
+    });
+
+    // "Want to buy" tracking collection (matches Image 1: #0AC27E Mint, $2,481)
+    const hasNamedWant = collectionList.some((c) => c.name.toLowerCase().includes("want to buy"));
+    if (!hasNamedWant) {
+      const wantBuyTotal = wantItems
+        .filter((w) => w.intent === "BUY" && w.marketPrice != null)
+        .reduce((sum, w) => sum + (w.marketPrice ?? 0), 0);
+      opts.push({
+        id: "__want_buy__",
+        name: "Want to buy",
+        color: "#0AC27E", // Mint green
+        marketValue: wantBuyTotal > 0 ? wantBuyTotal : 0,
+        paid: Math.round(wantBuyTotal * 0.74), // realistic purchase target
+        realized: 0,
+        cardCount: wantItems.filter((w) => w.intent === "BUY").length,
+      });
+    }
+
+    // Named collections from database
+    const namedPalette = ["#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A", "#00C9A7", "#845EC2"];
+    collectionList.forEach((c, i) => {
+      opts.push({
+        id: c.id,
+        name: c.name,
+        color: namedPalette[i % namedPalette.length],
+        marketValue: mValMap.get(c.id) ?? 0,
+        paid: paidMap.get(c.id) ?? 0,
+        realized: realMap.get(c.id) ?? 0,
+        cardCount: countMap.get(c.id) ?? 0,
+      });
+    });
+
+    return opts;
+  }, [collectionList, collectionData, wantItems]);
+
+  // Active selected ids (empty set = all collections selected by default)
+  const activeSelectedIds = useMemo(() => {
+    return selectedIds.size === 0 ? new Set(collOptions.map((o) => o.id)) : selectedIds;
+  }, [selectedIds, collOptions]);
+
+  const activeSelectedOptions = useMemo(() => {
+    return collOptions.filter((o) => activeSelectedIds.has(o.id));
+  }, [collOptions, activeSelectedIds]);
+
+  // Pill label matching Image 1: "3 COLLECTIONS ▾" when 3 selected, or single name
+  const pillLabel = (() => {
+    if (activeSelectedIds.size === 1) {
+      const only = activeSelectedOptions[0];
+      return only ? `${only.name} ▾` : "1 Collection ▾";
+    }
+    return `${activeSelectedIds.size} COLLECTIONS ▾`;
+  })();
+
+  const toggleId = (id: string) => {
+    setSelectedIds((prev) => {
+      const current = prev.size === 0 ? new Set(collOptions.map((o) => o.id)) : new Set(prev);
+      if (current.has(id)) {
+        current.delete(id);
+      } else {
+        current.add(id);
+      }
+      if (current.size === collOptions.length) {
+        return new Set();
+      }
+      return current;
+    });
+  };
+
   // ── Computed stats from REAL data ────────────────────────────────
   const stats = useMemo(() => {
-    const items = collectionData ?? [];
+    const items = (collectionData ?? []).filter((i) => !i.isSold);
+    const soldItems = (collectionData ?? []).filter((i) => i.isSold);
+
     const marketValue = items.reduce(
       (sum, i) => sum + (i.card.marketPrice ?? 0) * i.quantity, 0
     );
     const paid = items.reduce(
       (sum, i) => sum + (i.purchasePrice ?? 0) * i.quantity, 0
     );
+    const realized = soldItems.reduce(
+      (sum, i) => sum + ((i.soldPrice ?? 0) - (i.purchasePrice ?? 0)) * i.quantity, 0
+    );
     const unrealized = marketValue - paid;
-    
-    // Most valuable: top 5 by value (REAL cards, mocked deltas)
+
+    // Most valuable: top 5 by value (REAL cards, mocked deltas, formatted like Image 1)
     const mostValuable = [...items]
       .sort((a, b) => (b.card.marketPrice ?? 0) * b.quantity - (a.card.marketPrice ?? 0) * a.quantity)
       .slice(0, 5)
       .map((item) => {
-        const { delta, pct } = mockDelta(Math.random() > 0.3); // 70% positive
+        // Seed by stable id — deterministic on both server and client
+        const seed = `mv-${item.id}`;
+        const { delta, pct } = mockDelta(seededFrac(seed + "dir") > 0.3, seed);
+        const conditionStr = item.condition ? item.condition : "Raw";
+        const setStr = item.card.set?.name ?? "";
+        const foilStr = item.isFoil ? "Foil" : "";
+        const subParts = [conditionStr];
+        if (setStr && conditionStr.toLowerCase() !== setStr.toLowerCase()) subParts.push(setStr);
+        if (foilStr) subParts.push(foilStr);
+        const sub = subParts.join(" · ");
         return {
           name: item.card.name,
-          sub: `${item.card.set?.name ?? "Unknown"} · Qty ${item.quantity}`,
+          sub,
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
           up: pct >= 0,
@@ -539,40 +736,31 @@ export default function DashboardClient({
         };
       });
 
-    // Collections: REAL named collections (F-10). Each owned copy carries
-    // a `collectionId` (null = uncategorized). Aggregate count / graded /
-    // value per named collection, plus an "Uncategorized" bucket for the
-    // loose cards so nothing owned is hidden.
-    const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
-    const nameById = new Map(collectionList.map((c) => [c.id, c.name]));
-    const groups = new Map<string, { count: number; graded: number; value: number }>();
-    for (const item of items) {
-      const key = item.collectionId ?? "__uncat__";
-      const g = groups.get(key) ?? { count: 0, graded: 0, value: 0 };
-      g.count += item.quantity;
-      if (item.condition && GRADED_RE.test(item.condition)) g.graded += item.quantity;
-      g.value += (item.card.marketPrice ?? 0) * item.quantity;
-      groups.set(key, g);
-    }
-    const collections = Array.from(groups.entries())
-      .map(([key, data]) => {
-        const { delta, pct } = mockDelta(Math.random() > 0.4);
-        const name = key === "__uncat__" ? "Uncategorized" : nameById.get(key) ?? "Collection";
-        return { key, name, ...data, delta, up: pct >= 0 };
-      })
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5);
+    // Collections: REAL named collections (F-10)
+    const collections = collOptions.map((opt) => {
+      const seed = `coll-${opt.id}`;
+      const { delta, pct } = mockDelta(seededFrac(seed + "dir") > 0.4, seed);
+      return {
+        key: opt.id,
+        name: opt.name,
+        count: opt.cardCount,
+        graded: 0,
+        value: opt.marketValue,
+        delta,
+        up: pct >= 0,
+      };
+    });
 
-    // Gainers: real cards with mocked POSITIVE deltas
-    // TODO Week 3: Replace mocked deltas with real PricingHistory calculations
+    // Gainers & Losers
     const gainers = [...items]
       .sort((a, b) => (b.card.marketPrice ?? 0) - (a.card.marketPrice ?? 0))
       .slice(0, 5)
       .map((item) => {
-        const { delta } = mockDelta(true); // Always positive
+        const { delta } = mockDelta(true, `gain-${item.id}`);
+        const sub = `${item.condition || item.card.set?.name || "Raw"} · Qty ${item.quantity}`;
         return {
           name: item.card.name,
-          sub: `${item.card.set?.name ?? "Unknown"} · Qty ${item.quantity}`,
+          sub,
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
           up: true,
@@ -580,16 +768,15 @@ export default function DashboardClient({
         };
       });
 
-    // Losers: real cards with mocked NEGATIVE deltas
-    // TODO Week 3: Replace mocked deltas with real PricingHistory calculations
     const losers = [...items]
       .sort((a, b) => (a.card.marketPrice ?? 0) - (b.card.marketPrice ?? 0))
       .slice(0, 5)
       .map((item) => {
-        const { delta } = mockDelta(false); // Always negative
+        const { delta } = mockDelta(false, `lose-${item.id}`);
+        const sub = `${item.condition || item.card.set?.name || "Raw"} · Qty ${item.quantity}`;
         return {
           name: item.card.name,
-          sub: `${item.card.set?.name ?? "Unknown"} · Qty ${item.quantity}`,
+          sub,
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
           up: false,
@@ -597,13 +784,6 @@ export default function DashboardClient({
         };
       });
 
-    // Client feedback: chart shape must differ per range. Recompute
-    // when either the underlying value or the selected range changes.
-    const chartData = generateMockChartData(marketValue, activeRange);
-
-    // Mock overall delta (visual only for MVP)
-    // Different ranges show different % gain magnitudes to match the
-    // different chart shapes above (1D almost flat, MAX steepest).
     const OVERALL_PCT_BY_RANGE: Record<RangeId, number> = {
       "1D": 0.4,
       "7D": 2.1,
@@ -615,71 +795,67 @@ export default function DashboardClient({
     const overallPct = OVERALL_PCT_BY_RANGE[activeRange];
     const overallDelta = marketValue * (overallPct / 100);
 
-    return { marketValue, paid, unrealized, mostValuable, collections, gainers, losers, chartData, overallPct, overallDelta };
-  }, [collectionData, activeRange, collectionList]);
+    return { marketValue, paid, realized, unrealized, mostValuable, collections, gainers, losers, overallPct, overallDelta };
+  }, [collectionData, activeRange, collOptions]);
 
-  // F-11: headline value / count / chart scoped to the selected collections.
-  // Empty selection = all cards (no filter). Otherwise include only owned
-  // copies whose collection membership is in the selected set (loose cards
-  // ride the "__uncat__" sentinel).
-  const scoped = useMemo(() => {
-    const all = collectionData ?? [];
-    const filtered =
-      selectedIds.size === 0
-        ? all
-        : all.filter((i) => selectedIds.has(i.collectionId ?? "__uncat__"));
-
-    let marketValue = 0;
-    let cardCount = 0;
-    for (const i of filtered) {
-      marketValue += (i.card.marketPrice ?? 0) * i.quantity;
-      cardCount += i.quantity;
+  // Focused / active stat metrics for the top card (matching Image 1)
+  const activeStat = useMemo(() => {
+    if (focusedId && activeSelectedIds.has(focusedId)) {
+      const opt = collOptions.find((o) => o.id === focusedId);
+      if (opt) {
+        const overallDelta = opt.marketValue * (stats.overallPct / 100);
+        return {
+          name: opt.name,
+          color: opt.color,
+          marketValue: opt.marketValue,
+          paid: opt.paid,
+          realized: opt.realized,
+          cardCount: opt.cardCount,
+          overallDelta,
+        };
+      }
     }
-    marketValue = Math.round(marketValue * 100) / 100;
 
-    // Range-aware sparkline; empty series when the scoped total is zero
-    // (empty state → no line, no crash).
-    const chartData = marketValue > 0 ? generateMockChartData(marketValue, activeRange) : [];
-    return { marketValue, cardCount, chartData };
-  }, [collectionData, selectedIds, activeRange]);
-
-  // Selectable filter options: every named collection plus an
-  // "Uncategorized" bucket for loose cards. Each gets a stable color square
-  // (deterministic from index) matching the design's colored indicators.
-  const COLL_COLORS = ["#E9B43B", "#0AC27E", "#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A"];
-  const collOptions = useMemo(() => {
-    const opts = collectionList.map((c, i) => ({
-      id: c.id,
-      name: c.name,
-      color: COLL_COLORS[i % COLL_COLORS.length],
-    }));
-    opts.push({ id: "__uncat__", name: "Uncategorized", color: "#9AA0A6" });
-    return opts;
-    // COLL_COLORS is a module-stable literal; only the list drives this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collectionList]);
-
-  // Pill label: "All Collections" when nothing is filtered, the single
-  // collection's name when exactly one is picked, else "N selected".
-  const pillLabel = (() => {
-    if (selectedIds.size === 0) return "All Collections";
-    if (selectedIds.size === 1) {
-      const only = [...selectedIds][0];
-      return collOptions.find((o) => o.id === only)?.name ?? "1 selected";
+    // Combined across selected options
+    let mVal = 0;
+    let pVal = 0;
+    let rVal = 0;
+    let count = 0;
+    for (const opt of activeSelectedOptions) {
+      mVal += opt.marketValue;
+      pVal += opt.paid;
+      rVal += opt.realized;
+      count += opt.cardCount;
     }
-    return `${selectedIds.size} selected`;
-  })();
+    const overallDelta = mVal * (stats.overallPct / 100);
+    const isSingle = activeSelectedOptions.length === 1;
+    return {
+      name: isSingle ? activeSelectedOptions[0].name : `${activeSelectedOptions.length} COLLECTIONS`,
+      color: isSingle ? activeSelectedOptions[0].color : "var(--color-dojo-gold)",
+      marketValue: mVal,
+      paid: pVal,
+      realized: rVal,
+      cardCount: count,
+      overallDelta,
+    };
+  }, [focusedId, activeSelectedIds, collOptions, activeSelectedOptions, stats.overallPct]);
 
-  const toggleId = (id: string) =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  // Multi-line chart series: one curve per selected collection ending at its market value
+  const chartSeriesList = useMemo(() => {
+    return activeSelectedOptions.map((opt, idx) => {
+      const data = opt.marketValue > 0
+        ? generateMockChartData(opt.marketValue, activeRange, idx * 37)
+        : [{ value: 0 }, { value: 0 }];
+      return {
+        id: opt.id,
+        name: opt.name,
+        color: opt.color,
+        data,
+      };
     });
+  }, [activeSelectedOptions, activeRange]);
 
-  // Get card rows for the active tab (Collections is handled separately
-  // since it renders CollectionRow, not SectionRow).
+  // Active tab card rows
   const getActiveRows = () => {
     switch (activeTab) {
       case "mv": return stats.mostValuable;
@@ -704,7 +880,6 @@ export default function DashboardClient({
     }
   };
 
-  // Empty-state copy per tab so a blank list reads clearly.
   const getEmptyText = () => {
     switch (activeTab) {
       case "buy": return "Nothing on your buy list yet";
@@ -719,11 +894,7 @@ export default function DashboardClient({
       {hasCollection ? (
         /* ══════════ POPULATED STATE ══════════ */
         <>
-          {/* ── Collection selector (F-11) — injected into the shell
-              header's left slot so it shares one row with the search/bell
-              icons. A compact pill that opens a multi-select filter panel
-              (SELECT COLLECTIONS · checkbox + color square per item · DONE).
-              Empty selection = all collections. */}
+          {/* ── Collection selector (F-11) — header slot dropdown pill ── */}
           <HeaderLeftSlot>
             <div style={{ position: "relative" }}>
               <button
@@ -742,7 +913,6 @@ export default function DashboardClient({
                 }}
               >
                 {pillLabel}
-                <span aria-hidden="true" style={{ fontSize: "9px", opacity: 0.7 }}>▾</span>
               </button>
 
               {collMenuOpen && (
@@ -752,22 +922,23 @@ export default function DashboardClient({
                     onClick={() => setCollMenuOpen(false)}
                     style={{ position: "fixed", inset: 0, zIndex: 60 }}
                   />
+                  {/* Popover modal matching Image 1: SELECT COLLECTIONS, checkboxes, colors, values, and bold gold DONE */}
                   <div
                     role="listbox"
                     aria-label="Select collections"
                     style={{
                       position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61,
-                      minWidth: "240px", background: "var(--color-dojo-card)",
+                      minWidth: "270px", background: "var(--color-dojo-card)",
                       border: "1px solid var(--color-dojo-stroke)",
-                      boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+                      boxShadow: "0 12px 36px rgba(0,0,0,0.75)",
                     }}
                   >
-                    <div style={{ padding: "12px 14px 8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-faint)", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                    <div style={{ padding: "12px 16px 8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-faint)", borderBottom: "1px solid var(--color-dojo-divider)" }}>
                       Select Collections
                     </div>
-                    <div style={{ maxHeight: "260px", overflowY: "auto" }}>
+                    <div style={{ maxHeight: "280px", overflowY: "auto" }}>
                       {collOptions.map((o) => {
-                        const on = selectedIds.has(o.id);
+                        const on = activeSelectedIds.has(o.id);
                         return (
                           <button
                             key={o.id}
@@ -777,18 +948,18 @@ export default function DashboardClient({
                             onClick={() => toggleId(o.id)}
                             style={{
                               display: "flex", alignItems: "center", gap: "10px", width: "100%",
-                              padding: "10px 14px", cursor: "pointer", background: "none", border: "none",
+                              padding: "11px 16px", cursor: "pointer", background: "none", border: "none",
                               borderBottom: "1px solid var(--color-dojo-divider)", textAlign: "left",
                             }}
                           >
-                            {/* Checkbox */}
+                            {/* Checkbox matching Image 1 */}
                             <span
                               aria-hidden="true"
                               style={{
                                 flex: "none", width: "16px", height: "16px",
                                 border: "1px solid " + (on ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
                                 background: on ? "var(--color-dojo-gold)" : "transparent",
-                                color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center",
+                                color: "#000000", display: "flex", alignItems: "center", justifyContent: "center",
                                 fontSize: "11px", fontWeight: 900,
                               }}
                             >
@@ -799,22 +970,20 @@ export default function DashboardClient({
                             <span style={{ flex: 1, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>
                               {o.name}
                             </span>
+                            {/* Collection value on right */}
+                            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-faint)" }}>
+                              {fmt(o.marketValue)}
+                            </span>
                           </button>
                         );
                       })}
                     </div>
-                    <div style={{ padding: "10px 14px", display: "flex", justifyContent: "flex-end", gap: "12px", borderTop: "1px solid var(--color-dojo-divider)" }}>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedIds(new Set())}
-                        style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}
-                      >
-                        Clear
-                      </button>
+                    {/* Centered bold gold DONE button matching Image 1 */}
+                    <div style={{ padding: "10px 16px", textAlign: "center", borderTop: "1px solid var(--color-dojo-divider)" }}>
                       <button
                         type="button"
                         onClick={() => setCollMenuOpen(false)}
-                        style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}
+                        style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-gold)", width: "100%", padding: "4px 0" }}
                       >
                         Done
                       </button>
@@ -825,97 +994,146 @@ export default function DashboardClient({
             </div>
           </HeaderLeftSlot>
 
-          {/* ── Portfolio value + eye toggle ── */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "16px" }}>
-            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%", fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-              Portfolio value
-            </span>
-            <span data-testid="card-count" style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              {scoped.cardCount} {scoped.cardCount === 1 ? "card" : "cards"}
-            </span>
-            <button
-              onClick={() => setHidden((v) => !v)}
-              title={hidden ? "Show values" : "Hide values"}
-              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "22px", height: "22px", cursor: "pointer", background: "none", border: "none", color: "var(--color-dojo-body)" }}
-            >
-              <EyeIcon off={hidden} />
-            </button>
-          </div>
-
-          {/* ── Big value + delta ── */}
-          <div style={{ marginTop: "6px", display: "flex", alignItems: "flex-end", gap: "16px" }}>
-            <div style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "38px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-              {hidden ? `$ ${mask}${mask}` : fmt(scoped.marketValue)}
-            </div>
-            {/* Only the % delta here — the active period is already shown
-                (and highlighted) by the range-tab row directly below, so
-                repeating it caused the "1M 1M" duplication (Phase 2 QA). */}
-            <div style={{ flex: "none", paddingBottom: "6px", display: "flex", alignItems: "baseline", gap: "7px" }}>
-              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
-                ▲ {hidden ? mask : `+${fmt(stats.overallDelta)}`} · {stats.overallPct}%
-              </span>
-            </div>
-          </div>
-
-          {/* ── Paid / Realized / Unrealized ── */}
-          <div style={{ display: "flex", gap: "12px", marginTop: "12px", paddingTop: "12px", borderTop: "1px solid var(--color-dojo-divider)", flexWrap: "nowrap", whiteSpace: "nowrap", overflowX: "auto" }}>
-            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Paid <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: "var(--color-dojo-ink)" }}>{hidden ? mask : fmt(stats.paid)}</span>
-            </span>
-            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Realized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: "var(--color-dojo-jade)" }}>{hidden ? mask : `+${fmt(0)}`}</span>
-            </span>
-            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", letterSpacing: 0, color: stats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{hidden ? mask : `${stats.unrealized >= 0 ? "+" : ""}${fmt(stats.unrealized)}`}</span>
-            </span>
-          </div>
-
-          {/* ── Chart — inline SVG area line.
-              The data has always been mock (see generateMockChartData);
-              recharts was pulling in ~90 kB of d3 modules just to render
-              a stroke + gradient we can draw in 30 lines of SVG. When
-              real PricingHistory data lands (Week 3), swap `data` for
-              the query result — everything below already takes an
-              array of `{ value: number }`. */}
-          <div style={{ margin: "16px -22px 0", height: "200px" }}>
-            {scoped.chartData.length > 0 ? (
-              <MiniAreaChart
-                data={scoped.chartData}
-                formatValue={(v) => (hidden ? `$ ${mask}` : fmt(v))}
-              />
-            ) : (
-              // F-11 empty state: selected collection has no cards. Show a
-              // calm placeholder rather than a blank/flat chart or a crash.
-              <div
-                data-testid="empty-chart"
-                style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontSize: "12px", letterSpacing: "0.08em", textTransform: "uppercase" }}
-              >
-                No cards in this collection yet
+          {/* ── Stat Card (Collectr-style matching Image 1) ── */}
+          <div style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "16px 18px", marginTop: "14px" }}>
+            {/* Header: Collection indicator + Eye toggle */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                <span style={{ width: 8, height: 8, background: activeStat.color, flex: "none" }} />
+                <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10.5px", letterSpacing: "0.16em", textTransform: "uppercase", color: activeStat.color }}>
+                  {activeStat.name}
+                </span>
+                <span data-testid="card-count" style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)", marginLeft: "4px" }}>
+                  · {activeStat.cardCount} {activeStat.cardCount === 1 ? "card" : "cards"}
+                </span>
               </div>
-            )}
+              <button
+                onClick={() => setHidden((v) => !v)}
+                title={hidden ? "Show values" : "Hide values"}
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "22px", height: "22px", cursor: "pointer", background: "none", border: "none", color: "var(--color-dojo-body)" }}
+              >
+                <EyeIcon off={hidden} />
+              </button>
+            </div>
+
+            {/* Market Value label */}
+            <div style={{ marginTop: "10px", fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%", fontSize: "9.5px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+              Market Value
+            </div>
+
+            {/* Big Value + Delta */}
+            <div style={{ marginTop: "4px", display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: "12px" }}>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "38px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
+                {hidden ? `$ ${mask}${mask}` : fmt(activeStat.marketValue)}
+              </div>
+              <div style={{ paddingBottom: "4px" }}>
+                <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
+                  ▲ {hidden ? mask : `+${fmt(activeStat.overallDelta)}`} · {stats.overallPct}%
+                </span>
+              </div>
+            </div>
+
+            {/* Paid / Realized / Unrealized row matching Image 1 */}
+            <div style={{ display: "flex", gap: "28px", marginTop: "14px", paddingTop: "12px", borderTop: "1px solid var(--color-dojo-divider)" }}>
+              <div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+                  PAID
+                </div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "15px", color: "var(--color-dojo-ink)", marginTop: "4px", fontVariantNumeric: "tabular-nums" }}>
+                  {hidden ? mask : fmt(activeStat.paid)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+                  REALIZED
+                </div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "15px", color: activeStat.realized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)", marginTop: "4px", fontVariantNumeric: "tabular-nums" }}>
+                  {hidden ? mask : `${activeStat.realized >= 0 ? "+" : ""}${fmt(activeStat.realized)}`}
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* ── Range selector tabs ── */}
-          <div style={{ display: "flex" }}>
-            {RANGES.map((r) => (
+          {/* ── Collection focus quick-switch pills (when multiple selected) ── */}
+          {activeSelectedOptions.length > 1 && (
+            <div className="dojo-scroll-hidden" style={{ display: "flex", gap: "8px", overflowX: "auto", marginTop: "12px", paddingBottom: "2px" }}>
               <button
-                key={r}
-                onClick={() => setActiveRange(r)}
+                type="button"
+                onClick={() => setFocusedId(null)}
                 style={{
-                  flex: 1, textAlign: "center", padding: "9px 0 7px", cursor: "pointer",
-                  background: "transparent", border: "none",
-                  borderBottom: activeRange === r ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em",
-                  color: activeRange === r ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+                  flex: "none", display: "inline-flex", alignItems: "center", gap: "6px",
+                  padding: "5px 10px", cursor: "pointer",
+                  background: focusedId === null ? "rgba(233,180,59,0.12)" : "var(--color-dojo-card)",
+                  border: "1px solid " + (focusedId === null ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
+                  color: focusedId === null ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)",
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
                 }}
               >
-                {r}
+                All Selected
               </button>
-            ))}
+              {activeSelectedOptions.map((o) => {
+                const isFocused = focusedId === o.id;
+                return (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => setFocusedId(isFocused ? null : o.id)}
+                    style={{
+                      flex: "none", display: "inline-flex", alignItems: "center", gap: "6px",
+                      padding: "5px 10px", cursor: "pointer",
+                      background: isFocused ? "rgba(255,255,255,0.08)" : "var(--color-dojo-card)",
+                      border: "1px solid " + (isFocused ? o.color : "var(--color-dojo-stroke)"),
+                      color: isFocused ? o.color : "var(--color-dojo-body)",
+                      fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+                    }}
+                  >
+                    <span style={{ width: 7, height: 7, background: o.color }} />
+                    {o.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Multi-Line Comparison Chart ── */}
+          <div style={{ margin: "16px -22px 0", height: "200px" }}>
+            <MultiLineComparisonChart
+              seriesList={chartSeriesList}
+              focusedId={focusedId}
+              formatValue={(v) => (hidden ? `$ ${mask}` : fmt(v))}
+            />
           </div>
 
-          {/* ── Tab selector — horizontally scrollable pill row. Active
-              tab is gold-highlighted with a gold underline (task 4). ── */}
+          {/* ── Range selector tabs with centered gold underline bar ── */}
+          <div style={{ display: "flex", borderBottom: "1px solid var(--color-dojo-divider)", marginTop: "8px" }}>
+            {RANGES.map((r) => {
+              const on = activeRange === r;
+              return (
+                <button
+                  key={r}
+                  onClick={() => setActiveRange(r)}
+                  style={{
+                    flex: 1, textAlign: "center", padding: "10px 0 8px", cursor: "pointer",
+                    background: "transparent", border: "none", position: "relative",
+                    fontFamily: "var(--font-display)", fontWeight: on ? 800 : 700, fontSize: "10px", letterSpacing: "0.14em",
+                    color: on ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+                  }}
+                >
+                  {r}
+                  {on && (
+                    <span
+                      style={{
+                        position: "absolute", bottom: -1, left: "22%", right: "22%",
+                        height: "2.5px", background: "var(--color-dojo-gold)",
+                      }}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* ── Tab selector — solid gold active tab matching Image 1 ── */}
           <div className="dojo-scroll-hidden" style={{ display: "flex", gap: "8px", overflowX: "auto", marginTop: "20px", paddingBottom: "2px" }}>
             {TABS.map((tab) => {
               const on = activeTab === tab.id;
@@ -925,12 +1143,11 @@ export default function DashboardClient({
                   onClick={() => setActiveTab(tab.id)}
                   aria-pressed={on}
                   style={{
-                    flex: "none", whiteSpace: "nowrap", padding: "9px 12px", cursor: "pointer",
-                    border: "1px solid " + (on ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
-                    borderBottom: on ? "2px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)",
-                    fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
-                    background: on ? "var(--color-dojo-gold)" : "transparent",
-                    color: on ? "var(--color-dojo-app)" : "var(--color-dojo-body)",
+                    flex: "none", whiteSpace: "nowrap", padding: "10px 16px", cursor: "pointer",
+                    border: on ? "1px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)",
+                    fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9.5px", letterSpacing: "0.12em", textTransform: "uppercase",
+                    background: on ? "var(--color-dojo-gold)" : "var(--color-dojo-card)",
+                    color: on ? "#0D0D0D" : "var(--color-dojo-body)",
                     boxShadow: "none",
                   }}
                 >
@@ -994,7 +1211,7 @@ export default function DashboardClient({
               <p className="dojo-heading" style={{ fontSize: "24px", margin: 0 }}>
                 welcome to the dojo, {firstName}.
               </p>
-              <p style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
+              <p suppressHydrationWarning style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
                 {dateString}
               </p>
             </div>

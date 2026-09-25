@@ -117,6 +117,40 @@ export const auth = betterAuth({
   }),
 
   // --------------------------------------------------------
+  // Database Hooks — post-signup side effects
+  // --------------------------------------------------------
+  // After a new user row is created (email/password OR OAuth), we
+  // automatically provision a default "Main" collection so the
+  // dashboard always has at least one collection to display.
+  // Using upsert (via createMany + skipDuplicates) is idempotent —
+  // safe to call even if the event fires twice (e.g. OAuth link).
+  databaseHooks: {
+    user: {
+      create: {
+        after: async (user) => {
+          try {
+            await prisma.collection.upsert({
+              where: { userId_name: { userId: user.id, name: "Main" } },
+              create: {
+                userId: user.id,
+                name: "Main",
+                typeTag: "MIXED",
+                isPrivate: false,
+              },
+              update: {}, // already exists — no-op
+            });
+          } catch (err) {
+            // Non-fatal: the user can always create collections manually.
+            // Log but don't throw — a collection provisioning failure
+            // must never block the sign-up response.
+            console.error("[auth] Failed to provision default Main collection:", err);
+          }
+        },
+      },
+    },
+  },
+
+  // --------------------------------------------------------
   // User: expose `isAdmin` on the session
   // --------------------------------------------------------
   // Without this, every server component that needs to know whether

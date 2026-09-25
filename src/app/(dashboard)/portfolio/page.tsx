@@ -3,18 +3,16 @@
 /**
  * Screen 06 — Portfolio (/portfolio)
  *
- * Shows the authenticated user's real, added cards (GET
- * /api/users/me/collection). Overhauled to match the prototype:
+ * Shows the authenticated user's real cards with Collectr-style portfolio features:
  *   - Search bar ("search my portfolio") + filter icon.
- *   - TOTAL VALUE headline with two filters: a status filter ("All cards"
- *     / Graded / Raw / Foil) and a multi-select Collections filter.
- *   - Grid/list of card tiles (2-col mobile) with a Select mode for bulk
- *     delete behind a double confirmation.
- *
- * Removed vs the previous version (per design): the Main/Want List/High
- * Value group chips, the My cards/Favorites/Sold sub-tabs, and the
- * Favorites concept entirely. Favorites has been removed app-wide and
- * replaced by "Want to Buy" (see /wantlist + the star on search tiles).
+ *   - Portfolio summary: Market Value, Total Paid, Realized Profit, Unrealized Profit.
+ *   - Status filter: Active cards (default), Sold cards, All cards, Want to buy, High value tracker.
+ *   - Automatic card consolidation: If the same card is added multiple times, it displays
+ *     as a single tile with consolidated Quantity (e.g. Qty: 2) instead of duplicate rows.
+ *   - Mark cards as SOLD with customizable Selling Price, Quantity sold, and Date.
+ *   - Realized Gain/Loss tracking for all sold cards.
+ *   - Revert / Unsell option to return cards to active collection.
+ *   - Grid/list toggle, bulk selection mode for deletion.
  */
 
 import { useState, useMemo, useEffect } from "react";
@@ -23,7 +21,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
 
-// ── Real collection item shape — matches GET /api/users/me/collection ──
+// ── Real collection item shape ──
 interface CollectionItem {
   id: string;
   cardId: string;
@@ -32,9 +30,14 @@ interface CollectionItem {
   condition: string | null;
   purchasePrice: number | null;
   collectionId?: string | null;
+  isSold?: boolean;
+  soldPrice?: number | null;
+  soldAt?: string | null;
   addedAt: string;
+  allIds?: string[];
   card: {
     id: string;
+    externalId?: string;
     name: string;
     number: string;
     rarity: string | null;
@@ -93,9 +96,20 @@ function ListIcon() {
   );
 }
 
-// ── Delta tag — only when a real gain/loss exists (no price-history
-// pipeline yet, so per-card % is never fabricated). ──
+// ── Delta tag ──
 function GainLossTag({ item }: { item: CollectionItem }) {
+  if (item.isSold) {
+    if (item.soldPrice == null || item.purchasePrice == null) return null;
+    const diff = item.soldPrice - item.purchasePrice;
+    const pct = item.purchasePrice > 0 ? (diff / item.purchasePrice) * 100 : 0;
+    const up = diff >= 0;
+    return (
+      <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
+        {up ? "▲" : "▼"} {up ? "+" : ""}{pct.toFixed(1)}% Realized
+      </span>
+    );
+  }
+
   if (item.purchasePrice == null || item.card.marketPrice == null) return null;
   const diff = item.card.marketPrice - item.purchasePrice;
   const pct = item.purchasePrice > 0 ? (diff / item.purchasePrice) * 100 : 0;
@@ -109,7 +123,7 @@ function GainLossTag({ item }: { item: CollectionItem }) {
 
 // A card is "graded" if its free-text condition names a grading company.
 const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
-const isGraded = (c: string | null) => !!c && GRADED_RE.test(c);
+const isGraded = (c: string | null | undefined) => !!c && GRADED_RE.test(c);
 
 /** Sub-line like "Obsidian Flames · PSA 10" / "Base Set · Raw · Foil". */
 function subLine(item: CollectionItem): string {
@@ -122,10 +136,8 @@ function subLine(item: CollectionItem): string {
 }
 
 function detailHref(item: CollectionItem): string {
-  // Infer game from the card's externalId prefix (One Piece Bandai codes
-  // vs everything else = Pokémon) so the detail page shows the right
-  // franchise + serial even though the portfolio has no explicit game field.
-  const game = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(item.cardId) ? "onepiece" : "pokemon";
+  const cardIdentifier = item.card.externalId || item.cardId;
+  const game = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(cardIdentifier) ? "onepiece" : "pokemon";
   const params = new URLSearchParams({
     name: item.card.name,
     game,
@@ -135,7 +147,7 @@ function detailHref(item: CollectionItem): string {
     ...(item.card.number ? { number: item.card.number } : {}),
     ...(item.card.rarity ? { rarity: item.card.rarity } : {}),
   });
-  return `/search/${item.cardId}?${params.toString()}`;
+  return `/search/${cardIdentifier}?${params.toString()}`;
 }
 
 // ── Selection checkbox overlay (shown in Select mode) ──
@@ -157,41 +169,163 @@ function SelectCheckbox({ checked }: { checked: boolean }) {
   );
 }
 
-// Small "Want to Sell" pill overlaid on an owned-card tile. Stops the click
-// from bubbling to the tile's navigation Link.
-function WantToSellButton({ onClick }: { onClick: () => void }) {
+// ── Collectr "Mark as Sold" Modal ──
+interface SellModalProps {
+  item: CollectionItem;
+  onClose: () => void;
+  onConfirm: (data: { soldPrice: number; quantity: number; soldAt: string }) => void;
+  isPending: boolean;
+}
+
+function SellModal({ item, onClose, onConfirm, isPending }: SellModalProps) {
+  const [qty, setQty] = useState<number>(1);
+  const [price, setPrice] = useState<string>(String(item.card.marketPrice ?? item.purchasePrice ?? 0));
+  const [date, setDate] = useState<string>(new Date().toISOString().split("T")[0]);
+
+  const numPrice = parseFloat(price) || 0;
+  const cost = item.purchasePrice ?? 0;
+  const realizedPerItem = numPrice - cost;
+  const totalRealized = realizedPerItem * qty;
+  const pct = cost > 0 ? (realizedPerItem / cost) * 100 : 0;
+  const up = totalRealized >= 0;
+
   return (
-    <button
-      type="button"
-      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick(); }}
-      style={{
-        marginTop: "8px", width: "100%", padding: "8px 0", cursor: "pointer",
-        border: "1px solid var(--color-dojo-stroke)", background: "transparent",
-        color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontWeight: 800,
-        fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
-      }}
-    >
-      Want to Sell
-    </button>
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,0.7)" }} />
+      <div role="dialog" aria-modal="true" style={{ position: "fixed", inset: 0, zIndex: 91, display: "flex", alignItems: "center", justifyContent: "center", padding: "18px" }}>
+        <div style={{ width: "100%", maxWidth: "380px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+            <div style={{ width: "48px", flex: "none" }}>
+              <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} aspectRatio="660 / 921" />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h2 className="dojo-heading" style={{ fontSize: "16px", margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                Mark as Sold
+              </h2>
+              <div style={{ fontSize: "12px", color: "var(--color-dojo-ink)", fontWeight: 700, marginTop: "2px" }}>
+                {item.card.name}
+              </div>
+              <div style={{ fontSize: "10.5px", color: "var(--color-dojo-body)" }}>
+                {subLine(item)}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            {/* Quantity */}
+            <div>
+              <label style={{ display: "block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-body)", marginBottom: "6px" }}>
+                Quantity Sold (Max: {item.quantity})
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={item.quantity}
+                value={qty}
+                onChange={(e) => setQty(Math.min(item.quantity, Math.max(1, parseInt(e.target.value) || 1)))}
+                style={{ width: "100%", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-ink)", fontSize: "14px", fontFamily: "var(--font-display)", fontWeight: 700 }}
+              />
+            </div>
+
+            {/* Selling Price */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                <label style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
+                  Selling Price ($ per card)
+                </label>
+                {item.card.marketPrice != null && (
+                  <span style={{ fontSize: "10px", color: "var(--color-dojo-gold)", cursor: "pointer" }} onClick={() => setPrice(String(item.card.marketPrice))}>
+                    Market: {fmt(item.card.marketPrice)}
+                  </span>
+                )}
+              </div>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                placeholder="0.00"
+                style={{ width: "100%", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-ink)", fontSize: "14px", fontFamily: "var(--font-display)", fontWeight: 700 }}
+              />
+            </div>
+
+            {/* Date Sold */}
+            <div>
+              <label style={{ display: "block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-body)", marginBottom: "6px" }}>
+                Sale Date
+              </label>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-ink)", fontSize: "13px" }}
+              />
+            </div>
+
+            {/* Realized Profit preview */}
+            <div style={{ padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-divider)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontFamily: "var(--font-display)", fontSize: "11px", fontWeight: 700, color: "var(--color-dojo-body)" }}>
+                Realized Profit/Loss:
+              </span>
+              <span style={{ fontFamily: "var(--font-display)", fontSize: "13px", fontWeight: 800, color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
+                {up ? "+" : ""}{fmt(totalRealized)} ({up ? "+" : ""}{pct.toFixed(1)}%)
+              </span>
+            </div>
+
+            {/* Action buttons */}
+            <div style={{ display: "flex", gap: "10px", marginTop: "6px" }}>
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={isPending}
+                className="dojo-btn dojo-btn-outline"
+                style={{ flex: 1, height: "42px" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isPending || numPrice <= 0}
+                onClick={() => onConfirm({ soldPrice: numPrice, quantity: qty, soldAt: date })}
+                className="dojo-btn dojo-btn-primary"
+                style={{ flex: 1, height: "42px" }}
+              >
+                {isPending ? "Saving..." : "Confirm Sale"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
 // ── Card tile — grid view ──────────────────────────────────────────
 function CardGrid({
-  item, selectMode, selected, onToggleSelect, onWantToSell, owned,
+  item, selectMode, selected, onToggleSelect, onWantToSell, onMarkAsSold, onRevertSold, owned,
 }: {
   item: CollectionItem;
   selectMode: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
   onWantToSell: (item: CollectionItem) => void;
+  onMarkAsSold: (item: CollectionItem) => void;
+  onRevertSold: (id: string) => void;
   owned: boolean;
 }) {
-  const price = item.card.marketPrice;
+  const price = item.isSold ? item.soldPrice : item.card.marketPrice;
   const inner = (
     <>
       {selectMode && <SelectCheckbox checked={selected} />}
-      <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} style={{ background: "var(--color-dojo-raised)", border: "none" }} />
+      <div style={{ position: "relative" }}>
+        <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} style={{ background: "var(--color-dojo-raised)", border: "none" }} />
+        {item.isSold && (
+          <span style={{ position: "absolute", top: "6px", right: "6px", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", padding: "2px 6px", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+            SOLD
+          </span>
+        )}
+      </div>
       <div style={{ marginTop: "9px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", lineHeight: 1.3, minHeight: "32px", color: "var(--color-dojo-ink)" }}>
         {item.card.name}
       </div>
@@ -202,15 +336,18 @@ function CardGrid({
         </span>
         <span style={{ marginLeft: "auto" }}><GainLossTag item={item} /></span>
       </div>
-      <div style={{ marginTop: "5px", fontSize: "11px", color: "var(--color-dojo-faint)" }}>Qty: {item.quantity}</div>
+      <div style={{ marginTop: "5px", fontSize: "11px", color: "var(--color-dojo-faint)" }}>
+        Qty: {item.quantity}
+      </div>
     </>
   );
+
   const box: React.CSSProperties = {
     position: "relative", background: "var(--color-dojo-card)",
     border: "1px solid " + (selected ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
     padding: "11px", textDecoration: "none", display: "block", cursor: "pointer",
   };
-  // In select mode the whole tile toggles selection instead of navigating.
+
   if (selectMode) {
     return (
       <div className="dojo-card-tile" style={box} role="button" tabIndex={0}
@@ -222,28 +359,70 @@ function CardGrid({
       </div>
     );
   }
-  // The Want to Sell pill is a sibling of the Link (a <button> can't live
-  // inside an <a>), sharing the tile's bordered box.
+
   return (
     <div style={box}>
       <Link href={detailHref(item)} className="dojo-card-tile" style={{ textDecoration: "none", display: "block" }}>{inner}</Link>
-      {owned && <WantToSellButton onClick={() => onWantToSell(item)} />}
+      {owned && !item.isSold && (
+        <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMarkAsSold(item); }}
+            style={{
+              flex: 1, padding: "7px 0", cursor: "pointer",
+              border: "1px solid var(--color-dojo-gold)", background: "rgba(233,180,59,0.08)",
+              color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 800,
+              fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+            }}
+          >
+            Mark Sold
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onWantToSell(item); }}
+            style={{
+              flex: 1, padding: "7px 0", cursor: "pointer",
+              border: "1px solid var(--color-dojo-stroke)", background: "transparent",
+              color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontWeight: 800,
+              fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+            }}
+          >
+            Want Sell
+          </button>
+        </div>
+      )}
+      {owned && item.isSold && (
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRevertSold(item.id); }}
+          style={{
+            marginTop: "8px", width: "100%", padding: "7px 0", cursor: "pointer",
+            border: "1px solid var(--color-dojo-stroke)", background: "transparent",
+            color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontWeight: 800,
+            fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+          }}
+        >
+          Revert to Active
+        </button>
+      )}
     </div>
   );
 }
 
 // ── Card row — list view ───────────────────────────────────────────
 function CardRow({
-  item, selectMode, selected, onToggleSelect, onWantToSell, owned,
+  item, selectMode, selected, onToggleSelect, onWantToSell, onMarkAsSold, onRevertSold, owned,
 }: {
   item: CollectionItem;
   selectMode: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
   onWantToSell: (item: CollectionItem) => void;
+  onMarkAsSold: (item: CollectionItem) => void;
+  onRevertSold: (id: string) => void;
   owned: boolean;
 }) {
-  const price = item.card.marketPrice;
+  const price = item.isSold ? item.soldPrice : item.card.marketPrice;
   const inner = (
     <>
       {selectMode && (
@@ -251,13 +430,18 @@ function CardRow({
           {selected ? "✓" : ""}
         </span>
       )}
-      <div style={{ width: "40px", flex: "none" }}>
+      <div style={{ width: "40px", flex: "none", position: "relative" }}>
         <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} aspectRatio="660 / 921" initialsSize="12px" style={{ background: "var(--color-dojo-raised)", border: "none" }} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {item.card.name}
+            {item.isSold && (
+              <span style={{ marginLeft: "8px", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "8.5px", padding: "1px 5px", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                SOLD
+              </span>
+            )}
           </div>
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "14px", fontVariantNumeric: "tabular-nums", color: price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
             {price != null ? fmt(price) : "—"}
@@ -267,15 +451,19 @@ function CardRow({
           <div style={{ flex: 1, minWidth: 0, fontSize: "11px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{subLine(item)}</div>
           <GainLossTag item={item} />
         </div>
-        <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--color-dojo-faint)" }}>Qty: {item.quantity}</div>
+        <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--color-dojo-faint)" }}>
+          Qty: {item.quantity}
+        </div>
       </div>
     </>
   );
+
   const box: React.CSSProperties = {
     position: "relative", background: "var(--color-dojo-card)",
     border: "1px solid " + (selected ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"),
     padding: "12px 13px", marginBottom: "10px", display: "flex", gap: "12px", alignItems: "center", textDecoration: "none",
   };
+
   if (selectMode) {
     return (
       <div className="dojo-card-tile" style={box} role="button" tabIndex={0}
@@ -287,24 +475,50 @@ function CardRow({
       </div>
     );
   }
-  // Row: the navigation Link fills the row; a compact Want to Sell pill sits
-  // at the right as a sibling (a <button> can't live inside the <a>).
+
   return (
     <div style={box}>
       <Link href={detailHref(item)} className="dojo-card-tile" style={{ flex: 1, minWidth: 0, display: "flex", gap: "12px", alignItems: "center", textDecoration: "none" }}>{inner}</Link>
-      {owned && (
+      {owned && !item.isSold && (
+        <div style={{ display: "flex", gap: "6px", flex: "none" }}>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onMarkAsSold(item); }}
+            style={{
+              padding: "7px 10px", cursor: "pointer", whiteSpace: "nowrap",
+              border: "1px solid var(--color-dojo-gold)", background: "rgba(233,180,59,0.08)",
+              color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 800,
+              fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+            }}
+          >
+            Mark Sold
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onWantToSell(item); }}
+            style={{
+              padding: "7px 10px", cursor: "pointer", whiteSpace: "nowrap",
+              border: "1px solid var(--color-dojo-stroke)", background: "transparent",
+              color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontWeight: 800,
+              fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
+            }}
+          >
+            Want Sell
+          </button>
+        </div>
+      )}
+      {owned && item.isSold && (
         <button
           type="button"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onWantToSell(item); }}
-          aria-label="Want to Sell"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRevertSold(item.id); }}
           style={{
-            flex: "none", padding: "8px 12px", cursor: "pointer", whiteSpace: "nowrap",
+            flex: "none", padding: "7px 10px", cursor: "pointer", whiteSpace: "nowrap",
             border: "1px solid var(--color-dojo-stroke)", background: "transparent",
             color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)", fontWeight: 800,
-            fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
+            fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase",
           }}
         >
-          Want to Sell
+          Revert
         </button>
       )}
     </div>
@@ -316,44 +530,36 @@ const dropdownBtn: React.CSSProperties = {
   border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", color: "var(--color-dojo-ink)",
   fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9.5px", letterSpacing: "0.12em", textTransform: "uppercase", whiteSpace: "nowrap",
 };
-// Gold accent when a filter pill has a non-default value active.
 const activePill: React.CSSProperties = {
   border: "1px solid var(--color-dojo-gold)",
   background: "var(--color-dojo-gold)",
   color: "var(--color-dojo-app)",
 };
 
-// Dropdown 1 — card type / intent filter.
-type CardType = "all" | "want-to-buy" | "high-value";
+type CardType = "active" | "sold" | "all" | "want-to-buy" | "high-value";
 const CARD_TYPE_OPTIONS: { id: CardType; label: string }[] = [
+  { id: "active", label: "Active cards" },
+  { id: "sold", label: "Sold cards" },
   { id: "all", label: "All cards" },
   { id: "want-to-buy", label: "Want to buy" },
-  { id: "high-value", label: "High value card tracker" },
+  { id: "high-value", label: "High value tracker" },
 ];
-// A card counts as "high value" at or above this market price (owned cards).
 const HIGH_VALUE_THRESHOLD = 100;
 
 export default function PortfolioPage() {
   const [query, setQuery] = useState("");
-  // Default to list on mobile, grid on desktop (Task 3). Resolved once on
-  // mount from the viewport; the user can still toggle freely after.
   const [view, setView] = useState<"grid" | "list">("list");
-  // Dropdown 1: card type/intent. Dropdown 2: collection ("all" | id |
-  // "__uncat__"). They compose with AND logic for owned cards.
-  const [cardType, setCardType] = useState<CardType>("all");
+  const [cardType, setCardType] = useState<CardType>("active");
   const [typeOpen, setTypeOpen] = useState(false);
   const [selectedColl, setSelectedColl] = useState<string>("all");
   const [collOpen, setCollOpen] = useState(false);
-  // Select / bulk-delete mode.
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [sellModalItem, setSellModalItem] = useState<CollectionItem | null>(null);
   const queryClient = useQueryClient();
 
-  // Owned cards can be listed as WANT TO SELL — writes the same want-list
-  // API with intent SELL, so they surface under the /wantlist "Want to Sell"
-  // tab (never the Buy tab).
   const wantToSell = useMutation({
     mutationFn: async (cardId: string) => {
       const res = await fetch("/api/want-list", {
@@ -372,8 +578,44 @@ export default function PortfolioPage() {
     onError: (err: Error) => setToast(err.message),
   });
 
-  // Responsive default view: grid on desktop (≥640px), list on mobile.
-  // Runs once on mount; honors the user's manual toggle afterward.
+  const markAsSold = useMutation({
+    mutationFn: async ({ id, soldPrice, soldQuantity, soldAt }: { id: string; soldPrice: number; soldQuantity: number; soldAt?: string }) => {
+      const res = await fetch(`/api/users/me/collection/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ isSold: true, soldPrice, soldQuantity, soldAt }),
+      });
+      if (!res.ok) throw new Error("Could not mark card as sold.");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
+      setToast("Card marked as sold!");
+    },
+    onError: (err: Error) => setToast(err.message),
+  });
+
+  const revertSold = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/users/me/collection/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ isSold: false }),
+      });
+      if (!res.ok) throw new Error("Could not revert sale.");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
+      setToast("Card returned to active collection");
+    },
+    onError: (err: Error) => setToast(err.message),
+  });
+
   useEffect(() => {
     if (typeof window !== "undefined" && window.matchMedia("(min-width: 640px)").matches) {
       setView("grid");
@@ -389,7 +631,6 @@ export default function PortfolioPage() {
     },
   });
 
-  // Named collections for the Collections filter.
   const { data: collMeta } = useQuery<CollectionMeta[]>({
     queryKey: ["collections"],
     queryFn: async () => {
@@ -400,9 +641,6 @@ export default function PortfolioPage() {
     },
   });
 
-  // Want to Buy list — a different data source (not owned cards). Only
-  // fetched/used when the "Want to buy" card-type filter is active. The
-  // rows are normalized into the owned-card tile shape below.
   const { data: wantData } = useQuery<{ data: { id: string; cardId: string; name: string | null; imageUrl: string | null; marketPrice: number | null; setName: string | null }[] }>({
     queryKey: ["want-list", "BUY"],
     queryFn: async () => {
@@ -413,7 +651,6 @@ export default function PortfolioPage() {
     enabled: cardType === "want-to-buy",
   });
 
-  // Bulk delete — DELETE is per-id, so fan out over the selection.
   const bulkDelete = useMutation({
     mutationFn: async (ids: string[]) => {
       const results = await Promise.allSettled(
@@ -431,10 +668,37 @@ export default function PortfolioPage() {
     },
   });
 
-  const items = data?.items ?? [];
+  const rawItems = data?.items ?? [];
 
-  // Dropdown 2 (Collections) options: "All collections" (default), the
-  // user's real named collections, then "Uncategorized" for loose cards.
+  // Deduplicate / consolidate identical cards so if the same card is added twice,
+  // it shows as Qty: 2 and does not list it again as a duplicate row!
+  const consolidatedItems = useMemo(() => {
+    const map = new Map<string, CollectionItem & { allIds: string[] }>();
+    for (const item of rawItems) {
+      const cardKey = item.card.name.trim().toLowerCase();
+      const setKey = (item.card.set?.name ?? "").trim().toLowerCase();
+      const condKey = isGraded(item.condition) ? (item.condition ?? "").trim().toLowerCase() : "raw";
+      const foilKey = item.isFoil ? "foil" : "regular";
+      const soldKey = item.isSold ? `sold-${item.soldPrice ?? 0}` : "active";
+      const collKey = item.collectionId ?? "__uncat__";
+      const key = `${cardKey}::${setKey}::${foilKey}::${condKey}::${soldKey}::${collKey}`;
+
+      const existing = map.get(key);
+      if (existing) {
+        existing.quantity += item.quantity;
+        existing.allIds.push(item.id);
+        if (item.purchasePrice != null && existing.purchasePrice != null) {
+          existing.purchasePrice = (existing.purchasePrice + item.purchasePrice) / 2;
+        } else if (item.purchasePrice != null) {
+          existing.purchasePrice = item.purchasePrice;
+        }
+      } else {
+        map.set(key, { ...item, allIds: [item.id] });
+      }
+    }
+    return Array.from(map.values());
+  }, [rawItems]);
+
   const collOptions = useMemo(() => {
     const opts = [{ id: "all", name: "All collections" }];
     for (const c of collMeta ?? []) opts.push({ id: c.id, name: c.name });
@@ -442,9 +706,6 @@ export default function PortfolioPage() {
     return opts;
   }, [collMeta]);
 
-  // Want-list rows normalized into the owned-card tile shape so the grid
-  // can render them uniformly. They have no owned metadata (quantity 1, no
-  // collection/condition/purchase price), so gain/loss never shows.
   const wantAsItems: CollectionItem[] = useMemo(
     () =>
       (wantData?.data ?? []).map((w) => ({
@@ -469,36 +730,64 @@ export default function PortfolioPage() {
     [wantData]
   );
 
-  // Compose the two dropdowns (AND logic) + search:
-  //   - "want to buy" swaps the source to the want-list (collections filter
-  //     doesn't apply — those items aren't filed in collections).
-  //   - "high value" keeps owned cards at/above the value threshold.
-  //   - collections filter narrows owned cards to one collection.
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const source = cardType === "want-to-buy" ? wantAsItems : items;
-    return source.filter((i) => {
+    if (cardType === "want-to-buy") {
+      return wantAsItems.filter((i) => !q || i.card.name.toLowerCase().includes(q));
+    }
+    return consolidatedItems.filter((i) => {
       if (q && !i.card.name.toLowerCase().includes(q)) return false;
+      if (cardType === "active" && i.isSold) return false;
+      if (cardType === "sold" && !i.isSold) return false;
       if (cardType === "high-value" && (i.card.marketPrice ?? 0) < HIGH_VALUE_THRESHOLD) return false;
-      // Collections filter only applies to owned cards (not want-to-buy).
-      if (cardType !== "want-to-buy" && selectedColl !== "all" && (i.collectionId ?? "__uncat__") !== selectedColl) return false;
+      if (selectedColl !== "all" && (i.collectionId ?? "__uncat__") !== selectedColl) return false;
       return true;
     });
-  }, [items, wantAsItems, query, cardType, selectedColl]);
+  }, [consolidatedItems, wantAsItems, query, cardType, selectedColl]);
 
-  // Total value reflects the current filters (what the user is looking at).
-  const totalValue = useMemo(
-    () => filteredItems.reduce((a, i) => a + (i.card.marketPrice ?? 0) * i.quantity, 0),
-    [filteredItems]
-  );
+  // Overall Portfolio Stats (Collectr feature)
+  const portfolioStats = useMemo(() => {
+    let marketValue = 0;
+    let paid = 0;
+    let realized = 0;
+
+    for (const item of rawItems) {
+      if (item.isSold) {
+        realized += ((item.soldPrice ?? 0) - (item.purchasePrice ?? 0)) * item.quantity;
+      } else {
+        marketValue += (item.card.marketPrice ?? 0) * item.quantity;
+        paid += (item.purchasePrice ?? 0) * item.quantity;
+      }
+    }
+
+    const unrealized = marketValue - paid;
+    return { marketValue, paid, realized, unrealized };
+  }, [rawItems]);
+
+  const totalValue = useMemo(() => {
+    if (cardType === "sold") {
+      return filteredItems.reduce((a, i) => a + (i.soldPrice ?? 0) * i.quantity, 0);
+    }
+    return filteredItems.reduce((a, i) => a + (i.card.marketPrice ?? 0) * i.quantity, 0);
+  }, [filteredItems, cardType]);
 
   const typeLabel = CARD_TYPE_OPTIONS.find((o) => o.id === cardType)!.label;
   const collLabel = collOptions.find((o) => o.id === selectedColl)?.name ?? "All collections";
-  // Want-to-buy items aren't owned rows, so bulk-delete doesn't apply.
   const canSelect = cardType !== "want-to-buy";
 
-  const toggleSelectId = (id: string) =>
-    setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelectId = (id: string) => {
+    const item = consolidatedItems.find((i) => i.id === id);
+    const idsToToggle = item?.allIds ?? [id];
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      const isSelected = n.has(id);
+      for (const i of idsToToggle) {
+        if (isSelected) n.delete(i);
+        else n.add(i);
+      }
+      return n;
+    });
+  };
 
   return (
     <div style={{ padding: "6px 22px 24px" }}>
@@ -526,19 +815,18 @@ export default function PortfolioPage() {
         </button>
       </div>
 
-      {/* ── Total value + two filter dropdowns ── */}
+      {/* ── Total value + filter dropdowns ── */}
       <div style={{ marginTop: "20px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%", fontSize: "10px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-            Total value
+            {cardType === "sold" ? "Total Sold Value" : "Total value"}
           </span>
 
-          {/* Dropdown 1 — card type/intent (All cards / Want to buy / High
-              value). Gold pill when a non-default is active. */}
+          {/* Dropdown 1 — card type/intent */}
           <div style={{ position: "relative" }}>
             <button type="button" data-testid="card-type-filter" aria-haspopup="listbox" aria-expanded={typeOpen}
               onClick={() => { setTypeOpen((v) => !v); setCollOpen(false); }}
-              style={{ ...dropdownBtn, ...(cardType !== "all" ? activePill : null) }}
+              style={{ ...dropdownBtn, ...(cardType !== "active" ? activePill : null) }}
             >
               {typeLabel}<span aria-hidden="true" style={{ fontSize: "8px", opacity: 0.7 }}>▾</span>
             </button>
@@ -562,9 +850,7 @@ export default function PortfolioPage() {
             )}
           </div>
 
-          {/* Dropdown 2 — Collections (All collections / named / Uncategorized).
-              Disabled while "Want to buy" is active (those aren't filed in
-              collections). Gold pill when a non-default is active. */}
+          {/* Dropdown 2 — Collections */}
           <div style={{ position: "relative" }}>
             <button type="button" data-testid="collection-filter" aria-haspopup="listbox" aria-expanded={collOpen}
               disabled={cardType === "want-to-buy"}
@@ -597,9 +883,22 @@ export default function PortfolioPage() {
         <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "32px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
           {isLoading ? "—" : fmt(totalValue)}
         </div>
+
+        {/* Collectr Portfolio Metrics (Paid, Realized, Unrealized) */}
+        <div style={{ display: "flex", gap: "14px", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--color-dojo-divider)", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            Paid <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-ink)" }}>{fmt(portfolioStats.paid)}</span>
+          </span>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            Realized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.realized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{portfolioStats.realized >= 0 ? "+" : ""}{fmt(portfolioStats.realized)}</span>
+          </span>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{portfolioStats.unrealized >= 0 ? "+" : ""}{fmt(portfolioStats.unrealized)}</span>
+          </span>
+        </div>
       </div>
 
-      {/* ── List header: current view name · item count · Select · view toggle ── */}
+      {/* ── List header: view name · item count · Select · view toggle ── */}
       <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "20px 0 12px" }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
           {typeLabel}
@@ -608,8 +907,6 @@ export default function PortfolioPage() {
           {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
         </span>
 
-        {/* Select mode toggle — only for owned cards (want-to-buy items
-            can't be bulk-deleted from here). */}
         {canSelect && (
           <button
             type="button"
@@ -632,7 +929,7 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {/* ── Bulk delete bar (select mode, ≥1 selected) ── */}
+      {/* ── Bulk delete bar ── */}
       {selectMode && selectedIds.size > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px", padding: "10px 13px", border: "1px solid var(--color-dojo-gold)", background: "rgba(233,180,59,0.08)" }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", color: "var(--color-dojo-ink)" }}>
@@ -662,12 +959,12 @@ export default function PortfolioPage() {
       ) : filteredItems.length === 0 ? (
         <div style={{ border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "30px 22px", textAlign: "center" }}>
           <p className="dojo-heading" style={{ fontSize: "20px", margin: 0 }}>
-            {items.length === 0 ? "nothing here yet" : "no matches"}
+            {rawItems.length === 0 ? "nothing here yet" : "no matches"}
           </p>
-          <p className="dojo-body" style={{ marginTop: "8px", marginBottom: items.length === 0 ? "18px" : 0 }}>
-            {items.length === 0 ? "add a card from search or the scanner to start your portfolio." : "no cards match these filters."}
+          <p className="dojo-body" style={{ marginTop: "8px", marginBottom: rawItems.length === 0 ? "18px" : 0 }}>
+            {rawItems.length === 0 ? "add a card from search or the scanner to start your portfolio." : "no cards match these filters."}
           </p>
-          {items.length === 0 && (
+          {rawItems.length === 0 && (
             <Link href="/search" className="dojo-btn dojo-btn-primary" style={{ textDecoration: "none", display: "inline-flex", width: "auto", padding: "12px 22px" }}>
               SEARCH CARDS
             </Link>
@@ -676,15 +973,53 @@ export default function PortfolioPage() {
       ) : view === "grid" ? (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
           {filteredItems.map((item) => (
-            <CardGrid key={item.id} item={item} selectMode={selectMode} selected={selectedIds.has(item.id)} onToggleSelect={toggleSelectId} onWantToSell={(i) => wantToSell.mutate(i.cardId)} owned={canSelect} />
+            <CardGrid
+              key={item.id}
+              item={item}
+              selectMode={selectMode}
+              selected={item.allIds ? item.allIds.some((id) => selectedIds.has(id)) : selectedIds.has(item.id)}
+              onToggleSelect={toggleSelectId}
+              onWantToSell={(i) => wantToSell.mutate(i.cardId)}
+              onMarkAsSold={(i) => setSellModalItem(i)}
+              onRevertSold={(id) => revertSold.mutate(id)}
+              owned={canSelect}
+            />
           ))}
         </div>
       ) : (
         <div>
           {filteredItems.map((item) => (
-            <CardRow key={item.id} item={item} selectMode={selectMode} selected={selectedIds.has(item.id)} onToggleSelect={toggleSelectId} onWantToSell={(i) => wantToSell.mutate(i.cardId)} owned={canSelect} />
+            <CardRow
+              key={item.id}
+              item={item}
+              selectMode={selectMode}
+              selected={item.allIds ? item.allIds.some((id) => selectedIds.has(id)) : selectedIds.has(item.id)}
+              onToggleSelect={toggleSelectId}
+              onWantToSell={(i) => wantToSell.mutate(i.cardId)}
+              onMarkAsSold={(i) => setSellModalItem(i)}
+              onRevertSold={(id) => revertSold.mutate(id)}
+              owned={canSelect}
+            />
           ))}
         </div>
+      )}
+
+      {/* ── Collectr Mark as Sold Modal ── */}
+      {sellModalItem && (
+        <SellModal
+          item={sellModalItem}
+          isPending={markAsSold.isPending}
+          onClose={() => setSellModalItem(null)}
+          onConfirm={async ({ soldPrice, quantity, soldAt }) => {
+            await markAsSold.mutateAsync({
+              id: sellModalItem.id,
+              soldPrice,
+              soldQuantity: quantity,
+              soldAt,
+            });
+            setSellModalItem(null);
+          }}
+        />
       )}
 
       {/* ── Double-confirm delete modal ── */}
@@ -715,7 +1050,6 @@ export default function PortfolioPage() {
         </>
       )}
 
-      {/* Want-to-sell confirmation / error toast. */}
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
   );
