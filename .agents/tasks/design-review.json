@@ -1,0 +1,41 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "reviewDoc": "d:\\Work Code\\Projects\\pokemon TCG\\app\\Pokemon\\.worktrees\\api-integration\\.agents\\tasks\\design-review.md",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "MEDIUM",
+      "title": "GET /api/cards/[id]/graded burns a Scrydex search credit on every public hit; no freshness gate, no SyncLog metering, no scrydexId write-back",
+      "where": "design.md §6 (GET /api/cards/[id]/graded route code block); contradicts §3.6 freshness-gate + credit-metering centralisation and NFR-8",
+      "fix": "Make the graded route obey the same freshness gate + SyncLog metering as every other Scrydex caller. Preferred: route it through pullAndStoreScrydexPrice (return the resolved ScrydexCard from it, or read the stored graded CurrentPrice/PricingHistory). Minimum: on resolveScrydexCard success write Card.scrydexId back, write a SyncLog(job=\"scrydex_history\", cardId, credits, status) row, and short-circuit on SCRYDEX_STALE_MS against the newest SyncLog so repeat views within 24h serve stored data. State the chosen policy explicitly."
+    },
+    {
+      "id": 2,
+      "severity": "MEDIUM",
+      "title": "Graded route passes no setCode to resolveScrydexCard, degrading the §3.2a match to the weaker name-only tie-break for the precision-sensitive graded feature",
+      "where": "design.md §6 route (resolveScrydexCard called with setName only) vs §3.2a match rule (prefer expansion.code === setCode when known)",
+      "fix": "State where card.setCode comes from for the Scrydex match. Either document that CardSet has no code column so graded matching necessarily uses setName + collector number (and confirm that is acceptable for graded), or derive a set code where possible (e.g. One Piece externalId prefix) and pass it. Make the §3.2a 'prefer setCode' input source concrete rather than referencing a field no caller populates."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "title": "§3.2a match rule references card.setCode but no CardSet.code / Card.setCode field exists on the verified schema",
+      "where": "design.md §3.2a step 2 and resolveScrydexCard signature (setCode?: string)",
+      "fix": "Add one sentence in §3.2a: setCode is optional and currently only derivable for One Piece from the externalId prefix; Pokémon matches run on setName + collector number. Keeps the match rule honest about which branch actually fires."
+    },
+    {
+      "id": 4,
+      "severity": "NIT",
+      "title": "fetchScrydexCardById branch in the graded route returns { card } while resolveScrydexCard returns { scrydexId, card }, a latent shape divergence",
+      "where": "design.md §6 route (const resolvedScrydex = card.scrydexId ? { card: ... } : resolveScrydexCard(...))",
+      "fix": "Normalise to a single ScrydexCard | null local: const scrydexCard = card.scrydexId ? await fetchScrydexCardById(card.scrydexId, card.game) : (await resolveScrydexCard(...))?.card ?? null; dropping the mismatched wrapper object."
+    },
+    {
+      "id": 5,
+      "severity": "NIT",
+      "title": "recognize/route.ts listed 'Import unchanged (already correct on mainline)' but the worktree copy differs; instruction is ambiguous",
+      "where": "design.md §11 'Import unchanged' list; verified by file hash that worktree recognize/route.ts != mainline",
+      "fix": "Reword §11 to: 'Copy from mainline (the mainline version already reads scrydexResult.cardId); no further edits after import.' so the file is brought over rather than left stale in the worktree."
+    }
+  ]
+}
