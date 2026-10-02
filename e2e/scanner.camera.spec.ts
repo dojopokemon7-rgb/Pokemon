@@ -53,3 +53,43 @@ test("scanner recognizes a card and offers the top candidates to add", async ({ 
     page.getByRole("button", { name: /search manually/i })
   ).toBeVisible();
 });
+
+/**
+ * FR-2d / AC-17 — Scrydex Vision is UNRESOLVED (FEAT-001 probe: all candidate
+ * paths 404'd), so identifyCard() returns null and recognize/route.ts degrades
+ * to on-device Tesseract. Here we mock the recognize endpoint to return the
+ * Tesseract-fallback shape (ocrSource: "tesseract", server could not use
+ * Vision) and assert the scan still produces candidates — the fallback path a
+ * real scan takes today. Never a fabricated Vision match.
+ */
+test("scanner falls back to on-device Tesseract and still offers candidates", async ({ page }) => {
+  await page.route("**/api/cards/recognize", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        // Vision unavailable → the route used the on-device OCR text path.
+        ocrSource: "tesseract",
+        feedbackId: "scan-e2e-fallback-1",
+        candidates: [
+          { id: "base1-4", name: "Charizard", set: "Base Set", imageUrl: "", confidence: 0.72 },
+        ],
+      }),
+    })
+  );
+
+  await page.goto("/scanner");
+
+  const preview = page.locator('[data-testid="camera-preview"], video');
+  await expect(preview.first()).toBeVisible();
+  await expect(page.getByTestId("card-outline")).toBeVisible();
+
+  await page.getByRole("button", { name: /^scan$/i }).click();
+
+  // Even on the Tesseract fallback path, the confirmation screen lists a
+  // tappable candidate — the scanner is not blocked by Vision being
+  // unresolved.
+  await expect(page.getByText(/is this your card/i)).toBeVisible();
+  await expect(page.getByText(/charizard/i).first()).toBeVisible();
+});

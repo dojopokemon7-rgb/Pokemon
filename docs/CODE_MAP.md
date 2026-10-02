@@ -130,7 +130,9 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 |---|---|---|---|
 | `auth/[...all]/route.ts` | GET, POST | public (IS the auth handler) | `toNextJsHandler(auth)` — Better Auth |
 | `cards/[id]/ebay-sold/route.ts` | GET | public | `searchEbaySellerListings` (Redis 1h) |
-| `cards/[id]/history/route.ts` | GET | public | Prisma `PricingHistory` |
+| `cards/[id]/history/route.ts` | GET | public | Prisma `PricingHistory` (drops `priceMarket==null` rows; `{points:[]}`+200 on unknown/err) |
+| `cards/[id]/prices/route.ts` | GET | public | Prisma `CurrentPrice[]` (`{prices:[]}`+200 on unknown/err — NFR-4) |
+| `cards/[id]/graded/route.ts` | GET | public | `pullAndStoreScrydexPrice` (freshness-gated) + `pickGradedPrice` → `resolveGradedPrice`; `{price:null}`+200 on unknown/unpriced/err (NFR-4) |
 | `cards/[id]/population/route.ts` | GET | public | `getPopulationReport` |
 | `cards/recognize/route.ts` | POST, PATCH | optional session | Vision OCR → `recognize()` + `ScanFeedback` |
 | `cards/reprice/route.ts` | POST | public | `pickPokemonMarketPrice` + Redis 6h |
@@ -192,6 +194,9 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | `want-list.service.ts` | `listWantList(userId, intent?)`, `addWantListItem` (idempotent upsert), `moveWantListItem`, `removeWantListItem` | F-07. **`cardId` = EXTERNAL id** (`base1-4`), not FK — cards can be wanted before catalog sync. List route batch-resolves display fields. |
 | `pokemon-price.service.ts` | `fetchPokemonMarketPrice(externalId): Promise<CurrentPrice|null>` | Live pokemontcg.io single-card market price (TCGplayer variant scan). **Never throws** — all failures → null. Used by reprice route + `scripts/snapshot-pokemon-prices.ts` (daily `PricingHistory` snapshots, idempotent per UTC day). |
 | `psa-price.service.ts` | `fetchPSACert(certNumber)`, `fetchPSAGradedPrice(input)` | PSA public cert API (verification only — no price guide). Bearer `PSA_API_KEY`; missing/placeholder key → null. Graded value via curated table (`graded-price.ts`, dynamic import to break module cycle). |
+| `scrydex.service.ts` | `resolveScrydexCard`, `fetchScrydexCardById`, `pickRawPrice`, `pickGradedPrice`, `identifyCard`, `gameSlug`, type `ScrydexCard` | **THIN CLIENT — maps shapes + Zod only, NO Prisma.** `api.scrydex.com`; dual `X-Api-Key`+`X-Team-ID` headers (missing team id throws → live 401). `resolveScrydexCard` searches by name, matches on number (`"4/102"`→`"4"`, leading-zeros stripped) + set (One Piece via externalId-prefix setCode; Pokémon via setName), caches native id. `include=prices` always appended. `pickRawPrice`/`pickGradedPrice` pure accessors (variant/condition verbatim, `"normal"`/`"NM"` defaults). **Vision `identifyCard` UNRESOLVED** → returns null → tesseract fallback. No history endpoint (store-and-accumulate instead). |
+| `scrydex-pricing.service.ts` | `pullAndStoreScrydexPrice(card, {force?})`, `buildTrendBackfill(market, trends, now)`, `SCRYDEX_STALE_MS` (24h), `SCRYDEX_CREDITS_PER_CALL` | **The SINGLE WRITER for Scrydex pricing (owns side effects).** 24h freshness gate (newest `SyncLog(job="scrydex_history",cardId).ranAt`) → pull by `scrydexId`/resolve → write one `scrydex` `PricingHistory` + upsert one `CurrentPrice(source=SCRYDEX)` → first-pull-only `scrydex-trend` backfill (−1/−7/−14d via `market − price_change`, PricingHistory only) → meter `SyncLog`. Returns `{pulled, credits, card}` (resolved `ScrydexCard` on a fresh pull, null on a gate short-circuit). Called by the sync, backfill pilot, and graded route. |
+| `pokewallet.service.ts` | `fetchOnePieceSetPrices(setCode)`, `fetchPokemonCardPrice(name)`, `pickOnePiecePrice(card)`, type `OnePiecePrice` | **PRICING ONLY (PokéWallet/BerryWallet).** `api.pokewallet.io` + `X-API-Key`. One Piece gap-fill `GET /op/sets/{code}` (Map keyed by `card_number`); Pokémon gap-fill `GET /search?q=<name>`. `pickOnePiecePrice`: TCGplayer market/low → Cardmarket avg/low → null (never throws on CM-only `tcgplayer:null`). Failure → empty Map / null (no fabricated price). |
 | `population.service.ts` | `getPopulationReport()`, `GRADE_LADDER` | **Deterministic REFERENCE data** (`source: "reference"`, PSA 983 / BGS 468). `fetchPsaPopulation()` = documented seam returning null today. |
 | `support.service.ts` | `submitSupportTicket(input, {deliver?, userId?})` | F-21. Injectable `deliver` (default: persist `SupportTicket` row). Result-object `{ok, ticketId}\|{ok:false, error}` — never throws. |
 | `admin-metrics.ts` | `getPlatformStats()`, `getRecentPlatformActivity(limit)`, `getUserFinancials(userId)`, `getPortfolioValuesByUser(userIds)` | Raw SQL for cross-relation sums; grouped `ANY(...)` query avoids N+1. `activeFloorListings` explicit 0 stub. Admin pages only. |
@@ -263,18 +268,21 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 ## 13. Tests
 
 ### `tests/unit/` (Vitest + jsdom — pure logic)
-`card-price`, `card-image`, `card-sort`, `graded-price`, `collection-aggregation`, `card-recognition` (parse+score), `ebay-query` (`buildEbayQuery`), `app-renders` (harness smoke).
+`card-price`, `card-image`, `card-sort`, `graded-price`, `collection-aggregation`, `card-recognition` (parse+score), `ebay-query` (`buildEbayQuery`), `app-renders` (harness smoke), `pokewallet-price` (FR-1 — `pickOnePiecePrice`/`fetchOnePieceSetPrices`/`fetchPokemonCardPrice`, mocked fetch), `scrydex-price` (FR-2 — `pickRawPrice`/`pickGradedPrice`/`resolveScrydexCard`/headers/`gameSlug`, mocked fetch), `scrydex-trend-backfill` (FR-4 — `buildTrendBackfill` pure).
 
 ### `tests/integration/` (Vitest — mocked Prisma/fetch, no live DB/network)
-`bulk-add-order` (F-15), `collections` (F-10 service CRUD), `compare-collections` (F-22), `contact-support` (F-21), `psa-price` (F-17 + resolveGradedPrice interplay), `pokemon-price`, `graded-pricing.golden` (±10% vs `tests/fixtures/golden_prices.json`), `golden-prices` (fixture validity).
+`bulk-add-order` (F-15), `collections` (F-10 service CRUD), `compare-collections` (F-22), `contact-support` (F-21), `psa-price` (F-17 + resolveGradedPrice interplay), `pokemon-price`, `graded-pricing.golden` (±10% vs `tests/fixtures/golden_prices.json`), `golden-prices` (fixture validity), `scrydex-pricing` (FR-4 — freshness gate / store / SyncLog metering / trend backfill, mocked Prisma+client), `portfolio-snapshot` (FR-5 — add-snapshot write via the collection POST route), `graded-routing` (FR-6 — `resolveGradedPrice` + the `GET /api/cards/[id]/graded` route), `history-null-safe` (NFR-2/NFR-4 — history/prices/collection-history null-safety + graceful 200s).
 
 ### `e2e/` (Playwright, port 3001, standalone build)
 `auth.setup.ts` (provisions real session → storageState), `constants.ts` (STORAGE_STATE),
 `home` (unauth redirect), `google-login` (mocked OAuth, F-02), `search-debounce` (F-05),
 `show-more-duplicates` (F-04), `folder-filters` (F-06), `card-details-popup` (F-08),
 `chart-interactivity` (F-09), `collections-ui` (F-10), `want-list` (F-07, serial),
-`graded-add-flow` (F-19), `notifications-panel`, `scanner.camera` + `scanner.hardening.camera`
-(F-14, fake media device), `visual-regression` (gated behind `VISUAL=1`),
+`graded-add-flow` (F-19 + FR-6 graded-price display), `notifications-panel`,
+`scanner.camera` (F-14 + FR-2d Tesseract fallback) + `scanner.hardening.camera`
+(F-14, fake media device), `portfolio-real-chart` (FR-5 — portfolio chart reads real
+stored history), `card-detail-chart` (card-detail price-history reads real points),
+`visual-regression` (gated behind `VISUAL=1`),
 `fixtures/seed-graded-card.ts` (F-19 fixture seeder).
 
 ---

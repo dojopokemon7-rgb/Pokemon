@@ -128,4 +128,61 @@ test.describe("F-19 Graded Add Flow", () => {
       await ctx.dispose();
     }
   });
+
+  /**
+   * FR-6 — the card-detail PSA 10 row ALWAYS shows a non-blank graded price:
+   * a Scrydex-backed value when the graded route returns one, else the
+   * curated/heuristic fallback (the page never regresses to a blank). The
+   * live-vs-fallback distinction and the exact numbers are pinned
+   * deterministically at the route + resolver layer in the integration test
+   * `graded-routing.test.ts` (which mocks the route's dependencies); here we
+   * assert the end-to-end UI contract — the graded price surfaces to the user.
+   *
+   * We intercept the graded route to feed a KNOWN live value and assert the
+   * PSA 10 row shows a dollar amount (not a blank / "—"). Exact-number
+   * matching through the React-Query + state pipeline is intentionally left
+   * to the integration layer; here the contract is "a graded price shows".
+   */
+  test("the card detail PSA 10 row shows a graded price (live Scrydex-backed)", async ({ page }) => {
+    await page.route("**/api/cards/**/graded**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ price: 42123, isFallback: false, isStale: false }),
+      })
+    );
+
+    await page.goto(`/search?q=${encodeURIComponent(GRADED_NAME)}`);
+    const firstCard = page.getByTestId("card-result").first();
+    await expect(firstCard).toBeVisible({ timeout: 30_000 });
+    await firstCard.click(); // navigate to the detail page
+
+    const psaLabel = page.getByText("PSA 10 (GEM - MT)");
+    await expect(psaLabel).toBeVisible({ timeout: 30_000 });
+    // The PSA 10 row carries a non-blank USD price (never a blank / "—").
+    const psaRow = psaLabel.locator("xpath=ancestor::*[1]");
+    await expect(psaRow.getByText(/\$\s?[\d,]+/).first()).toBeVisible();
+  });
+
+  test("the card detail PSA 10 row shows a fallback graded price when Scrydex has none", async ({ page }) => {
+    // Graded route returns no live price → the page keeps its heuristic/
+    // curated fallback. The row must STILL show a non-blank PSA 10 price.
+    await page.route("**/api/cards/**/graded**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ price: null, isFallback: true, isStale: true }),
+      })
+    );
+
+    await page.goto(`/search?q=${encodeURIComponent(GRADED_NAME)}`);
+    const firstCard = page.getByTestId("card-result").first();
+    await expect(firstCard).toBeVisible({ timeout: 30_000 });
+    await firstCard.click();
+
+    const psaLabel = page.getByText("PSA 10 (GEM - MT)");
+    await expect(psaLabel).toBeVisible({ timeout: 30_000 });
+    const psaRow = psaLabel.locator("xpath=ancestor::*[1]");
+    await expect(psaRow.getByText(/\$\s?[\d,]+/).first()).toBeVisible();
+  });
 });

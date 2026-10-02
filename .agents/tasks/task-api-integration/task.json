@@ -1,0 +1,7 @@
+{
+  "task_id": "task-api-integration",
+  "task_description": "Wire Dojo's external data providers (PokeWallet/BerryWallet, Scrydex, TCGdex, apitcg) to the verified live contracts so catalog data, current prices, real stored chart history, PSA graded pricing, and card scanning work end to end. Rewrite the two wrong-auth service clients, add a central store-and-reuse Scrydex pricing orchestrator (freshness-gated, SyncLog-metered), rewire the sync engine's price fallbacks, add portfolio value snapshots on add, add a new graded-price route, wire the UI to real stored data, rewrite the backfill pilot, add unit/integration/e2e tests, and produce a user testing checklist. Implements design.md Revision 3 plus the 5 graded-route fixes in design-review.json.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}

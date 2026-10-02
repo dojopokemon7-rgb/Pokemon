@@ -12,6 +12,8 @@
 | `/auth/[...all]` | GET, POST | public (is the handler) | Better Auth internal | — | — |
 | `/cards/[id]/ebay-sold` | GET | public | — | sold 1h | Yes |
 | `/cards/[id]/history` | GET | public | — | — | Yes (`points: []`) |
+| `/cards/[id]/prices` | GET | public | — | — | Yes (`prices: []`) |
+| `/cards/[id]/graded` | GET | public | — | — | Yes (`price: null`) |
 | `/cards/[id]/population` | GET | public | — | — | Yes (`report: null`) |
 | `/cards/recognize` | POST, PATCH | optional session | — | — | Yes |
 | `/cards/reprice` | POST | public | — | price 6h | Yes |
@@ -52,7 +54,18 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - **ACTIVE listings, not sold history** (Browse API limitation). Redis `ebay:sold:*` 1h.
 
 ### `GET /api/cards/[id]/history`
-- `[id]` = **externalId**. Always `200 { points: [{ date: "YYYY-MM-DD", price: number }] }` oldest→newest; unknown card / DB error → `{ points: [] }` (client falls back to mock chart). `Cache-Control: no-store`.
+- `[id]` = **externalId**. Always `200 { points: [{ date: "YYYY-MM-DD", price: number }] }` oldest→newest, sourced from stored `PricingHistory` (real `scrydex` / `scrydex-trend` / `add-snapshot` points — never fabricated). Rows with `priceMarket == null` are **dropped** (NFR-2 — no fabricated `$0` point). Unknown card / DB error → `{ points: [] }`. `Cache-Control: no-store`.
+
+### `GET /api/cards/[id]/prices`
+- `[id]` = **externalId**. 200 `{ prices: CurrentPrice[] }` — the stored current prices for the card (one row per `source`/`currency`/`variant`/`condition`). Unknown card **and** any thrown error → `{ prices: [] }` + 200 (NFR-4 — public card route never 4xx/5xx; UI renders "—"). `Cache-Control: no-store`.
+
+### `GET /api/cards/[id]/graded` — PSA graded price (FR-6)
+- `[id]` = **externalId**. Query: `grade?` (default `"10"`; accepts `"PSA 10"`/`"10"`/`10`). `game` is read from DB `Card.game` (NFR-3), never the query string.
+- 200 `{ price: number|null, isStale: boolean, isFallback: boolean }`.
+  - `isFallback: false` → a **live Scrydex PSA** market for the requested grade.
+  - `isFallback: true` → the curated graded-price table / coarse multiplier (no live quote this call).
+- Routes the Scrydex fetch through `pullAndStoreScrydexPrice(card, { force: false })` so it obeys the SAME 24h freshness gate + `SyncLog` credit metering + `Card.scrydexId` write-back as every other Scrydex caller — a repeat public view within `SCRYDEX_STALE_MS` short-circuits (no HTTP, no credit) and serves the curated fallback (graded prices are not persisted; only raw is).
+- Unknown card, unpriced card (`marketPrice == null`), or any thrown error → `{ price: null, isFallback: true, isStale: true }` + 200 (NFR-4). `Cache-Control: no-store`.
 
 ### `GET /api/cards/[id]/population`
 - `[id]` ignored today. 200 `{ report: { source: "psa"|"reference", companies: [{ company: "PSA"|"BGS", total, grades: [{ grade, count }] }] } }` or `{ report: null }` (still 200). Deterministic reference data. `Cache-Control: private, max-age=86400`.
@@ -110,6 +123,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 ### `POST /api/users/me/collection` — bulk add (F-15)
 - Body (`AddCollectionRequestSchema`): `{ cards: [{ externalId, name, setName?, imageUrl?, rarity?, types?, marketPrice?, quantity = 1 (1–999), isFoil = false, condition?, purchasePrice?, collectionId? }] }` — 1–50 cards.
 - Flow: `assignBulkAddOrder` (selection-order `addedAt` stamps) → per card: upsert `CardSet` (`user-added-<slug>`) → upsert `Card` by `externalId` → upsert `UserCollection` on `[userId, cardId, isFoil]` (**re-add increments quantity**); `purchasePrice` defaults `?? marketPrice ?? card.marketPrice`.
+- **FR-5 add-snapshot:** after each successful add of a **priced** card (`marketPrice ?? card.marketPrice` non-null **and** `> 0`), writes ONE `PricingHistory` point `{ source: "add-snapshot", variant: "normal", condition: "NM", currency: "USD" }` so the portfolio graph has a real datapoint from the moment of add. Best-effort (try/catch — a snapshot failure never fails the add); a null/zero price writes **no** row (NFR-2 — never a fabricated `$0`).
 - 200 `{ added, total, results: [{ externalId, ok: true } | { externalId, ok: false, error }] }`; 400 zod/JSON; 500 only if EVERY card failed.
 
 ### `DELETE /api/users/me/collection/[id]` — `[id]` = UserCollection row id, ownership-scoped. 200 `{ ok: true }`; 404; 500.

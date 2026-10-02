@@ -6,6 +6,15 @@ const nextConfig: NextConfig = {
   // reducing the final image size.
   output: "standalone",
 
+  // Pin the file-tracing root to THIS project dir. Without it, Next infers
+  // the root from the nearest lockfile — and when this checkout lives inside
+  // another repo (e.g. a git worktree nested under a parent that has its own
+  // package-lock.json), Next picks the PARENT and nests the standalone output
+  // under `.next/standalone/<subpath>/server.js`, so the Playwright webServer's
+  // `node .next/standalone/server.js` can't find it. Pinning the root keeps
+  // the standalone server at `.next/standalone/server.js` everywhere.
+  outputFileTracingRoot: import.meta.dirname,
+
   // Allow Next.js to serve images from Supabase Storage
   images: {
     remotePatterns: [

@@ -60,7 +60,7 @@ export default defineConfig({
       // The home spec asserts the unauthenticated / → /login redirect, so
       // it must NOT carry a session. No storageState here on purpose.
       // Google + authed specs run in their own projects below.
-      testIgnore: [/.*\.camera\.spec\.ts/, /google-login\.spec\.ts/, /(collections-ui|want-list|visual-regression|card-details-popup|chart-interactivity|show-more-duplicates|graded-add-flow|optimistic-favorites|search-debounce|folder-filters|notifications-panel)\.spec\.ts/],
+      testIgnore: [/.*\.camera\.spec\.ts/, /google-login\.spec\.ts/, /(collections-ui|want-list|visual-regression|card-details-popup|chart-interactivity|show-more-duplicates|graded-add-flow|optimistic-favorites|search-debounce|folder-filters|notifications-panel|portfolio-real-chart|card-detail-chart)\.spec\.ts/],
     },
     {
       // Google login specs need a server-trusted session so the
@@ -79,7 +79,7 @@ export default defineConfig({
       // General authenticated specs (logged-in via storageState) that don't
       // need camera flags — e.g. collections management on /you.
       name: "authed",
-      testMatch: /(collections-ui|want-list|visual-regression|card-details-popup|chart-interactivity|show-more-duplicates|graded-add-flow|optimistic-favorites|search-debounce|folder-filters|notifications-panel)\.spec\.ts/,
+      testMatch: /(collections-ui|want-list|visual-regression|card-details-popup|chart-interactivity|show-more-duplicates|graded-add-flow|optimistic-favorites|search-debounce|folder-filters|notifications-panel|portfolio-real-chart|card-detail-chart)\.spec\.ts/,
       dependencies: ["setup"],
       use: {
         ...devices["Desktop Chrome"],

@@ -102,8 +102,15 @@ The `card.service.searchCards` fallback chain (pokemontcg.io → tcgdex → scry
 
 - `Card.marketPrice` = snapshot cache, refreshed by sync / reprice / backfill / snapshot scripts; `lastPricedAt` = staleness clock (graded-price staleness = 7 days).
 - `POST /api/cards/reprice` (public, ≤20 ids): Redis `price:card:{id}` 6h → live pokemontcg.io fetch (6s timeout) → `pickPokemonMarketPrice` → cache write + `Card.marketPrice` update. Fired by the search page in the background for unpriced tiles — deliberately OFF the search hot path.
-- `PricingHistory` rows are written ONLY by scripts (`snapshot-pokemon-prices.ts` daily idempotent rows, `seed-pricing-history.ts`, `backfill-prices.ts` anchors). Real history exists for 10 harness cards; dashboard charts are synthetic PRNG shapes (honest stub), card-detail charts use real points when present.
-- Graded pricing (F-17): `fetchPSAGradedPrice` verifies grade via PSA public cert API (verification only, no price guide) → `getGradedPrice` curated 20-entry table / `{8:1.2, 9:1.5, 10:2.5}` multipliers (strictly increasing so grade hierarchy never inverts) → `resolveGradedPrice` flags `isFallback`/`isStale`.
+- `PricingHistory` rows grow from several sources: the Scrydex store-and-reuse orchestrator (`source="scrydex"` + first-pull `"scrydex-trend"` points), the collection add-snapshot (`source="add-snapshot"`), and the legacy harness scripts. Rows carry `source`/`currency`/`variant`/`condition`; the history chart drops `priceMarket == null` rows (never a fabricated `$0`). Real history grows per card on the daily sync cadence; dashboard portfolio chart reads real stored history when ≥1 point exists (else the empty state), card-detail chart uses real points when present.
+- **Scrydex store-and-reuse (FR-4, the single writer).** `scrydex-pricing.service.pullAndStoreScrydexPrice(card, { force? })` is the ONLY place that pulls + stores Scrydex pricing, so the gate / first-pull invariant / credit metering cannot drift between callers (daily sync, backfill pilot, graded route all route through it):
+  1. **Freshness gate** (unless `force`) — reads the newest `SyncLog(job="scrydex_history", cardId).ranAt`; within `SCRYDEX_STALE_MS` (24h) → skip entirely (no HTTP, no credit, no row). Gated on `SyncLog` not `CurrentPrice`, so a graded-only / no-raw card is still throttled 24h.
+  2. **Pull** — by cached `Card.scrydexId` (`fetchScrydexCardById`) else `resolveScrydexCard` (search by name, match on number+set); on resolve, cache the native id back onto `Card.scrydexId`. null/throw → `SyncLog(status="failed", credits:0)` and return.
+  3. **Persist** — one `PricingHistory` row (`source="scrydex"`) + upsert one `CurrentPrice` (`source=SCRYDEX`), keyed `[cardId, source, currency, variant, condition]`.
+  4. **First-pull trend backfill** — only when no `scrydex`/`scrydex-trend` series exists yet: up to 3 `source="scrydex-trend"` points at −1/−7/−14d derived as `market − trends.days_{1,7,14}.price_change` (absolute delta). PricingHistory ONLY (never `CurrentPrice`); skips null deltas and ≤0 priors (never fabricate).
+  5. **Meter** — `SyncLog(status="ok", credits=SCRYDEX_CREDITS_PER_CALL)` once per successful fetch (trend points add no credits).
+- **Price fallback chain (FR-1).** Catalog + first price come from the primary catalog source (TCGdex for Pokémon, apitcg for One Piece). PokéWallet/BerryWallet are **PRICING ONLY** gap-fills: One Piece fills `marketPrice` from `fetchOnePieceSetPrices(setCode)` where apitcg's TCGplayer price was null (join key = `Card.externalId` == PokéWallet `card_number`); Pokémon gaps fall to `fetchPokemonCardPrice(name)`. Scrydex (store-and-reuse) then refines the real history series. A missing value stays `null` → UI "—", never coerced to 0.
+- Graded pricing (F-17 + FR-6): the public `GET /api/cards/[id]/graded` route runs `resolveGradedPrice` with a Scrydex `priceSource` (`pickGradedPrice` over the ScrydexCard returned by `pullAndStoreScrydexPrice`). Live Scrydex PSA market → `isFallback:false`; null → `getGradedPrice` curated 20-entry table / `{8:1.2, 9:1.5, 10:2.5}` multipliers (strictly increasing so grade hierarchy never inverts) with `isFallback:true`. `fetchPSAGradedPrice` (PSA public cert API, verification only) remains the offline cert-verify fallback.
 
 ### 4.4 Scanner pipeline (F-14)
 
@@ -186,22 +193,34 @@ User 1─n Session / Account / UserCollection / Collection / SupportTicket / Wan
 CardSet 1─n Card
 Card 1─n UserCollection (unique [userId, cardId, isFoil] — re-add increments quantity)
       1─n PricingHistory
+      1─n CurrentPrice
 Collection 1─n UserCollection (collectionId nullable, onDelete: SetNull — deleting a
              collection unfiles cards, never deletes owned copies)
 UserCollection.purchasePrice = what the user paid (distinct from Card.marketPrice)
 WantListItem.cardId = EXTERNAL id string (NOT a FK — a card can be wanted pre-sync)
 AuditLog, ScanFeedback: append-only operational tables
+SyncLog: append-only metering/metering table (job, cardId?, credits, status, error, ranAt)
 ```
-Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([tags], type: Gin)` (`has` search), `CardSet.@@index([name])` (set filter), `PricingHistory.@@index([cardId, recordedAt])` (history chart). Graded metadata lives in `UserCollection.condition` ("PSA 10") + `Card.rarity` — dedicated columns are the planned migration.
+
+**Three id namespaces (NFR-3).** `Card.id` (internal cuid, FK target for `PricingHistory.cardId` / `CurrentPrice.cardId`) vs `Card.externalId` (catalog id — TCGdex `base1-4` for Pokémon, Bandai `OP01-001` for One Piece) vs the additive `Card.scrydexId` (Scrydex-native id like `me55c-4`, cached after `resolveScrydexCard` matches by name+number+set). Never confuse the three.
+
+**Pricing models (enriched baseline):**
+- `Card.game` (`Game` enum: `POKEMON`/`ONE_PIECE`) + `Card.source` (`DataSource` enum: `TCGDEX`/`SCRYDEX`/…) stamped by the sync on upsert; `Card.scrydexId String? @unique`.
+- `PricingHistory` — append-only time series. Columns `priceMarket`/`priceLow`/`source`/`currency`/`variant`/`condition`/`recordedAt`; unique `[cardId, recordedAt, source, currency, variant, condition]`. Sources: `scrydex`, `scrydex-trend`, `add-snapshot` (+ legacy harness rows).
+- `CurrentPrice` — latest price per provenance. Unique `[cardId, source, currency, variant, condition]` with `source=DataSource` enum.
+- `SyncLog` — `job`/`cardId?`/`credits`/`status`/`error`/`ranAt`; the Scrydex freshness gate + credit meter read/write `job="scrydex_history"` rows.
+
+Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([tags], type: Gin)` (`has` search), `CardSet.@@index([name])` (set filter), `PricingHistory.@@index([cardId, recordedAt])` (history chart), `SyncLog.@@index([job, ranAt])` + `@@index([job, cardId, ranAt])` (the Scrydex freshness-gate query). Graded metadata lives in `UserCollection.condition` ("PSA 10") + `Card.rarity` — dedicated columns are the planned migration.
 
 ## 9. External API inventory
 
 | API | Used by | Auth env | Fallback chain position |
 |---|---|---|---|
 | pokemontcg.io `/v2` | card.service, sync, pokemon-price, reprice | `POKEMON_TCG_API_KEY` (optional) | Pokémon source 1 (sync + price source) |
-| tcgdex | card.service | none | Pokémon source 2 |
-| scrydex | card.service | none | Pokémon source 3 |
-| apitcg | card.service (OP search), sync (OP) | `APITCG_API_KEY` (required) | One Piece source 1 |
+| tcgdex | card.service | none | Pokémon source 2 (catalog + first price) |
+| scrydex | scrydex.service + scrydex-pricing.service (store-and-reuse), graded route | `SCRYDEX_API_KEY` + `SCRYDEX_TEAM_ID` (BOTH required — missing team id → instant 401) | Pricing history + PSA graded (both games). **Vision identify UNRESOLVED** → `identifyCard` returns null → tesseract fallback |
+| apitcg | card.service (OP search), sync (OP catalog) | `APITCG_API_KEY` (required) | One Piece source 1 (catalog) |
+| PokéWallet / BerryWallet | pokewallet.service (PRICING ONLY) | `POKEWALLET_API_KEY` (`X-API-Key`) | Pokémon price gap-fill (`/search`); One Piece price gap-fill (`/op/sets/{code}`) |
 | cardmarket | card.service (OP metadata), card-image.server (clean OP images) | `CARDMARKET_APP_TOKEN` | One Piece source 2 / clean-image source 2 |
 | eBay Browse + OAuth | ebay.service | `EBAY_CLIENT_ID/SECRET`, `EBAY_API_URL` (sandbox default) | — |
 | eBay account-deletion | compliance route | `EBAY_MARKETPLACE_DELETION_TOKEN` + `_ENDPOINT` | — |
