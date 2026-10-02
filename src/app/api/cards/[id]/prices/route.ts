@@ -16,12 +16,14 @@ export async function GET(
     });
 
     if (!card) {
-      return NextResponse.json({ error: "Card not found" }, { status: 404 });
+      // NFR-4: public card route — 200 + empty payload on unknown/err, never 4xx/5xx (UI renders "—").
+      return NextResponse.json({ prices: [] }, { headers: { "Cache-Control": "no-store" } });
     }
 
     return NextResponse.json({ prices: card.currentPrices }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("[cards/prices] failed:", err instanceof Error ? err.message : err);
-    return NextResponse.json({ prices: [] }, { status: 500 });
+    // NFR-4: public card route — 200 + empty payload on unknown/err, never 4xx/5xx (UI renders "—").
+    return NextResponse.json({ prices: [] }, { headers: { "Cache-Control": "no-store" } });
   }
 }

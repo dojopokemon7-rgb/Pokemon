@@ -69,8 +69,12 @@ export interface ScrydexPullCard {
 export async function pullAndStoreScrydexPrice(
   card: ScrydexPullCard,
   opts?: { force?: boolean }
-): Promise<{ pulled: boolean; credits: number }> {
+): Promise<{ pulled: boolean; credits: number; card: ScrydexCard | null }> {
   // --- 1. Freshness gate ---------------------------------------------------
+  // When the gate short-circuits we have NOT fetched a ScrydexCard this call,
+  // so we return `card: null`. Callers that need the resolved card on a fresh
+  // view (e.g. the graded route) read the STORED graded price instead — the
+  // gate exists precisely so a repeat public view costs no credit.
   if (!opts?.force) {
     const last = await prisma.syncLog.findFirst({
       where: { job: SCRYDEX_HISTORY_JOB, cardId: card.id },
@@ -78,7 +82,7 @@ export async function pullAndStoreScrydexPrice(
       select: { ranAt: true },
     });
     if (last && Date.now() - last.ranAt.getTime() < SCRYDEX_STALE_MS) {
-      return { pulled: false, credits: 0 };
+      return { pulled: false, credits: 0, card: null };
     }
   }
 
@@ -119,7 +123,7 @@ export async function pullAndStoreScrydexPrice(
         error: `No Scrydex match for ${card.externalId} (${card.name})`,
       },
     });
-    return { pulled: false, credits: 0 };
+    return { pulled: false, credits: 0, card: null };
   }
 
   // Cache the resolved native id for the next pull (search → by-id path).
@@ -230,7 +234,7 @@ export async function pullAndStoreScrydexPrice(
     },
   });
 
-  return { pulled: true, credits: SCRYDEX_CREDITS_PER_CALL };
+  return { pulled: true, credits: SCRYDEX_CREDITS_PER_CALL, card: scrydexCard };
 }
 
 /**

@@ -7,9 +7,9 @@
  *
  *   { points: [{ date: "YYYY-MM-DD", price: number }] }
  *
- * An empty `points` array means we have no recorded history for the card
- * (the caller then falls back to the mock chart generator). Public card
- * data — no auth, consistent with the other /api/cards endpoints.
+ * An empty `points` array means we have no real recorded history for the
+ * card. Public card data — no auth, consistent with the other /api/cards
+ * endpoints.
  */
 
 import { NextResponse } from "next/server";
@@ -39,10 +39,12 @@ export async function GET(
       select: { priceMarket: true, recordedAt: true },
     });
 
-    const points = rows.map((r) => ({
-      date: r.recordedAt.toISOString().slice(0, 10),
-      price: r.priceMarket ?? 0,
-    }));
+    const points = rows
+      .filter((r) => r.priceMarket != null) // NFR-2: never emit a fabricated 0 point
+      .map((r) => ({
+        date: r.recordedAt.toISOString().slice(0, 10),
+        price: r.priceMarket as number,
+      }));
 
     return NextResponse.json({ points }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {

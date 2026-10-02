@@ -856,7 +856,7 @@ export default function DashboardClient({
   const chartSeriesList = useMemo(() => {
     return activeSelectedOptions.map((opt, idx) => {
       const realHistory = realHistoriesData?.histories?.[opt.id];
-      const data = realHistory && realHistory.length > 1
+      const data = realHistory && realHistory.length >= 1 // finding #5: one real add-snapshot point renders a real (short/flat) line
         ? realHistory
         : (opt.marketValue > 0
             ? generateMockChartData(opt.marketValue, activeRange, idx * 37)

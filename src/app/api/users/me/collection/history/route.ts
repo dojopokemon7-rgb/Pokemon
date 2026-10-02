@@ -67,12 +67,15 @@ export async function GET(request: Request): Promise<NextResponse> {
       const allDates = new Set<string>();
 
       for (const row of historyRows) {
+        // NFR-2: skip null-priced rows — never seed a fabricated 0 that would
+        // drag the portfolio total below its true value.
+        if (row.priceMarket == null) continue;
         const dateStr = row.recordedAt.toISOString().slice(0, 10);
         allDates.add(dateStr);
         if (!pricesByDateAndCard.has(dateStr)) {
           pricesByDateAndCard.set(dateStr, new Map());
         }
-        pricesByDateAndCard.get(dateStr)!.set(row.cardId, row.priceMarket ?? 0);
+        pricesByDateAndCard.get(dateStr)!.set(row.cardId, row.priceMarket);
       }
 
       const sortedDates = Array.from(allDates).sort();
@@ -87,7 +90,11 @@ export async function GET(request: Request): Promise<NextResponse> {
           if (dayPrices.has(cardId)) {
             lastSeenPrices.set(cardId, dayPrices.get(cardId)!);
           }
-          const price = lastSeenPrices.get(cardId) || 0;
+          // NFR-2: only count a card once it has a REAL last-seen price; a
+          // card with no priced history simply doesn't contribute yet (never
+          // a fabricated $0 drag).
+          const price = lastSeenPrices.get(cardId);
+          if (price == null) continue;
           totalValue += price * (cardQuantities.get(cardId) || 0);
         }
         

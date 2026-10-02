@@ -534,22 +534,32 @@ function CardDetailInner() {
     setAddError(null);
   }, [id]);
 
+  // Real PSA 10 price from the server graded route (routes through Scrydex +
+  // the curated/multiplier fallback). Public route — no credentials needed.
+  // `price` is null when the card is unknown/unpriced; we then keep the local
+  // heuristic below so the UI never regresses to blank.
+  const { data: gradedData } = useQuery<{ price: number | null; isFallback?: boolean }>({
+    queryKey: ["graded", id, "10"],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/graded?grade=10`);
+      if (!res.ok) throw new Error("Failed to load graded price");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
   // Build ADD_ROWS dynamically using the actual card's market price.
-  // Ungraded (raw) = actual market price. Graded PSA 10 typically trades
-  // at a premium, so we estimate it as ~30x raw for high-value cards or
-  // ~3x for low-value cards (this is a rough heuristic until real graded
-  // pricing data is available in Week 3).
+  // Ungraded (raw) = actual market price. PSA 10 uses the real server graded
+  // price when available, falling back to the local heuristic below.
   const ADD_ROWS = useMemo(() => {
     const rawPrice = price || 0;
-    // PSA 10 premium: graded always trades above raw. Cheap cards carry
-    // the biggest relative premium (grading fee dominates), so start at
-    // 4.5x (a $10 raw ≈ $45 PSA 10 — the client's reference point) and
-    // ease toward ~2x for high-value cards where the fee is negligible.
-    // Continuous curve (no step at $10) so the number never jumps oddly.
-    // TODO Week 3: replace with real graded pricing data.
+    // Heuristic fallback (used only when the graded route returns no price):
+    // graded always trades above raw; cheap cards carry the biggest relative
+    // premium (grading fee dominates), so start at ~4.5x and ease toward ~2x
+    // for high-value cards. Continuous curve (no step at $10).
     const psa10Multiplier = 2 + 50 / (rawPrice + 10);
-    const psa10Price = rawPrice * psa10Multiplier;
-    
+    const psa10Price = gradedData?.price ?? rawPrice * psa10Multiplier;
+
     return [
       { id: "raw", section: "raw" as const, label: "Foil", price: rawPrice },
       { 
@@ -558,10 +568,11 @@ function CardDetailInner() {
         label: "PSA 10 (GEM - MT)", 
         variant: "Foil", 
         pop: "Pop: 3583", 
-        price: psa10Price 
+        price: psa10Price,
+        isFallback: gradedData?.price == null ? true : gradedData.isFallback,
       },
     ];
-  }, [price]);
+  }, [price, gradedData]);
 
   // Mutation for adding cards to collection
   const addMutation = useMutation({

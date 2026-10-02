@@ -274,6 +274,36 @@ export async function POST(request: Request): Promise<NextResponse> {
         });
       }
 
+      // FR-5 (design §5): capture ONE add-snapshot PricingHistory point so the
+      // portfolio graph has a real datapoint from the moment a priced card is
+      // added (the collection/history aggregation sums all sources per day).
+      // Best-effort: wrapped so a snapshot failure NEVER fails the add (NFR-4).
+      // A null/zero price writes NO row — never a fabricated $0 point (NFR-2).
+      const addPrice = item.marketPrice ?? card.marketPrice;
+      if (addPrice != null && addPrice > 0) {
+        try {
+          await prisma.pricingHistory.createMany({
+            data: [
+              {
+                cardId: card.id,
+                priceMarket: addPrice,
+                source: "add-snapshot",
+                variant: "normal",
+                condition: "NM",
+                currency: "USD",
+                recordedAt: new Date(),
+              },
+            ],
+            skipDuplicates: true,
+          });
+        } catch (snapErr) {
+          console.warn(
+            `[api/users/me/collection] add-snapshot failed for "${item.externalId}" (non-fatal):`,
+            snapErr instanceof Error ? snapErr.message : snapErr
+          );
+        }
+      }
+
       results.push({ externalId: item.externalId, ok: true });
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : "Could not add this card.";
