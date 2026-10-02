@@ -791,6 +791,8 @@ export default function PortfolioPage() {
 
   return (
     <div style={{ padding: "6px 22px 24px" }}>
+      <div className="dojo-desktop-grid">
+        <div>
       {/* ── Search bar + filter icon ── */}
       <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "16px" }}>
         <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "10px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", padding: "12px 13px", color: "var(--color-dojo-ink)" }}>
@@ -898,8 +900,11 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {/* ── List header: view name · item count · Select · view toggle ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "20px 0 12px" }}>
+        </div>
+        
+        <div>
+          {/* ── List header: view name · item count · Select · view toggle ── */}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "20px 0 12px" }}>
         <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
           {typeLabel}
         </span>
@@ -1049,6 +1054,9 @@ export default function PortfolioPage() {
           </div>
         </>
       )}
+
+      </div>
+      </div>
 
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>

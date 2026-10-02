@@ -36,12 +36,12 @@ export async function GET(
     const rows = await prisma.pricingHistory.findMany({
       where: { cardId: card.id },
       orderBy: { recordedAt: "asc" },
-      select: { price: true, recordedAt: true },
+      select: { priceMarket: true, recordedAt: true },
     });
 
     const points = rows.map((r) => ({
       date: r.recordedAt.toISOString().slice(0, 10),
-      price: r.price,
+      price: r.priceMarket ?? 0,
     }));
 
     return NextResponse.json({ points }, { headers: { "Cache-Control": "no-store" } });

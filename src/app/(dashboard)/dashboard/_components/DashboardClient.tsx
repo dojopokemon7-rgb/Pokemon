@@ -840,12 +840,27 @@ export default function DashboardClient({
     };
   }, [focusedId, activeSelectedIds, collOptions, activeSelectedOptions, stats.overallPct]);
 
+  const collectionIdsQuery = Array.from(activeSelectedIds).join(",");
+  const { data: realHistoriesData } = useQuery({
+    queryKey: ["portfolio-history", collectionIdsQuery, activeRange],
+    queryFn: async () => {
+      if (!collectionIdsQuery) return { histories: {} };
+      const res = await fetch(`/api/users/me/collection/history?collectionIds=${collectionIdsQuery}&range=${activeRange}`);
+      if (!res.ok) throw new Error("Failed to load portfolio history");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
   // Multi-line chart series: one curve per selected collection ending at its market value
   const chartSeriesList = useMemo(() => {
     return activeSelectedOptions.map((opt, idx) => {
-      const data = opt.marketValue > 0
-        ? generateMockChartData(opt.marketValue, activeRange, idx * 37)
-        : [{ value: 0 }, { value: 0 }];
+      const realHistory = realHistoriesData?.histories?.[opt.id];
+      const data = realHistory && realHistory.length > 1
+        ? realHistory
+        : (opt.marketValue > 0
+            ? generateMockChartData(opt.marketValue, activeRange, idx * 37)
+            : [{ value: 0 }, { value: 0 }]);
       return {
         id: opt.id,
         name: opt.name,
@@ -853,7 +868,7 @@ export default function DashboardClient({
         data,
       };
     });
-  }, [activeSelectedOptions, activeRange]);
+  }, [activeSelectedOptions, activeRange, realHistoriesData]);
 
   // Active tab card rows
   const getActiveRows = () => {
@@ -994,13 +1009,15 @@ export default function DashboardClient({
             </div>
           </HeaderLeftSlot>
 
-          {/* ── Stat Card (Collectr-style matching Image 1) ── */}
-          <div style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "16px 18px", marginTop: "14px" }}>
-            {/* Header: Collection indicator + Eye toggle */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
-                <span style={{ width: 8, height: 8, background: activeStat.color, flex: "none" }} />
-                <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10.5px", letterSpacing: "0.16em", textTransform: "uppercase", color: activeStat.color }}>
+          <div className="dojo-desktop-grid">
+            <div>
+              {/* ── Stat Card (Collectr-style matching Image 1) ── */}
+              <div style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "16px 18px", marginTop: "14px" }}>
+                {/* Header: Collection indicator + Eye toggle */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                    <span style={{ width: 8, height: 8, background: activeStat.color, flex: "none" }} />
+                    <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10.5px", letterSpacing: "0.16em", textTransform: "uppercase", color: activeStat.color }}>
                   {activeStat.name}
                 </span>
                 <span data-testid="card-count" style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)", marginLeft: "4px" }}>
@@ -1132,11 +1149,13 @@ export default function DashboardClient({
               );
             })}
           </div>
+        </div>
 
+        <div>
           {/* ── Tab selector — solid gold active tab matching Image 1 ── */}
           <div className="dojo-scroll-hidden" style={{ display: "flex", gap: "8px", overflowX: "auto", marginTop: "20px", paddingBottom: "2px" }}>
-            {TABS.map((tab) => {
-              const on = activeTab === tab.id;
+              {TABS.map((tab) => {
+                const on = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
@@ -1202,6 +1221,8 @@ export default function DashboardClient({
               )
             )}
           </div>
+          </div>
+        </div>
         </>
       ) : (
         /* ══════════ EMPTY STATE ══════════ */

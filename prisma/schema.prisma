@@ -105,6 +105,21 @@ model Verification {
 // TCG DOMAIN MODELS
 // =============================================================
 
+enum Game {
+  POKEMON
+  ONE_PIECE
+
+  @@map("game")
+}
+
+enum DataSource {
+  TCGDEX
+  POKEWALLET
+  SCRYDEX
+
+  @@map("data_source")
+}
+
 // Represents a TCG product set/expansion (e.g., "Scarlet & Violet Base Set")
 model CardSet {
   id           String   @id @default(cuid())
@@ -130,6 +145,8 @@ model CardSet {
 // Represents an individual TCG card
 model Card {
   id         String  @id @default(cuid())
+  game       Game    @default(POKEMON)
+  source     DataSource @default(TCGDEX)
   externalId String  @unique // ID from the external TCG API
   name       String
   number     String  // Card number within the set (e.g., "001/165")
@@ -157,6 +174,8 @@ model Card {
 
   userCollections UserCollection[]
   pricingHistory  PricingHistory[]
+  currentPrices   CurrentPrice[]
+  syncLogs        SyncLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -268,17 +287,56 @@ model AuditLog {
 
 // Historical pricing data for market trend analysis
 model PricingHistory {
-  id        String   @id @default(cuid())
-  cardId    String
-  price     Float
-  source    String   // e.g., "tcgplayer", "cardmarket", "ebay"
-  currency  String   @default("USD")
-  recordedAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  cardId      String
+  priceMarket Float?
+  priceLow    Float?
+  source      String
+  currency    String   @default("USD")
+  variant     String   @default("normal")
+  condition   String   @default("NM")
+  recordedAt  DateTime @default(now())
 
   card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
 
+  @@unique([cardId, recordedAt, source, currency, variant, condition])
   @@index([cardId, recordedAt])
   @@map("pricing_history")
+}
+
+// Current prices for fast reads
+model CurrentPrice {
+  id          String   @id @default(cuid())
+  cardId      String
+  source      DataSource
+  currency    String   @default("USD")
+  variant     String   @default("normal")
+  condition   String   @default("NM")
+  priceMarket Float?
+  priceLow    Float?
+  updatedAt   DateTime @updatedAt
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId, source, currency, variant, condition])
+  @@index([cardId])
+  @@map("current_price")
+}
+
+// Sync bookkeeping
+model SyncLog {
+  id        String   @id @default(cuid())
+  job       String   // 'tcgdex_catalog' | 'scrydex_history'
+  cardId    String?
+  status    String   // 'ok' | 'failed'
+  credits   Int      @default(0)
+  error     String?
+  ranAt     DateTime @default(now())
+
+  card Card? @relation(fields: [cardId], references: [id], onDelete: SetNull)
+
+  @@index([job, ranAt])
+  @@map("sync_log")
 }
 
 // =============================================================

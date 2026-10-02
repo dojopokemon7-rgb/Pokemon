@@ -468,7 +468,20 @@ function CardDetailInner() {
   const setName = searchParams.get("set") ?? "";
   const img = searchParams.get("img") ?? "/cards/card-front.webp";
   const priceParam = Number(searchParams.get("price") ?? 0);
-  const price = priceParam > 0 ? priceParam : 246;
+  
+  const { data: pricesData } = useQuery({
+    queryKey: ["card-prices", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/prices`);
+      if (!res.ok) throw new Error("Failed to load prices");
+      return res.json();
+    },
+  });
+
+  const currentPrices = pricesData?.prices ?? [];
+  const rawPriceData = currentPrices.find((p: any) => p.condition === "NM") || currentPrices[0];
+  const fetchedPrice = rawPriceData?.priceMarket ?? rawPriceData?.priceLow;
+  const price = fetchedPrice ?? (priceParam > 0 ? priceParam : 246);
 
   // `game` is passed by the search grid tile (see search/page.tsx).
   // Older entry points (like the portfolio list) don't include it yet,

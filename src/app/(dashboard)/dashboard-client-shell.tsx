@@ -168,117 +168,11 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div
-      style={{
-        /* Fixed to the viewport height so the shell itself never
-           scrolls — only <main> below does (Phase 2 QA: hide scroll). */
-        height: "100dvh",
-        overflow: "hidden",
-        backgroundColor: "var(--color-dojo-app)",
-        display: "flex",
-        flexDirection: "column",
-        /* Full-width desktop web app — the shell spans the entire viewport
-           (no centered frame, no side gutters). Content breathes via the
-           header/main horizontal padding, and the grids inside go adaptive
-           so wide screens fill with more columns. */
-        width: "100%",
-        position: "relative",
-      }}
-    >
-      {/* ── Top header ── (full-width; padding scales up on desktop)
-          No wordmark, no username, no bottom divider — it blends into the
-          content. Left slot hosts a page-injected control (e.g. the
-          dashboard collection selector); icons stay pinned right, so the
-          selector and icons share one horizontal line. */}
-      <header
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 40,
-          backgroundColor: "var(--color-dojo-app)",
-          display: "flex",
-          alignItems: "center",
-          padding: "14px clamp(16px, 4vw, 48px)",
-          gap: "16px",
-        }}
-      >
-        {/* Left slot — page-injected (dashboard collection selector). */}
-        <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
-          {headerLeft}
-        </div>
-
-        {/* Spacer pushes the icons to the right. */}
-        <div style={{ flex: 1 }} />
-
-        {/* Right icons */}
-        <Link
-          href="/search"
-          style={{
-            color: "rgba(255,255,255,0.6)",
-            display: "flex",
-            alignItems: "center",
-            textDecoration: "none",
-          }}
-          aria-label="Search"
-        >
-          <SearchIcon />
-        </Link>
-        <NotificationsPanel />
-      </header>
-
-      {/* ── Scrollable content ──
-          Only region that scrolls; scrollbar hidden via
-          .dojo-scroll-hidden. `overscrollBehavior: contain` keeps the
-          scroll from chaining to the (now locked) body. */}
-      <main
-        className="dojo-scroll-hidden"
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          overscrollBehavior: "contain",
-          /* Reserve space for the fixed bottom nav (64px nav + 16px safe area) */
-          paddingBottom: "80px",
-        }}
-      >
-        {children}
-      </main>
-
-      {/* ── Bottom navigation bar ──
-          Ported from dojo-prototype/styles.css .tabbar/.tabwrap: the
-          border-top lives on the bar itself (not per-button), and the
-          active state is a white icon glow (drop-shadow) + a glowing
-          gradient bar above the icon — not a gold top border, which is
-          what this used to render instead.
-          `prefetch` is set so every tab's RSC payload is fetched while
-          the shell is idle — tab switches then render instantly instead
-          of waiting on a router round-trip (Phase 1 QA: tab switching
-          delay). */}
-      <nav
-        style={{
-          position: "fixed",
-          bottom: 0,
-          /* Full-width bar spanning the whole viewport on every screen
-             size — no centered frame / side gutters. */
-          left: 0,
-          right: 0,
-          width: "100%",
-          zIndex: 50,
-          display: "flex",
-          borderTop: "1px solid var(--color-dojo-stroke)",
-          backgroundColor: "var(--color-dojo-card)",
-          paddingBottom: "env(safe-area-inset-bottom, 0px)",
-        }}
-        aria-label="Main navigation"
-      >
-        {/* Four evenly-spaced tabs. Each item is `flex: 1`, so the row
-            divides cleanly in four regardless of viewport width.
-            The center scan FAB was removed — scanner is still reachable
-            from the search page's toolbar. */}
+    <div className="dojo-shell">
+      {/* ── Bottom/Side navigation bar ── */
+      /* Desktop: moves to left side sidebar. Mobile: bottom bar. */}
+      <nav className="dojo-shell-nav" aria-label="Main navigation">
         {NAV_ITEMS.map(({ href, label, Icon }) => {
-          // Home only matches exactly (avoid matching every /dashboard/*
-          // subroute that layout might host); every other tab matches
-          // itself or a nested route (e.g. /portfolio/x still lights
-          // "Portfolio" gold).
           const active =
             href === "/dashboard"
               ? pathname === href
@@ -290,41 +184,55 @@ function ShellInner({ children }: { children: React.ReactNode }) {
               prefetch
               onMouseEnter={() => prefetchForHref(href)}
               onFocus={() => prefetchForHref(href)}
+              className="dojo-shell-nav-item"
               style={{
-                position: "relative",
-                flex: 1,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "4px",
-                padding: "12px 0 10px",
-                textDecoration: "none",
                 color: active ? "#fff" : "var(--color-dojo-faint)",
               }}
               aria-current={active ? "page" : undefined}
             >
               {active && <span className="dojo-tab-glow-bar" />}
-              <span
-                className={active ? "dojo-tab-icon-glow" : undefined}
-                style={{ display: "flex" }}
-              >
+              <span className={`dojo-shell-nav-item-icon ${active ? "dojo-tab-icon-glow" : ""}`}>
                 <Icon filled={active} />
               </span>
-              <span
-                style={{
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 800,
-                  fontSize: "8.5px",
-                  letterSpacing: "0.16em",
-                  textTransform: "uppercase",
-                }}
-              >
+              <span className="dojo-shell-nav-item-label">
                 {label}
               </span>
             </Link>
           );
         })}
       </nav>
+
+      {/* ── Main Layout Area ── */}
+      <div className="dojo-shell-content">
+        <header className="dojo-shell-header">
+          {/* Left slot — page-injected (dashboard collection selector). */}
+          <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+            {headerLeft}
+          </div>
+
+          {/* Spacer pushes the icons to the right. */}
+          <div style={{ flex: 1 }} />
+
+          {/* Right icons */}
+          <Link
+            href="/search"
+            style={{
+              color: "rgba(255,255,255,0.6)",
+              display: "flex",
+              alignItems: "center",
+              textDecoration: "none",
+            }}
+            aria-label="Search"
+          >
+            <SearchIcon />
+          </Link>
+          <NotificationsPanel />
+        </header>
+
+        <main className="dojo-shell-main dojo-scroll-hidden">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

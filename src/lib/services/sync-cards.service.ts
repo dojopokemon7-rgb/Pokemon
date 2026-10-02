@@ -141,6 +141,17 @@ export async function runCardSync(): Promise<SyncRunSummary> {
     errors: [],
   };
 
+  const activeIdsFromCollections = (await prisma.card.findMany({
+    where: { userCollections: { some: {} } },
+    select: { externalId: true }
+  })).map(c => c.externalId);
+  
+  const activeIdsFromWants = (await prisma.wantListItem.findMany({
+    select: { cardId: true }
+  })).map(c => c.cardId);
+
+  const activeCardExternalIds = new Set([...activeIdsFromCollections, ...activeIdsFromWants]);
+
   // 1. Discover candidate sets across both games in parallel.
   const [pokemonSets, onepieceSets] = await Promise.all([
     safelyListSets("pokemon"),
@@ -175,7 +186,7 @@ export async function runCardSync(): Promise<SyncRunSummary> {
       break;
     }
 
-    const setSummary = await syncOneSet(game, set, deadline);
+    const setSummary = await syncOneSet(game, set, deadline, activeCardExternalIds);
     summary.perSet.push(setSummary);
     if (!setSummary.skipped) {
       summary.setsProcessed += 1;
@@ -246,7 +257,8 @@ function interleaveByGame<T extends { game: Game }>(items: T[]): T[] {
 async function syncOneSet(
   game: Game,
   set: SyncSetInput,
-  deadline: number
+  deadline: number,
+  activeCardExternalIds: Set<string>
 ): Promise<SyncSetSummary> {
   const setStartedAt = Date.now();
   const setExternalId = `${game}-${set.sourceSetId}`;
@@ -267,7 +279,7 @@ async function syncOneSet(
     // the 7-day staleness window.
     const cards =
       game === "pokemon"
-        ? await listPokemonCardsInSet(set.sourceSetId)
+        ? await listPokemonCardsInSet(set.sourceSetId, activeCardExternalIds)
         : await listOnePieceCardsInSet(set.sourceSetId);
 
     // Only now that we have real card data, upsert the parent CardSet.
@@ -381,124 +393,51 @@ async function upsertCard(card: SyncCardInput, setId: string, setName: string): 
 // to 20,000/day. Sent as `X-Api-Key`. Add POKEMON_TCG_API_KEY to .env
 // for production runs.
 
-interface PokemonTcgSet {
-  id?: string;
-  name?: string;
-  series?: string;
-  printedTotal?: number;
-  total?: number;
-  releaseDate?: string;
-  images?: { symbol?: string; logo?: string };
-}
-interface PokemonTcgSetsResponse {
-  data?: PokemonTcgSet[];
-}
-interface PokemonTcgCard {
-  id?: string;
-  name?: string;
-  number?: string;
-  rarity?: string;
-  types?: string[];
-  images?: { small?: string; large?: string };
-  tcgplayer?: {
-    prices?: Record<
-      string,
-      { market?: number }
-    >;
-  };
-  // Cardmarket is the fallback price source: brand-new sets often ship
-  // before tcgplayer has a market price, but cardmarket already has a
-  // trend/average. Reading it keeps newest-set cards from showing "—".
-  cardmarket?: {
-    prices?: {
-      averageSellPrice?: number;
-      trendPrice?: number;
-      avg7?: number;
-      avg30?: number;
-    };
-  };
-}
-interface PokemonTcgCardsResponse {
-  data?: PokemonTcgCard[];
-  page?: number;
-  pageSize?: number;
-  count?: number;
-  totalCount?: number;
-}
-
-function pokemonHeaders(): HeadersInit {
-  const key = process.env.POKEMON_TCG_API_KEY;
-  return key ? { "X-Api-Key": key } : {};
-}
+import { fetchSets as fetchTcgDexSets, fetchCardsBySet as fetchTcgDexCards } from "./tcgdex.service";
+import { fetchPokemonCardPrice } from "./pokewallet.service";
 
 async function listPokemonSets(): Promise<SyncSetInput[]> {
-  const res = await fetch("https://api.pokemontcg.io/v2/sets", {
-    headers: pokemonHeaders(),
-    // Sets change rarely — Vercel's edge cache doesn't apply to node
-    // fetch here, but we don't need one anyway (called once per run).
-  });
-  if (!res.ok) {
-    throw new Error(`pokemontcg /sets HTTP ${res.status}`);
-  }
-  const payload = (await res.json()) as PokemonTcgSetsResponse;
-  const sets = payload.data ?? [];
-  return sets
-    .filter((s): s is PokemonTcgSet & { id: string; name: string } =>
-      Boolean(s.id && s.name)
-    )
-    // Newest first — recent sets are what users search for most.
-    .sort((a, b) => (b.releaseDate ?? "").localeCompare(a.releaseDate ?? ""))
-    .map((s) => ({
-      sourceSetId: s.id,
-      name: s.name,
-      series: s.series ?? null,
-      printedTotal: s.printedTotal ?? null,
-      total: s.total ?? null,
-      releaseDate: s.releaseDate ? new Date(s.releaseDate) : null,
-      symbolUrl: s.images?.symbol ?? null,
-      logoUrl: s.images?.logo ?? null,
-    }));
+  const sets = await fetchTcgDexSets();
+  return sets.map(s => ({
+    sourceSetId: s.id,
+    name: s.name,
+    series: null,
+    printedTotal: s.cardCount?.official ?? null,
+    total: s.cardCount?.total ?? null,
+    releaseDate: s.releaseDate ? new Date(s.releaseDate) : null,
+    symbolUrl: s.symbol ? `${s.symbol}.png` : null,
+    logoUrl: s.logo ? `${s.logo}.png` : null,
+  }));
 }
 
 async function listPokemonCardsInSet(
-  sourceSetId: string
+  sourceSetId: string,
+  activeCardExternalIds: Set<string>
 ): Promise<SyncCardInput[]> {
+  const cards = await fetchTcgDexCards(sourceSetId);
   const collected: SyncCardInput[] = [];
-  let page = 1;
-  const pageSize = 250;
 
-  // Each set's card count varies — 100 to ~250 for modern sets. Loop
-  // until we've drained every page.
-  while (true) {
-    const url =
-      `https://api.pokemontcg.io/v2/cards?q=set.id:${encodeURIComponent(sourceSetId)}` +
-      `&pageSize=${pageSize}&page=${page}`;
-    const res = await fetch(url, { headers: pokemonHeaders() });
-    if (!res.ok) {
-      throw new Error(
-        `pokemontcg /cards HTTP ${res.status} for set ${sourceSetId} page ${page}`
-      );
-    }
-    const payload = (await res.json()) as PokemonTcgCardsResponse;
-    const list = payload.data ?? [];
-
-    for (const c of list) {
-      if (!c.id || !c.name) continue;
-      collected.push({
-        externalId: c.id,
-        name: c.name,
-        number: c.number ?? "",
-        rarity: c.rarity ?? null,
-        types: c.types ?? [],
-        imageUrl: c.images?.small ?? null,
-        imageUrlHi: c.images?.large ?? null,
-        marketPrice: pickPokemonMarketPrice(c),
-      });
+  for (const c of cards) {
+    if (!c.id || !c.name) continue;
+    
+    // Fetch price fallback from PokeWallet only if card is active
+    const isActive = activeCardExternalIds.has(c.id);
+    let price = null;
+    if (isActive) {
+      price = await fetchPokemonCardPrice(c.id);
+      await sleep(REQUEST_DELAY_MS);
     }
 
-    if (list.length < pageSize) break;  // last page
-    page += 1;
-    await sleep(REQUEST_DELAY_MS);      // rate limit between pages
+    collected.push({
+      externalId: c.id,
+      name: c.name,
+      number: c.localId ?? "",
+      rarity: c.rarity ?? null,
+      types: c.category ? [c.category] : [],
+      imageUrl: c.image ? `${c.image}/low.webp` : null,
+      imageUrlHi: c.image ? `${c.image}/high.webp` : null,
+      marketPrice: price?.marketPrice ?? null,
+    });
   }
 
   return collected;
@@ -522,119 +461,32 @@ async function listPokemonCardsInSet(
 // sourceSetId — that's what the /products endpoint's `set=` filter
 // expects. `code` ("OP07") is displayed but not used for filtering.
 
-const APITCG_BASE = "https://api.apitcg.com";
-
-interface ApitcgSet {
-  _id?: string;
-  name?: string;
-  code?: string;
-  release_date?: string;
-}
-interface ApitcgSetsResponse {
-  success?: boolean;
-  data?: ApitcgSet[];
-}
-interface ApitcgCard {
-  code?: string;
-  name?: string;
-  images?: Array<{ small?: string; medium?: string; large?: string }>;
-  markets?: { tcgplayer?: { prices?: { market?: number } } };
-  attributes?: {
-    Rarity?: string;
-    Number?: string;
-    Color?: string;
-    CardType?: string;
-    Subtypes?: string;
-    Attribute?: string;
-  };
-}
-interface ApitcgCardsResponse {
-  success?: boolean;
-  data?: ApitcgCard[];
-  total?: number;
-}
-
-function apitcgHeaders(): HeadersInit {
-  const key = process.env.APITCG_API_KEY;
-  if (!key) {
-    throw new Error("APITCG_API_KEY is not set — cannot sync One Piece");
-  }
-  return { "x-api-key": key };
-}
+import { fetchOnePieceSets as fetchPWOnePieceSets, fetchOnePieceCards as fetchPWOnePieceCards } from "./pokewallet.service";
 
 async function listOnePieceSets(): Promise<SyncSetInput[]> {
-  const res = await fetch(`${APITCG_BASE}/api/one-piece/sets`, {
-    headers: apitcgHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error(`apitcg /one-piece/sets HTTP ${res.status}`);
-  }
-  const payload = (await res.json()) as ApitcgSetsResponse;
-  const sets = payload.data ?? [];
-  return sets
-    .filter(
-      (s): s is ApitcgSet & { _id: string; name: string } =>
-        Boolean(s._id && s.name)
-    )
-    // Newest first so recent sets sync ahead of old ones.
-    .sort((a, b) =>
-      (b.release_date ?? "").localeCompare(a.release_date ?? "")
-    )
-    .map((s) => ({
-      sourceSetId: s._id,
-      name: s.name,
-      series: "One Piece Card Game",
-      printedTotal: null,
-      total: null,
-      releaseDate: s.release_date ? new Date(s.release_date) : null,
-      symbolUrl: null,
-      logoUrl: null,
-    }));
+  const sets = await fetchPWOnePieceSets();
+  return sets.map(s => ({
+    sourceSetId: s.id,
+    name: s.name,
+    series: "One Piece Card Game",
+    releaseDate: s.releaseDate ? new Date(s.releaseDate) : null,
+  }));
 }
 
 async function listOnePieceCardsInSet(
   sourceSetId: string
 ): Promise<SyncCardInput[]> {
-  // limit=500 covers every real-world OP set (OP01 had 163; largest
-  // observed is under 300). If a set grows beyond that we'll switch
-  // to `page=` pagination — for now a single request keeps the code
-  // dead simple.
-  const url =
-    `${APITCG_BASE}/api/products?tcg=one-piece` +
-    `&set=${encodeURIComponent(sourceSetId)}&limit=500`;
-  const res = await fetch(url, { headers: apitcgHeaders() });
-  if (!res.ok) {
-    throw new Error(`apitcg /products?set=${sourceSetId} HTTP ${res.status}`);
-  }
-  const payload = (await res.json()) as ApitcgCardsResponse;
-  const cards = payload.data ?? [];
-
-  return cards
-    .filter((c): c is ApitcgCard & { code: string; name: string } =>
-      Boolean(c.code && c.name)
-    )
-    .map((c) => {
-      const attrs = c.attributes ?? {};
-      // Card type / colour become "types" so the UI filters keep working
-      // — same convention as our existing user search adapter.
-      const types = [attrs.Color, attrs.CardType, attrs.Attribute]
-        .filter((v): v is string => typeof v === "string" && v.length > 0);
-      const image =
-        c.images?.[0]?.large ??
-        c.images?.[0]?.medium ??
-        c.images?.[0]?.small ??
-        null;
-      return {
-        externalId: c.code,                   // e.g. "OP01-064"
-        name: c.name,
-        number: attrs.Number ?? c.code,
-        rarity: attrs.Rarity ?? null,
-        types,
-        imageUrl: c.images?.[0]?.small ?? image,
-        imageUrlHi: c.images?.[0]?.large ?? image,
-        marketPrice: c.markets?.tcgplayer?.prices?.market ?? null,
-      };
-    });
+  const cards = await fetchPWOnePieceCards(sourceSetId);
+  return cards.map(c => ({
+    externalId: c.id,
+    name: c.name,
+    number: c.number ?? c.id,
+    rarity: c.rarity ?? null,
+    types: c.types ?? [],
+    imageUrl: c.image ?? null,
+    imageUrlHi: c.imageHi ?? null,
+    marketPrice: c.marketPrice ?? null,
+  }));
 }
 
 // -----------------------------------------------------------------

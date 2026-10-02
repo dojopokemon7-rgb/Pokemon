@@ -1111,3 +1111,130 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================
+   RESPONSIVE SHELL (Desktop Redesign)
+   ============================================================ */
+
+.dojo-shell {
+  height: 100dvh;
+  overflow: hidden;
+  background-color: var(--color-dojo-app);
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  position: relative;
+}
+
+.dojo-shell-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.dojo-shell-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background-color: var(--color-dojo-app);
+  display: flex;
+  align-items: center;
+  padding: 14px clamp(16px, 4vw, 48px);
+  gap: 16px;
+}
+
+.dojo-shell-main {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 80px; /* Space for bottom nav */
+}
+
+.dojo-shell-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  z-index: 50;
+  display: flex;
+  border-top: 1px solid var(--color-dojo-stroke);
+  background-color: var(--color-dojo-card);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.dojo-shell-nav-item {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 0 10px;
+  text-decoration: none;
+}
+
+.dojo-shell-nav-item-icon {
+  display: flex;
+}
+
+.dojo-shell-nav-item-label {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+@media (min-width: 768px) {
+  .dojo-shell {
+    flex-direction: row;
+  }
+  
+  .dojo-shell-nav {
+    position: static;
+    flex-direction: column;
+    width: 260px;
+    height: 100dvh;
+    border-top: none;
+    border-right: 1px solid var(--color-dojo-stroke);
+    padding: 32px 0;
+    gap: 8px;
+  }
+
+  .dojo-shell-nav-item {
+    flex: none;
+    flex-direction: row;
+    padding: 16px 32px;
+    gap: 16px;
+  }
+  
+  .dojo-shell-nav-item-label {
+    font-size: 11px;
+  }
+
+  .dojo-shell-main {
+    padding-bottom: 32px;
+  }
+
+  /* Desktop Grid utilities */
+  .dojo-desktop-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+}
+
+@media (min-width: 1024px) {
+  .dojo-shell-main,
+  .dojo-shell-header {
+    max-width: 1280px;
+    margin: 0 auto;
+    width: 100%;
+    padding-left: clamp(24px, 5vw, 64px);
+    padding-right: clamp(24px, 5vw, 64px);
+  }
+}

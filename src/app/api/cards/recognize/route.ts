@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { detectTextWithVision, isVisionConfigured } from "@/lib/services/vision-ocr.service";
 import { recognize, type CatalogCard } from "@/lib/services/card-recognition.service";
+import { identifyCard } from "@/lib/services/scrydex.service";
 
 /**
  * POST /api/cards/recognize
@@ -57,10 +58,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   let ocrSource: "vision" | "tesseract" | "manual" =
     b?.source === "tesseract" || b?.source === "manual" ? b.source : "vision";
 
-  // Vision path: an image was sent and a key is configured → OCR it here.
+  // Vision path: an image was sent -> Use Scrydex Vision API.
   if (image) {
-    if (!isVisionConfigured()) {
-      // No server-side OCR available — tell the client to run tesseract and
+    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+    const scrydexResult = await identifyCard(base64Data);
+
+    if (!scrydexResult || !scrydexResult.cardId) {
+      // No server-side OCR available or failed — tell the client to run tesseract and
       // re-submit as `text`. Not an error; a graceful fallback signal.
       return NextResponse.json({
         success: true,
@@ -69,18 +73,32 @@ export async function POST(request: Request): Promise<NextResponse> {
         feedbackId: null,
       });
     }
-    const visionText = await detectTextWithVision(image);
-    if (visionText == null) {
-      // Vision failed/empty — same fallback signal.
-      return NextResponse.json({
-        success: true,
-        candidates: [],
-        ocrSource: "unavailable",
-        feedbackId: null,
+
+    const matchedCard = await prisma.card.findUnique({
+      where: { externalId: scrydexResult.cardId },
+      include: { set: true },
+    });
+
+    const candidates = matchedCard ? [{
+      id: matchedCard.externalId,
+      name: matchedCard.name,
+      set: matchedCard.set?.name ?? "",
+      imageUrl: matchedCard.imageUrl ?? matchedCard.imageUrlHi ?? "",
+      confidence: scrydexResult.confidence,
+    }] : [];
+
+    // Log feedback
+    let feedbackId: string | null = null;
+    try {
+      const userId = await optionalUserId(request);
+      const row = await prisma.scanFeedback.create({
+        data: { userId, ocrText: `SCRYDEX_MATCH:${scrydexResult.cardId}`, ocrSource: "vision", candidates },
+        select: { id: true },
       });
-    }
-    text = visionText;
-    ocrSource = "vision";
+      feedbackId = row.id;
+    } catch {}
+
+    return NextResponse.json({ success: true, candidates, feedbackId, ocrSource: "vision" });
   }
 
   if (!text) {
