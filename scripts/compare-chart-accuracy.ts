@@ -34,6 +34,13 @@ import { pathToFileURL } from "node:url";
  */
 const TOLERANCE_PCT = 10;
 
+/**
+ * PricingHistory.source that owns this harness's Collectr-aligned series.
+ * Shared with scripts/seed-pricing-history.ts (which WRITES these rows) so
+ * the seed and the gate can never drift onto different source labels.
+ */
+export const CHART_HARNESS_SOURCE = "collectr-seed";
+
 // ── Types ───────────────────────────────────────────────────────────
 export interface PricePoint {
   /** ISO date, day precision: "YYYY-MM-DD". */
@@ -105,16 +112,27 @@ async function getOurHistory(externalId: string): Promise<PricePoint[] | null> {
   });
   if (!card) return null; // card not in our catalog at all
 
+  // Scope to the harness's own Collectr-aligned series. The enriched schema
+  // makes [cardId, recordedAt, source, …] unique, so a card can now carry
+  // several PricingHistory rows for the SAME date from different sources
+  // (collectr-seed, scrydex, scrydex-trend). Keying ourByDate without a
+  // source filter would let whichever row sorts last silently shadow the
+  // harness point and skew the divergence vs the mocked Collectr reference.
+  // CHART_HARNESS_SOURCE isolates the series this gate is designed to compare.
   const rows = await prisma.pricingHistory.findMany({
-    where: { cardId: card.id },
+    where: { cardId: card.id, source: CHART_HARNESS_SOURCE },
     orderBy: { recordedAt: "asc" },
-    select: { price: true, recordedAt: true },
+    select: { priceMarket: true, recordedAt: true },
   });
 
-  return rows.map((r) => ({
-    date: r.recordedAt.toISOString().slice(0, 10),
-    price: r.price,
-  }));
+  // Never coerce a null market price to 0 (AGENTS.md non-negotiable) —
+  // drop null-priced rows so the divergence report only compares real values.
+  return rows
+    .filter((r): r is { priceMarket: number; recordedAt: Date } => r.priceMarket != null)
+    .map((r) => ({
+      date: r.recordedAt.toISOString().slice(0, 10),
+      price: r.priceMarket,
+    }));
 }
 
 // ── Comparison ──────────────────────────────────────────────────────

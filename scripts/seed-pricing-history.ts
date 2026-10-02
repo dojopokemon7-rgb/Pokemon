@@ -22,10 +22,14 @@
  */
 
 import { prisma } from "@/lib/db";
-import { CARDS } from "./compare-chart-accuracy";
+import { CARDS, CHART_HARNESS_SOURCE } from "./compare-chart-accuracy";
 
-/** Marks rows this script owns, so re-runs can clean up only their own. */
-const SEED_SOURCE = "collectr-seed";
+/**
+ * Marks rows this script owns, so re-runs can clean up only their own.
+ * Shared with the gate (compare-chart-accuracy.ts) so the seeded series and
+ * the series the gate reads can never drift onto different source labels.
+ */
+const SEED_SOURCE = CHART_HARNESS_SOURCE;
 
 /** Max noise applied to the reference price (fraction). */
 const NOISE = 0.05;
@@ -107,7 +111,7 @@ async function main(): Promise<void> {
       const price = Math.round(point.price * (1 + delta) * 100) / 100;
       return {
         cardId,
-        price,
+        priceMarket: price,
         source: SEED_SOURCE,
         currency: "USD",
         // day precision at UTC midnight so the harness's YYYY-MM-DD
