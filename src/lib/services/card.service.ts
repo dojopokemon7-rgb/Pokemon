@@ -495,7 +495,7 @@ interface ApiTcgProductsResponse {
   error?: string;
   data?: ApiTcgProduct[];
 }
-interface ApiTcgProduct {
+export interface ApiTcgProduct {
   _id?: number;
   type?: "card" | "sealed" | string;
   name?: string;

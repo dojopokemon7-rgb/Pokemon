@@ -59,7 +59,7 @@ const DEFAULT_MULTIPLIER = 1; // ungraded / unknown grade → raw price
 export const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Normalize a PSA grade that may arrive as "PSA 10", "10", or 10. */
-function parseGrade(grade: string | number): number {
+export function parseGrade(grade: string | number): number {
   if (typeof grade === "number") return grade;
   const match = grade.match(/\d+/);
   return match ? Number(match[0]) : NaN;

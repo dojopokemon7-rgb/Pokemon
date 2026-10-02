@@ -148,6 +148,12 @@ model Card {
   game       Game    @default(POKEMON)
   source     DataSource @default(TCGDEX)
   externalId String  @unique // ID from the external TCG API
+  // Scrydex-native card id (e.g. "me55c-4"), cached after resolveScrydexCard
+  // resolves it by name+number+set. Distinct from externalId (TCGdex id /
+  // Bandai code) — Scrydex uses its OWN id namespace, so a resolved id is
+  // persisted here to skip the search on subsequent pulls (one credit, no
+  // re-matching). Nullable: a card that never resolves simply stays null.
+  scrydexId  String? @unique
   name       String
   number     String  // Card number within the set (e.g., "001/165")
   rarity     String?
@@ -336,6 +342,10 @@ model SyncLog {
   card Card? @relation(fields: [cardId], references: [id], onDelete: SetNull)
 
   @@index([job, ranAt])
+  // Backs the Scrydex freshness-gate lookup
+  // `where { job, cardId } orderBy { ranAt desc }` (scrydex-pricing.service.ts).
+  // Without it the cardId filter would scan — [job, ranAt] alone can't serve it.
+  @@index([job, cardId, ranAt])
   @@map("sync_log")
 }
 
