@@ -19,11 +19,11 @@
  *
  * Card identity/price/image are carried via query params from the
  * search results grid (see search/page.tsx CardTile) since there is
- * no get-by-id API — only /api/cards/search exists. Price-history
- * series, population data, and add-rows are ported verbatim from
- * dojo-prototype/data.js (SERIES/POP/ADD_ROWS/CHARTS), which is mock
- * data in the reference too (a single fixed CARD object), not
- * per-card real data.
+ * no get-by-id API — only /api/cards/search exists. The Price-history
+ * chart is driven by REAL data: the Raw line plots recorded
+ * PricingHistory (/api/cards/[id]/history) and the chip prices come
+ * from live sources (market price + /api/cards/[id]/graded for PSA);
+ * population data + add-rows still follow the reference shape.
  */
 
 import { useState, useMemo, Suspense, useEffect, useRef } from "react";
@@ -61,19 +61,20 @@ function ShareIcon() {
   );
 }
 
-// ── Mock price-history / pop-report data — ported verbatim from
-// dojo-prototype/data.js SERIES / POP / ADD_ROWS / CHARTS. The
-// reference itself uses one fixed CARD object for every card detail
-// view (not per-card data), so this mirrors that scope exactly. ────
+// ── Price-history series — the Price History selector shows only the
+// grade groups we can price from REAL sources today: Raw (recorded
+// PricingHistory) and PSA 10 / PSA 9 (the /graded route). BGS was
+// removed from this selector — we have no BGS price/line pipeline, so a
+// static BGS chip would be fabricated data. (BGS still lives in the
+// unrelated population-report grader toggle / GRADED_RE / Add sheet.)
+// Chip PRICE labels are populated per-card from live data at render
+// time (no hardcoded priceFmt), so a card with no price renders "—". ──
 const SERIES = [
-  { id: "raw", label: "Raw", grade: "Raw", group: "Raw", priceFmt: "$246", color: "#9AA0A6" },
-  { id: "psa10", label: "PSA 10", grade: "10", group: "PSA", priceFmt: "$7.93K", color: "var(--color-dojo-gold)" },
-  { id: "psa9", label: "PSA 9", grade: "9", group: "PSA", priceFmt: "$4.01K", color: "#0AC27E" },
-  { id: "bgsbl", label: "BGS BL10", grade: "BL10", group: "BGS", priceFmt: "$42K", color: "#2D7FF9" },
-  { id: "bgs10", label: "BGS 10", grade: "10", group: "BGS", priceFmt: "$9.77K", color: "#D400FF" },
-  { id: "bgs9", label: "BGS 9", grade: "9", group: "BGS", priceFmt: "$5.2K", color: "#EE9A1F" },
+  { id: "raw", label: "Raw", grade: "Raw", group: "Raw", color: "#9AA0A6" },
+  { id: "psa10", label: "PSA 10", grade: "10", group: "PSA", color: "var(--color-dojo-gold)" },
+  { id: "psa9", label: "PSA 9", grade: "9", group: "PSA", color: "#0AC27E" },
 ];
-const GROUPS = ["Raw", "PSA", "BGS"];
+const GROUPS = ["Raw", "PSA"];
 
 // ADD_ROWS structure template — prices are populated dynamically per card
 // in CardDetailInner based on the card's actual marketPrice, not hardcoded.
@@ -82,16 +83,20 @@ const ADD_ROWS_TEMPLATE = [
   { id: "psa10", section: "graded" as const, label: "PSA 10 (GEM - MT)", variant: "Foil", pop: "Pop: 3583" },
 ];
 
-const CHARTS: Record<string, number[]> = {
-  "1M": [62, 54, 58, 45, 49, 36, 42, 27, 20, 25, 13, 4],
-  "3M": [70, 64, 68, 58, 60, 50, 54, 44, 40, 46, 30, 20],
-  "1Y": [78, 70, 74, 60, 64, 52, 58, 42, 44, 30, 22, 8],
-  "ALL": [82, 76, 78, 68, 70, 58, 62, 48, 50, 34, 20, 4],
-};
+// Range tabs filter the REAL history points by a trailing date window
+// (RANGE_DAYS = days back from the newest point; MAX = all points).
 const RANGE_TABS = [["1M", "1M"], ["3M", "3M"], ["12M", "1Y"], ["MAX", "ALL"]] as const;
+const RANGE_DAYS: Record<string, number> = { "1M": 31, "3M": 93, "1Y": 366, "ALL": Infinity };
 
 function fmtUSD(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+}
+
+// Compact USD for the grade chip labels (e.g. 7930 → "$7.93K"); plain
+// fmtUSD under $1000 so small raw prices stay exact.
+function fmtUSDCompact(n: number): string {
+  if (n < 1000) return fmtUSD(n);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(n);
 }
 
 // ── Area chart — same port of app.js chart() used on the dashboard:
@@ -101,11 +106,10 @@ function fmtUSD(n: number): string {
 // Interaction (Phase 2 QA: chart hover/tooltips must work on mobile):
 // pointer/touch snaps to the nearest x sample and draws a vertical
 // guide plus a marker dot on every visible series. The `pts` are
-// normalized chart-shape units (mock, not per-point prices — see the
-// SERIES/CHARTS mock data), so we surface a position indicator rather
-// than a fabricated dollar value; the series' overall price already
-// shows on its chip. viewBox uses the default meet aspect, so pointer
-// mapping goes through the rendered rect width. ────────────────────
+// normalized chart-shape units (0..90 band) derived from the card's
+// REAL price history — the exact {date, price} ride on `points` for the
+// tooltip. viewBox uses the default meet aspect, so pointer mapping
+// goes through the rendered rect width. ────────────────────────────
 // F-09: format a point's date for the tooltip, e.g. "2026-06-01" → "Jun 2026".
 function fmtChartDate(iso: string): string {
   const d = new Date(`${iso}T00:00:00.000Z`);
@@ -548,6 +552,18 @@ function CardDetailInner() {
     staleTime: 60_000,
   });
 
+  // Real PSA 9 price — same public graded route, grade=9 — used only for the
+  // PSA 9 price-history chip label (null → "—", never fabricated).
+  const { data: graded9Data } = useQuery<{ price: number | null; isFallback?: boolean }>({
+    queryKey: ["graded", id, "9"],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/graded?grade=9`);
+      if (!res.ok) throw new Error("Failed to load graded price");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
   // Build ADD_ROWS dynamically using the actual card's market price.
   // Ungraded (raw) = actual market price. PSA 10 uses the real server graded
   // price when available, falling back to the local heuristic below.
@@ -612,10 +628,11 @@ function CardDetailInner() {
     });
   };
 
-  // F-18: real price history from the DB (PricingHistory). When we have
-  // points for this card, the "Raw" line is driven by them instead of the
-  // mock CHARTS shape; cards with no history keep the mock (graceful
-  // fallback). Never errors — an empty/failed fetch just leaves realPts null.
+  // F-18: real price history from the DB (PricingHistory). The chart is
+  // driven entirely by these points — the Raw line plots them and the PSA
+  // lines reuse their shape. Cards with < 2 points in the selected window
+  // show a graceful flat baseline, never a fabricated mock curve. Never
+  // errors — an empty/failed fetch just leaves realPts null.
   const { data: historyData } = useQuery<{ points: { date: string; price: number }[] }>({
     queryKey: ["card-history", id],
     queryFn: async () => {
@@ -625,37 +642,56 @@ function CardDetailInner() {
     },
     staleTime: 60_000,
   });
-  // Normalize real prices into the chart's shape band (4..86) so they plug
-  // straight into DojoChart alongside the mock series.
-  const realPts = useMemo(() => {
+  // Real history points filtered to the selected range tab (trailing window
+  // measured back from the newest recorded point). MAX keeps everything.
+  const windowPts = useMemo(() => {
     const points = historyData?.points ?? [];
-    if (points.length < 2) return null;
-    const prices = points.map((p) => p.price);
+    const days = RANGE_DAYS[range] ?? Infinity;
+    if (points.length === 0 || days === Infinity) return points;
+    const newest = new Date(`${points[points.length - 1].date}T00:00:00.000Z`).getTime();
+    const cutoff = newest - days * 86_400_000;
+    return points.filter((p) => new Date(`${p.date}T00:00:00.000Z`).getTime() >= cutoff);
+  }, [historyData, range]);
+
+  // Normalize the windowed real prices into the chart's shape band (4..86).
+  // null when we have < 2 points for this window — the chart then shows a
+  // graceful short/flat line, NEVER a fabricated mock shape (no-fabricate
+  // rule now that a real pipeline exists).
+  const realPts = useMemo(() => {
+    if (windowPts.length < 2) return null;
+    const prices = windowPts.map((p) => p.price);
     const min = Math.min(...prices);
     const max = Math.max(...prices);
     const range = max - min || 1;
     return prices.map((p) => 4 + ((p - min) / range) * (86 - 4));
-  }, [historyData]);
+  }, [windowPts]);
 
   const chartSeries = useMemo(() => {
-    const pts = CHARTS[range] ?? CHARTS["1M"];
     const active = SERIES.filter((d) => activeSeries.has(d.id));
-    if (active.length === 0) {
-      // Default view: prefer real history when we have it.
-      return [{ pts: realPts ?? pts, color: "#9AA0A6" }];
+    // No real history for this window → one flat baseline so the chart still
+    // renders (responsive, no crash) instead of a fabricated curve.
+    const flat = [45, 45];
+    if (!realPts) {
+      const color = active[0]?.color ?? "#9AA0A6";
+      return [{ pts: flat, color }];
     }
-    return active.map((d, di) => ({
-      // The "raw" series maps to our recorded market history; graded
-      // series stay on the mock shapes (no per-grade history pipeline yet).
-      pts:
-        d.id === "raw" && realPts
-          ? realPts
-          : pts.map((y, i) => Math.max(4, Math.min(86, y + Math.sin(i * 1.3 + di * 2) * 6))),
-      color: d.color,
-    }));
-  }, [range, activeSeries, realPts]);
+    const list = active.length === 0 ? [SERIES[0]] : active;
+    // ponytail: no per-grade history series yet — PSA 10 / PSA 9 lines reuse
+    // the REAL raw-history SHAPE (same normalized movement), distinguished only
+    // by the chip's graded price label. Upgrade path: a per-grade PricingHistory
+    // feed would let each graded line carry its own curve.
+    return list.map((d) => ({ pts: realPts, color: d.color }));
+  }, [activeSeries, realPts]);
 
   const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * d.price, 0);
+
+  // Live price for each price-history chip (null → "—"). Raw = the card's
+  // market price; PSA 10 / PSA 9 come from the /graded route. Never fabricated.
+  const chipPrice: Record<string, number | null> = {
+    raw: fetchedPrice ?? (priceParam > 0 ? priceParam : null),
+    psa10: gradedData?.price ?? null,
+    psa9: graded9Data?.price ?? null,
+  };
 
   return (
     <div style={{ paddingBottom: "24px" }}>
@@ -856,7 +892,9 @@ function CardDetailInner() {
                       }}
                     >
                       <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12.5px" }}>{d.grade}</div>
-                      <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11.5px", color: "var(--color-dojo-body)" }}>{d.priceFmt}</div>
+                      <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11.5px", color: "var(--color-dojo-body)" }}>
+                        {chipPrice[d.id] != null ? fmtUSDCompact(chipPrice[d.id] as number) : "—"}
+                      </div>
                     </button>
                   );
                 })}
@@ -866,19 +904,16 @@ function CardDetailInner() {
         </div>
 
         <div style={{ margin: "12px -22px 0" }}>
-          {/* F-09: hand the chart the real {date, price} history so the
-              hover/tap tooltip can show exact values. Only when the primary
-              (index-0) line IS the real Raw series — i.e. default view or Raw
-              is active — so the tooltip index aligns with the drawn line.
-              Graded-only views keep the mock shape and no price tooltip. */}
+          {/* F-09: hand the chart the real {date, price} points for the
+              SELECTED range window so the hover/tap tooltip shows exact
+              values. All drawn lines share the real raw-history shape (PSA
+              lines are scaled by label only), so index-0 always aligns with
+              these points. No real points for this window → no tooltip, just
+              the graceful flat baseline. */}
           <DojoChart
             series={chartSeries}
             height={170}
-            points={
-              realPts && (activeSeries.size === 0 || activeSeries.has("raw"))
-                ? historyData?.points
-                : undefined
-            }
+            points={realPts ? windowPts : undefined}
           />
         </div>
         <div style={{ display: "flex", marginTop: "4px" }}>
