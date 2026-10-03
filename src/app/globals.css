@@ -778,6 +778,18 @@ body {
   }
 }
 
+/* --- Quick fade-in on skeleton→content swap (Batch 2B · Item 4) ---
+   A fast 150ms ease-out opacity ease when real content replaces a
+   skeleton — subtle and snappy, NO slide / spring / bounce / blur
+   (reuses @keyframes dojo-fade-in, opacity only). `both` holds the
+   start frame so there's no 1-frame flash before it runs. It's a CLASS
+   (not an inline animation) so the global
+   @media (prefers-reduced-motion: reduce) block below zeroes it —
+   opt-out users get the content instantly with no fade. */
+.dojo-fade-in-fast {
+  animation: dojo-fade-in 150ms ease-out both;
+}
+
 /* --- Card details popup: scale + fade open (F-08) --- */
 @keyframes dojo-popup-in {
   from {
