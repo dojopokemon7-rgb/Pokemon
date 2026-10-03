@@ -1,0 +1,18 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "Reduced-motion comment is inaccurate",
+      "severity": "non-blocking",
+      "confidence": "likely",
+      "detail": "The comment on .dojo-delayed-skeleton (and the three loading.tsx copies) claims the reduced-motion media block collapses the 250ms delay. It does not: that block overrides animation-duration / -iteration-count / transition-duration / scroll-behavior only, never animation-delay (grep of globals.css finds zero animation-delay rules). Reduced-motion users still wait the full 250ms, then snap opacity 0->1 with no fade. Behavior is benign but the documented WHY is false; fix the comment to match the actual mechanism (AGENTS.md #14)."
+    },
+    {
+      "label": "Possible 'No price history yet' flash on fast first load",
+      "severity": "non-blocking",
+      "confidence": "likely",
+      "detail": "Suppressing the chart skeleton during the <250ms first-load window lets the else-branch render MultiLineComparisonChart with an empty seriesList, so the honest empty-state text can paint for a beat before real data draws. Confined to a genuine first load that resolves under the delay (placeholderData keeps isLoading false on later switches). Arguably still better than the skeleton blink it replaces, but it is a behavioral change in that window, not a pure show-nothing."
+    }
+  ],
+  "reviewDoc": "d:\\Pokemon\\.worktrees\\fix-skeleton-flicker\\.agents\\tasks\\skeleton-flicker-review.md"
+}
