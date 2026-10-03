@@ -34,14 +34,50 @@
  * for live results, and /api/cards/trending for the empty-state grid.
  */
 
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useState, useRef, useEffect, Suspense } from "react";
+import { useState, useRef, useEffect, useCallback, Suspense } from "react";
 import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import { Toast } from "@/components/Toast";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
+
+// ── Prefetch-on-intent (Batch 2B · Item 1) ─────────────────────────
+// On first hover/focus/touch of a card tile we warm the TanStack cache
+// for the detail page's PRIMARY queries so navigation paints instantly
+// from cache. The query keys + queryFns below MUST match the detail
+// page (src/app/(dashboard)/search/[id]/page.tsx) EXACTLY — a mismatched
+// key is a wasted prefetch that never hydrates the view.
+//
+// Both routes read the LOCAL DB only (prisma.card.findUnique) and never
+// call Scrydex — so prefetching them spends ZERO credits (AGENTS.md #7,
+// credit gate stays DENY). `id` is the SAME externalId the tile
+// navigates with (AGENTS.md #3), never the internal cuid.
+function prefetchCardDetail(queryClient: QueryClient, id: string) {
+  if (!id) return;
+  // ["card-prices", id] — detail page has NO explicit staleTime (inherits
+  // the global 5-minute default in providers.tsx), so mirror that here.
+  queryClient.prefetchQuery({
+    queryKey: ["card-prices", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/prices`);
+      if (!res.ok) throw new Error("Failed to load prices");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  // ["card-history", id] — detail page sets staleTime 60s; match it.
+  queryClient.prefetchQuery({
+    queryKey: ["card-history", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/history`);
+      if (!res.ok) throw new Error("Failed to load history");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+}
 
 
 // ── Icons for scan/filter buttons (new per client feedback) ────────
@@ -158,6 +194,7 @@ function TrendCardTile({
   selected,
   onToggleSelect,
   onOpen,
+  onPrefetch,
 }: {
   card: TrendingCard;
   game: Game;
@@ -166,24 +203,35 @@ function TrendCardTile({
   selected: boolean;
   onToggleSelect: () => void;
   onOpen: () => void;
+  /** Fired once on first hover/focus/touch intent (Batch 2B · Item 1). */
+  onPrefetch: () => void;
 }) {
   const initials = cardInitials(card.name);
 
-  // F-08: clicking the tile opens the details popup in place (instead of
-  // navigating to /search/[id]). The popup carries a "View full details"
-  // link for users who want the deeper page.
+  // Item 1: the tile is now a next/link <Link> (route prefetch for free +
+  // middle-click / open-in-new-tab). The href points to the detail page
+  // built from the SAME params goToCard threads (there is no get-by-id
+  // API). The plain click is intercepted so goToCard still threads
+  // price/image/number/rarity — mirrors CardTile's established pattern.
+  const detailParams = new URLSearchParams({ name: card.name, game });
+  if (card.setImage) detailParams.set("set", card.setImage);
+  if (card.imageUrl) detailParams.set("img", card.imageUrl);
+  if (card.price != null) detailParams.set("price", String(card.price));
+  if (card.rarity) detailParams.set("rarity", card.rarity);
+
   return (
-    <div
+    <Link
+      href={`/search/${encodeURIComponent(card.externalId)}?${detailParams.toString()}`}
       className="dojo-card-tile"
       data-testid="card-result"
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen();
-        }
+      // Warm the detail queries on first intent — hover (desktop), focus
+      // (keyboard), and touchstart (mobile) all count as "about to open".
+      onMouseEnter={onPrefetch}
+      onFocus={onPrefetch}
+      onTouchStart={onPrefetch}
+      onClick={(e) => {
+        e.preventDefault();
+        onOpen();
       }}
       style={{
         position: "relative",
@@ -193,11 +241,13 @@ function TrendCardTile({
         display: "flex",
         flexDirection: "column",
         cursor: "pointer",
+        textDecoration: "none",
       }}
     >
-      {/* Star — track this card */}
+      {/* Star — track this card. preventDefault stops the enclosing
+          <Link> navigating when the control is tapped. */}
       <button
-        onClick={(e) => { e.stopPropagation(); onToggleTrack(); }}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleTrack(); }}
         title="Track this card"
         aria-pressed={tracked}
         style={{
@@ -287,9 +337,11 @@ function TrendCardTile({
             );
           })()}
         </div>
-        {/* Plus — add to selection */}
+        {/* Plus — add to selection. preventDefault stops the enclosing
+            <Link> navigating when the control is tapped. */}
         <button
           onClick={(e) => {
+            e.preventDefault();
             e.stopPropagation();
             onToggleSelect();
           }}
@@ -317,7 +369,7 @@ function TrendCardTile({
       </div>
       {/* "Find on eBay" removed per client feedback — keep users in the
           app. The eBay deal-finder still lives on the card detail page. */}
-    </div>
+    </Link>
   );
 }
 
@@ -438,6 +490,7 @@ function CardTile({
   tracked,
   onToggleTrack,
   onOpen,
+  onPrefetch,
 }: {
   card: CardResult;
   index?: number;
@@ -446,6 +499,8 @@ function CardTile({
   tracked: boolean;
   onToggleTrack: () => void;
   onOpen: () => void;
+  /** Fired once on first hover/focus/touch intent (Batch 2B · Item 1). */
+  onPrefetch: () => void;
 }) {
   const imgSrc = card.imageUrl ?? card.image;
   const price = card.marketPrice ?? card.price ?? 0;
@@ -478,6 +533,10 @@ function CardTile({
       href={`/search/${card.id}?${detailParams.toString()}`}
       className="dojo-card-tile"
       data-testid="card-result"
+      // Warm the detail queries on first intent (Batch 2B · Item 1).
+      onMouseEnter={onPrefetch}
+      onFocus={onPrefetch}
+      onTouchStart={onPrefetch}
       // Tapping the tile navigates to the full card detail page. The href
       // already points there (so middle-click / open-in-new-tab works); the
       // plain click is intercepted only so we can route through goToCard,
@@ -909,6 +968,17 @@ function SearchBar({ defaultValue, game, onSearch, onClear }: {
 function SearchPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const queryClient = useQueryClient();
+
+  // Item 1 guard: a mouse sweep across the grid must NOT fire a prefetch
+  // per pixel. Track ids already warmed and fire at most ONCE per card.
+  // (prefetchQuery dedupes in-flight too; this skips even the no-op call.)
+  const prefetchedIds = useRef<Set<string>>(new Set());
+  const handlePrefetch = useCallback((id: string) => {
+    if (!id || prefetchedIds.current.has(id)) return;
+    prefetchedIds.current.add(id);
+    prefetchCardDetail(queryClient, id);
+  }, [queryClient]);
   const initialQ = searchParams.get("q") ?? "";
   const hasQuery = initialQ.trim().length > 0;
   const [game, setGame] = useState<Game>(
@@ -1333,6 +1403,9 @@ function SearchPageInner() {
                         rarity: card.rarity ?? undefined,
                       })
                     }
+                    // Prefetch keys on externalId — the SAME id this tile
+                    // navigates with (AGENTS.md #3).
+                    onPrefetch={() => handlePrefetch(card.externalId)}
                   />
                 ))}
             </div>
@@ -1344,6 +1417,12 @@ function SearchPageInner() {
               <div style={{ marginTop: "14px", display: "flex", justifyContent: "center" }}>
                 <button
                   onClick={() => fetchMoreTrending()}
+                  // Item 1: prefetch the NEXT page on hover/focus so the
+                  // click lands on already-fetched data. fetchNextPage uses
+                  // the offset nextCursor (AGENTS.md #12 — unchanged); it's a
+                  // no-op while already fetching or when there's no next page.
+                  onMouseEnter={() => { if (hasMoreTrending && !fetchingMoreTrending) fetchMoreTrending(); }}
+                  onFocus={() => { if (hasMoreTrending && !fetchingMoreTrending) fetchMoreTrending(); }}
                   disabled={fetchingMoreTrending}
                   className="dojo-btn dojo-btn-outline"
                   style={{ width: "auto", padding: "10px 24px" }}
@@ -1555,6 +1634,9 @@ function SearchPageInner() {
                           rarity: card.rarity ?? undefined,
                         })
                       }
+                      // Prefetch keys on the SAME id this tile's <Link> and
+                      // goToCard use (the search result's externalId).
+                      onPrefetch={() => handlePrefetch(card.id)}
                     />
                   ))}
             </div>
