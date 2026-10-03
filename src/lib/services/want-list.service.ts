@@ -33,7 +33,7 @@ export async function listWantList(userId: string, intent?: WantIntent) {
 
   const cards = await prisma.card.findMany({
     where: { externalId: { in: items.map((i) => i.cardId) } },
-    select: { externalId: true, name: true, imageUrl: true, marketPrice: true, set: { select: { name: true } } },
+    select: { externalId: true, name: true, imageUrl: true, marketPrice: true, weeklyChangePct: true, set: { select: { name: true } } },
   });
   const byExternalId = new Map(cards.map((c) => [c.externalId, c]));
 
@@ -44,6 +44,9 @@ export async function listWantList(userId: string, intent?: WantIntent) {
       name: card?.name ?? null,
       imageUrl: card?.imageUrl ?? null,
       marketPrice: card?.marketPrice ?? null,
+      // REAL 7-day % change (Scrydex trends.days_7). Null until a priced pull
+      // runs — the dashboard want rows render "—", never a fabricated delta.
+      weeklyChangePct: card?.weeklyChangePct ?? null,
       setName: card?.set?.name ?? null,
     };
   });

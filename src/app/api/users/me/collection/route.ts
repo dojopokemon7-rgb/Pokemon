@@ -59,6 +59,9 @@ export async function GET(request: Request): Promise<NextResponse> {
             imageUrl: true,
             imageUrlHi: true,
             marketPrice: true,
+            // REAL 7-day % change (Scrydex trends.days_7). Null until a priced
+            // pull runs — the dashboard renders "—", never a fabricated delta.
+            weeklyChangePct: true,
             set: { select: { id: true, name: true } },
           },
         },
