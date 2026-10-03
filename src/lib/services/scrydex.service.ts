@@ -34,7 +34,7 @@ import { parseGrade } from "@/lib/utils/graded-price";
 
 const SCRYDEX_BASE_URL = "https://api.scrydex.com";
 
-function scrydexHeaders(): HeadersInit {
+export function scrydexHeaders(): HeadersInit {
   const key = process.env.SCRYDEX_API_KEY;
   const team = process.env.SCRYDEX_TEAM_ID;
   if (!key) throw new Error("SCRYDEX_API_KEY is not set.");
@@ -238,6 +238,187 @@ export async function fetchScrydexCardById(
   }
 }
 
+// --- Price history (documented endpoint) -----------------------------------
+
+/**
+ * Scrydex price-history point as returned by
+ * GET /{slug}/v1/cards/{id}/price_history (DOC-VERIFIED — see
+ * docs/SCRYDEX_AUDIT.md). Each `data[]` entry is one date carrying a `prices[]`
+ * array of per-variant/condition points. We Zod-parse at the boundary and drop
+ * anything that fails (AGENTS.md §5.4). source currency preserved; NEVER
+ * FX-converted downstream.
+ *
+ * UNRESOLVED (Audit L2): the documented sample showed ONLY type:"raw" points
+ * with no company/grade labels. Whether graded points are labeled in the
+ * RESPONSE (vs only accepted as request filters) is unconfirmed — so this
+ * client surfaces whatever Scrydex returns verbatim and the caller MUST NOT
+ * fabricate graded series from it.
+ */
+const PriceHistoryPointSchema = z.object({
+  variant: z.string().nullish(),
+  condition: z.string().nullish(),
+  type: z.string().nullish(),
+  company: z.string().nullish(),
+  grade: z.string().nullish(),
+  low: z.number().nullish(),
+  market: z.number().nullish(),
+  currency: z.string().nullish(),
+});
+const PriceHistoryDaySchema = z.object({
+  date: z.string(),
+  prices: z.array(PriceHistoryPointSchema).default([]),
+});
+const PriceHistoryResponseSchema = z.object({
+  data: z.array(PriceHistoryDaySchema).default([]),
+  total_count: z.number().nullish(),
+});
+export type ScrydexHistoryDay = z.infer<typeof PriceHistoryDaySchema>;
+
+export interface ScrydexHistoryFilters {
+  days?: number;
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD
+  variant?: string;
+  condition?: string;
+  company?: string;
+  grade?: string;
+  pageSize?: number;
+}
+
+/**
+ * Fetch a card's REAL price history from the documented endpoint
+ * `GET /{slug}/v1/cards/{id}/price_history` (3 credits per call — Audit).
+ *
+ * `id` MUST be the Scrydex-returned card id (NOT assumed equal to
+ * Card.externalId — Audit L0 / Req 6.6). Server-side only (uses scrydexHeaders).
+ *
+ * CREDIT SAFETY: this performs a live, metered Scrydex call. It is NOT invoked
+ * automatically by the daily sync in this phase; callers must gate it behind
+ * Owner_Approval with an explicit credit estimate (Checkpoint D). Returns the
+ * validated days (possibly empty = honest no-history), or null on failure so
+ * the caller degrades gracefully (never fabricates).
+ */
+export async function fetchScrydexPriceHistory(
+  id: string,
+  game: Game,
+  filters: ScrydexHistoryFilters = {}
+): Promise<ScrydexHistoryDay[] | null> {
+  const slug = gameSlug(game);
+  const qs = new URLSearchParams();
+  if (filters.days != null) qs.set("days", String(filters.days));
+  if (filters.startDate) qs.set("start_date", filters.startDate);
+  if (filters.endDate) qs.set("end_date", filters.endDate);
+  if (filters.variant) qs.set("variant", filters.variant);
+  if (filters.condition) qs.set("condition", filters.condition);
+  if (filters.company) qs.set("company", filters.company);
+  if (filters.grade) qs.set("grade", filters.grade);
+  if (filters.pageSize != null) qs.set("page_size", String(filters.pageSize));
+  const query = qs.toString();
+  const url =
+    `${SCRYDEX_BASE_URL}/${slug}/v1/cards/${encodeURIComponent(id)}/price_history` +
+    (query ? `?${query}` : "");
+  try {
+    const res = await fetch(url, { headers: scrydexHeaders() });
+    if (!res.ok) {
+      console.warn(`[scrydex] price_history ${id} HTTP ${res.status}`);
+      return null;
+    }
+    const parsed = PriceHistoryResponseSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      console.warn(`[scrydex] price_history ${id} parse failed: ${parsed.error.issues[0]?.message}`);
+      return null;
+    }
+    return parsed.data.data;
+  } catch (err) {
+    console.warn(`[scrydex] price_history ${id} error:`, err);
+    return null;
+  }
+}
+
+// --- Sold listings (documented endpoint) -----------------------------------
+
+/**
+ * A Scrydex SOLD listing (docs/SCRYDEX_AUDIT.md →
+ * https://scrydex.com/docs/pokemon/listings). These are real SOLD records
+ * (each carries `sold_at`), the source for the card-detail "Recent Sales"
+ * section — NOT active listings. Zod-validated at the boundary.
+ */
+const ScrydexListingSchema = z.object({
+  id: z.string().nullish(),
+  source: z.string().nullish(), // e.g. "ebay"
+  title: z.string().nullish(),
+  variant: z.string().nullish(),
+  company: z.string().nullish(),
+  grade: z.string().nullish(),
+  url: z.string().nullish(),
+  price: z.number().nullish(),
+  currency: z.string().nullish(),
+  sold_at: z.string().nullish(),
+});
+const ScrydexListingsResponseSchema = z.object({
+  data: z.array(ScrydexListingSchema).default([]),
+  total_count: z.number().nullish(),
+});
+export type ScrydexSoldListing = z.infer<typeof ScrydexListingSchema>;
+
+export interface ScrydexListingFilters {
+  days?: number;
+  source?: string; // e.g. "ebay"
+  variant?: string;
+  grade?: string;
+  company?: string;
+  condition?: string;
+  pageSize?: number;
+}
+
+/**
+ * Fetch REAL SOLD listings for a card from the documented endpoint
+ * `GET /{slug}/v1/cards/{id}/listings` (1 credit — Audit). `id` MUST be the
+ * Scrydex-returned card id. Server-side only. Returns the validated sold
+ * records (possibly empty = honest "no recent sales"), or null on failure so
+ * the caller degrades to the empty state and NEVER falls back to active
+ * listings or fabricates sales.
+ *
+ * CREDIT SAFETY: live metered call — the caller must pass the owner
+ * credit-approval gate before invoking this.
+ */
+export async function fetchScrydexSoldListings(
+  id: string,
+  game: Game,
+  filters: ScrydexListingFilters = {}
+): Promise<ScrydexSoldListing[] | null> {
+  const slug = gameSlug(game);
+  const qs = new URLSearchParams();
+  if (filters.days != null) qs.set("days", String(filters.days));
+  if (filters.source) qs.set("source", filters.source);
+  if (filters.variant) qs.set("variant", filters.variant);
+  if (filters.grade) qs.set("grade", filters.grade);
+  if (filters.company) qs.set("company", filters.company);
+  if (filters.condition) qs.set("condition", filters.condition);
+  if (filters.pageSize != null) qs.set("page_size", String(filters.pageSize));
+  const query = qs.toString();
+  const url =
+    `${SCRYDEX_BASE_URL}/${slug}/v1/cards/${encodeURIComponent(id)}/listings` +
+    (query ? `?${query}` : "");
+  try {
+    const res = await fetch(url, { headers: scrydexHeaders() });
+    if (!res.ok) {
+      console.warn(`[scrydex] listings ${id} HTTP ${res.status}`);
+      return null;
+    }
+    const parsed = ScrydexListingsResponseSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      console.warn(`[scrydex] listings ${id} parse failed: ${parsed.error.issues[0]?.message}`);
+      return null;
+    }
+    // Only genuine SOLD records (have sold_at). Never surface active listings.
+    return parsed.data.data.filter((l) => !!l.sold_at);
+  } catch (err) {
+    console.warn(`[scrydex] listings ${id} error:`, err);
+    return null;
+  }
+}
+
 // --- Price accessors (pure) ------------------------------------------------
 
 /**
@@ -297,17 +478,94 @@ export function pickGradedPrice(
 
 // --- Vision ----------------------------------------------------------------
 
+// Documented Vision response shape (docs/SCRYDEX_AUDIT.md →
+// https://scrydex.com/docs/vision/overview). We validate at the boundary and
+// read only the fields we use. `matches[].card.id` is the Scrydex-returned
+// catalog id; `score` is the confidence (~0.7–1.3+). graded_details carries the
+// slab company/grade when the image is a graded card.
+const VisionGradedDetailsSchema = z.object({
+  company: z.string().nullish(),
+  grade_number: z.string().nullish(),
+  cert: z.string().nullish(),
+});
+const VisionMatchSchema = z.object({
+  score: z.number().nullish(),
+  variant: z.string().nullish(),
+  card: z.object({ id: z.string(), name: z.string().nullish() }).nullish(),
+});
+const VisionResponseSchema = z.object({
+  data: z.object({
+    analysis: z
+      .object({
+        type: z.string().nullish(),
+        game: z.string().nullish(),
+        graded_details: VisionGradedDetailsSchema.nullish(),
+      })
+      .nullish(),
+    matches: z.array(VisionMatchSchema).default([]),
+  }),
+});
+
 /**
- * FR-2d: Vision identify from a base64 image (prefix already stripped by the
- * caller). Returns ScrydexIdentifyResult where `cardId` is the EXTERNAL
- * catalog id (load-bearing: recognize/route.ts reads scrydexResult.cardId
- * and matches it against Card.externalId, so this field name must not change).
+ * FR-2d: Vision identify from a card image via the DOCUMENTED endpoint
+ * `POST /vision/v1/cards/identify` (multipart/form-data; JPEG/PNG/WebP; 20MB;
+ * 5 credits — docs/SCRYDEX_AUDIT.md). Server-side only (uses scrydexHeaders).
  *
- * Vision endpoint UNRESOLVED as of 2026-10-02 — the probe found no working
- * path, so this returns null and the route degrades to on-device Tesseract.
- * Wire the endpoint here (+ Zod-parse body) once a path is confirmed.
+ * Returns ScrydexIdentifyResult where `cardId` is the Scrydex-returned catalog
+ * id for the top match (load-bearing: recognize/route.ts reads this field).
+ * Returns null on no-match, missing credentials, or any failure so the route
+ * degrades to on-device Tesseract and NEVER fabricates a match.
+ *
+ * CREDIT SAFETY: this is a 5-credit live call. It MUST NOT be invoked unless the
+ * caller has (a) confirmed the per-account scan allowance and (b) passed the
+ * owner credit-approval gate. This client does not self-gate (it stays a thin
+ * client); the recognize route owns both gates.
+ *
+ * @param image  raw image bytes (Buffer) — the caller validated size + MIME.
+ * @param mime   validated MIME type (e.g. "image/jpeg").
+ * @param games  optional TCG scope (e.g. ["pokemon"]) for faster/accurate match.
  */
-export async function identifyCard(imageBase64: string): Promise<ScrydexIdentifyResult | null> {
-  void imageBase64;
-  return null;
+export async function identifyCard(
+  image: Buffer,
+  mime: string,
+  games?: string[]
+): Promise<ScrydexIdentifyResult | null> {
+  if (!process.env.SCRYDEX_API_KEY || !process.env.SCRYDEX_TEAM_ID) return null;
+  try {
+    const form = new FormData();
+    const ext = mime.split("/")[1] || "jpg";
+    form.append(
+      "image",
+      new Blob([new Uint8Array(image)], { type: mime }),
+      `scan.${ext}`
+    );
+    if (games && games.length) form.append("games", games.join(","));
+
+    const res = await fetch(`${SCRYDEX_BASE_URL}/vision/v1/cards/identify`, {
+      method: "POST",
+      headers: scrydexHeaders(), // X-Api-Key + X-Team-ID; do NOT set Content-Type (Blob sets the multipart boundary)
+      body: form,
+    });
+    if (!res.ok) {
+      console.warn(`[scrydex] vision identify HTTP ${res.status}`);
+      return null;
+    }
+    const parsed = VisionResponseSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      console.warn(`[scrydex] vision parse failed: ${parsed.error.issues[0]?.message}`);
+      return null;
+    }
+    const top = parsed.data.data.matches[0];
+    if (!top?.card?.id) return null; // honest no-match
+    return {
+      cardId: top.card.id,
+      confidence: typeof top.score === "number" ? top.score : 0,
+      name: top.card.name ?? "",
+      setCode: "",
+    };
+  } catch (err) {
+    console.warn("[scrydex] vision identify error:", err instanceof Error ? err.message : err);
+    return null;
+  }
 }
+

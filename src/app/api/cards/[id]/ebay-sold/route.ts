@@ -1,27 +1,46 @@
 /**
- * GET /api/cards/[id]/ebay-sold — real eBay listings for a card, powering
- * the "Sellers on the Floor" section on the card detail page.
+ * GET /api/cards/[id]/ebay-sold — real eBay SOLD records for a card, powering
+ * the "Recent Sales" section on the card detail page.
  *
- * `[id]` is the external card id (used only for the cache key / game hint).
- * Card identity is passed as query params so we don't need a get-by-id
- * lookup:
- *   ?name=Charizard&set=Obsidian%20Flames&grade=PSA%2010&game=pokemon
+ * SOURCE (plan §4): Scrydex's documented sold-listings endpoint
+ * `GET /{slug}/v1/cards/{scrydexId}/listings` (filtered to `source=ebay`).
+ * These are REAL SOLD records (each carries `sold_at`). We NEVER fall back to
+ * active listings and NEVER fabricate sales — an empty/unavailable result shows
+ * "No recent sales found".
  *
- * NOTE — active listings, not sold history: eBay's Browse API has no
- * sold/completed filter (sold data lives behind the restricted Marketplace
- * Insights API). So this returns REAL, CURRENT listings for the card —
- * genuine eBay data, never mocked. Cached 1h to respect rate limits.
+ * `[id]` is the EXTERNAL card id (route param + cache key). We look up the
+ * card to get its Scrydex-returned id (`scrydexId`) because the Scrydex
+ * listings endpoint keys on that id, not externalId (ID mapping unverified —
+ * Audit L0; we use the stored scrydexId the resolver cached).
  *
- * Response (200): { listings: EbaySellerListing[], source: "cache"|"live" }
- * On any failure: { listings: [], error } with 200 so the UI shows
- * "No recent sales found" rather than crashing.
+ * CREDIT: a listings call is 1 Scrydex credit, so it is OWNER-APPROVAL-GATED.
+ * When live spend isn't approved (or no scrydexId is cached, or Scrydex is
+ * unavailable) we return an empty list with a reason — the UI shows the empty
+ * state, never active listings.
+ *
+ * Always 200 so the detail page renders regardless. Cached 24h (shared per-card
+ * so repeat views don't re-spend credits).
  */
 
 import { NextResponse, type NextRequest } from "next/server";
-import { searchEbaySellerListings, type EbayGame } from "@/lib/services/ebay.service";
+import { prisma } from "@/lib/db";
+import { fetchScrydexSoldListings } from "@/lib/services/scrydex.service";
+import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
 import { redis, RedisKeys } from "@/lib/redis";
 
-const CACHE_TTL_SECONDS = 3600; // 1 hour
+const CACHE_TTL_SECONDS = 24 * 60 * 60; // 24h shared per-card cache
+
+interface SoldRecord {
+  itemId: string;
+  source: string | null;
+  title: string | null;
+  price: number | null;
+  currency: string | null;
+  soldAt: string | null;
+  grade: string | null;
+  company: string | null;
+  url: string | null;
+}
 
 export async function GET(
   request: NextRequest,
@@ -29,37 +48,64 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await params;
   const sp = request.nextUrl.searchParams;
-  const name = (sp.get("name") ?? "").trim();
-  const set = (sp.get("set") ?? "").trim();
-  const number = (sp.get("number") ?? "").trim();
-  const gameParam = sp.get("game");
-  const game: EbayGame = gameParam === "onepiece" ? "onepiece" : "pokemon";
+  const grade = (sp.get("grade") ?? "").trim();
+  const variant = (sp.get("variant") ?? "").trim();
 
-  if (!name) {
-    return NextResponse.json({ listings: [], error: "Missing card name" }, { status: 200 });
-  }
+  const cacheKey = RedisKeys.ebaySold(["scrydex", id, grade, variant].join("|"));
 
-  // The card NUMBER is the strongest search token — the "125/197" print for
-  // Pokémon, the Bandai code (OP01-001) for One Piece (which is exactly `id`).
-  // Prefer the passed `number`; fall back to `id` for One Piece where the id
-  // IS the code. The service decides how to weight it per game, and (crucially
-  // for One Piece) drops the set/grade phrases that used to zero out results.
-  const cardNumber = number || (game === "onepiece" ? id : "");
-  const searchParams = { name, game, ...(set ? { set } : {}), ...(cardNumber ? { number: cardNumber } : {}) };
-  const cacheKey = RedisKeys.ebaySold([id, name, set, cardNumber, game].join("|"));
-
-  // Best-effort cache read; a Redis miss/outage falls through to live.
+  // Shared cache read (best-effort). A hit avoids re-spending the credit.
   try {
     const cached = await redis.get(cacheKey);
     if (cached) {
-      return NextResponse.json({ listings: JSON.parse(cached), source: "cache" }, { status: 200 });
+      return NextResponse.json(
+        { listings: JSON.parse(cached) as SoldRecord[], source: "cache" },
+        { status: 200 }
+      );
     }
   } catch (err) {
     console.warn("[cards/ebay-sold] cache read failed:", err instanceof Error ? err.message : err);
   }
 
+  // Resolve the Scrydex id (listings endpoint keys on it). No scrydexId cached
+  // yet → honest empty (we don't guess the id, Audit L0).
+  const card = await prisma.card.findFirst({
+    where: { OR: [{ externalId: id }, { id }] },
+    select: { scrydexId: true, game: true },
+  });
+  if (!card?.scrydexId) {
+    return NextResponse.json(
+      { listings: [], reason: "no-scrydex-id" },
+      { status: 200 }
+    );
+  }
+
+  // Credit gate — a listings call costs 1 credit; refuse unless approved.
+  if (!(await isScrydexLiveApproved())) {
+    return NextResponse.json(
+      { listings: [], reason: "pending-approval" },
+      { status: 200 }
+    );
+  }
+
   try {
-    const listings = await searchEbaySellerListings(searchParams, 4);
+    const raw = await fetchScrydexSoldListings(card.scrydexId, card.game, {
+      source: "ebay",
+      ...(grade ? { grade } : {}),
+      ...(variant ? { variant } : {}),
+      pageSize: 8,
+    });
+    const listings: SoldRecord[] = (raw ?? []).map((l) => ({
+      itemId: l.id ?? `${l.sold_at}-${l.price}`,
+      source: l.source ?? null,
+      title: l.title ?? null,
+      price: typeof l.price === "number" ? l.price : null,
+      currency: l.currency ?? null,
+      soldAt: l.sold_at ?? null,
+      grade: l.grade ?? null,
+      company: l.company ?? null,
+      url: l.url ?? null,
+    }));
+
     try {
       await redis.set(cacheKey, JSON.stringify(listings), "EX", CACHE_TTL_SECONDS);
     } catch (err) {
@@ -67,8 +113,8 @@ export async function GET(
     }
     return NextResponse.json({ listings, source: "live" }, { status: 200 });
   } catch (err) {
-    // eBay down / rate-limited / bad creds → graceful empty, never crash.
-    console.error("[cards/ebay-sold] eBay call failed:", err instanceof Error ? err.message : err);
-    return NextResponse.json({ listings: [], error: "eBay unavailable" }, { status: 200 });
+    // Scrydex down / error → graceful empty, never active listings, never crash.
+    console.error("[cards/ebay-sold] scrydex listings failed:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ listings: [], reason: "unavailable" }, { status: 200 });
   }
 }

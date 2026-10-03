@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
   pricingHistory: { count: vi.fn(), createMany: vi.fn() },
   currentPrice: { upsert: vi.fn() },
   card: { update: vi.fn() },
+  // Lazy cost-basis resolution writes to userCollection.updateMany after a
+  // successful priced pull (plan §5) — mock it so the resolver path runs.
+  userCollection: { updateMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -72,6 +75,7 @@ beforeEach(() => {
   prismaMock.currentPrice.upsert.mockResolvedValue({});
   prismaMock.syncLog.create.mockResolvedValue({});
   prismaMock.card.update.mockResolvedValue({});
+  prismaMock.userCollection.updateMany.mockResolvedValue({ count: 0 });
 });
 
 describe("pullAndStoreScrydexPrice — fresh pull (AC-9/12)", () => {
@@ -200,9 +204,13 @@ describe("pullAndStoreScrydexPrice — failed pull (AC-12)", () => {
   });
 });
 
-describe("pullAndStoreScrydexPrice — first-pull trend backfill (AC-10)", () => {
-  it("writes scrydex-trend points ONLY on the first pull (no existing series)", async () => {
-    prismaMock.pricingHistory.count.mockResolvedValue(0); // first pull
+describe("pullAndStoreScrydexPrice — NO fabricated history (Req 7.2/7.3)", () => {
+  // The scrydex-trend derivation is REMOVED. A pull writes EXACTLY ONE real
+  // PricingHistory snapshot (source="scrydex") and never derives prior points
+  // from trend deltas, even when trends are present. Real multi-point history
+  // now comes from the documented price_history endpoint (not exercised here;
+  // it is a credit-metered call gated behind Owner_Approval).
+  it("writes ONLY the single real snapshot even when trend deltas are present", async () => {
     scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
     scrydexMock.pickRawPrice.mockReturnValue({
       ...RAW,
@@ -215,23 +223,12 @@ describe("pullAndStoreScrydexPrice — first-pull trend backfill (AC-10)", () =>
 
     await pullAndStoreScrydexPrice(CARD);
 
-    // Two createMany calls: the fresh snapshot, then the trend backfill.
-    expect(prismaMock.pricingHistory.createMany).toHaveBeenCalledTimes(2);
-    const trendArg = prismaMock.pricingHistory.createMany.mock.calls[1][0];
-    expect(trendArg.data.every((p: { source: string }) => p.source === "scrydex-trend")).toBe(true);
-    expect(trendArg.data).toHaveLength(3);
-  });
-
-  it("does NOT backfill when a series already exists", async () => {
-    prismaMock.pricingHistory.count.mockResolvedValue(5); // existing series
-    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
-    scrydexMock.pickRawPrice.mockReturnValue({
-      ...RAW,
-      trends: { days_1: { price_change: -5 } },
-    });
-
-    await pullAndStoreScrydexPrice(CARD);
-
-    expect(prismaMock.pricingHistory.createMany).toHaveBeenCalledTimes(1); // snapshot only
+    // Exactly one createMany (the real snapshot) — no second trend-backfill call.
+    expect(prismaMock.pricingHistory.createMany).toHaveBeenCalledTimes(1);
+    const snapshotArg = prismaMock.pricingHistory.createMany.mock.calls[0][0];
+    expect(snapshotArg.data.every((p: { source: string }) => p.source === "scrydex")).toBe(true);
+    expect(
+      snapshotArg.data.some((p: { source: string }) => p.source === "scrydex-trend")
+    ).toBe(false);
   });
 });

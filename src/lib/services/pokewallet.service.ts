@@ -13,6 +13,12 @@
  * price attempt. PokéWallet/BerryWallet only FILL price gaps. No path throws
  * to the sync engine — a failed fetch yields an empty Map / null so a missing
  * price simply stays `null` (AGENTS.md graceful degradation + never fabricate).
+ *
+ * PLAN CONSTRAINT (§1, §5): PokéWallet is permitted ONLY as a fallback for the
+ * CURRENT price when Scrydex has none. It is NEVER a source of price HISTORY,
+ * eBay SOLD records, or POPULATION. This module therefore exposes only
+ * current-price getters and deliberately has no history/sold/population
+ * producer — do not add one here.
  */
 import { z } from "zod";
 

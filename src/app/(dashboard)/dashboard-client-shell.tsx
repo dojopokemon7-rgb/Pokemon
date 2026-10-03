@@ -77,14 +77,7 @@ function UserIcon() {
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  );
-}
+// (SearchIcon removed — the top-line search icon was dropped per plan §4.)
 
 // ── Nav item definition ────────────────────────────────────────────
 // "Explore" routes to /search — per the reference, the fourth tab's
@@ -213,19 +206,9 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           {/* Spacer pushes the icons to the right. */}
           <div style={{ flex: 1 }} />
 
-          {/* Right icons */}
-          <Link
-            href="/search"
-            style={{
-              color: "rgba(255,255,255,0.6)",
-              display: "flex",
-              alignItems: "center",
-              textDecoration: "none",
-            }}
-            aria-label="Search"
-          >
-            <SearchIcon />
-          </Link>
+          {/* Right icons. The top-line Search icon was REMOVED per the plan
+              (§4): it duplicated the bottom-nav "Explore" tab, which already
+              routes to /search. Notifications remain. */}
           <NotificationsPanel />
         </header>
 

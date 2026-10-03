@@ -58,14 +58,16 @@ function toPopupCard(item: CollectionItem): CardDetailsData {
 
 type TabId = "mv" | "coll" | "gain" | "lose" | "buy" | "sell" | "trade";
 
+// Plan §6: the Want-to-Buy / Want-to-Sell / Want-to-Trade INTENT sections are
+// REMOVED from the dashboard — both lists live on the dedicated /wantlist page.
+// The TabId union keeps the intent values (other code still references them for
+// the want-list total card + deep links), but they are no longer offered as
+// dashboard tabs here.
 const TABS: { id: TabId; label: string }[] = [
   { id: "mv", label: "Most Valuable" },
   { id: "coll", label: "Collections" },
   { id: "gain", label: "Gainers" },
   { id: "lose", label: "Losers" },
-  { id: "buy", label: "Want to Buy" },
-  { id: "sell", label: "Want to Sell" },
-  { id: "trade", label: "Want to Trade" },
 ];
 
 // Want-list item shape from GET /api/want-list (service resolves name /
@@ -99,52 +101,9 @@ type RangeId = (typeof RANGES)[number];
 //   3M  smoother quarterly trend, denser
 //   6M  half-year climb with heavier volatility
 //   MAX steepest growth curve, densest series
-// TODO Week 3: Replace with real PricingHistory data from Postgres.
-const RANGE_SHAPES: Record<
-  RangeId,
-  { startFraction: number; volatility: number; trend: number; points: number; seed: number }
-> = {
-  "1D": { startFraction: 0.98, volatility: 0.006, trend: 0.0004, points: 24, seed: 11 },
-  "7D": { startFraction: 0.92, volatility: 0.015, trend: 0.002,  points: 28, seed: 23 },
-  "1M": { startFraction: 0.78, volatility: 0.020, trend: 0.008,  points: 30, seed: 47 },
-  "3M": { startFraction: 0.68, volatility: 0.017, trend: 0.005,  points: 45, seed: 71 },
-  "6M": { startFraction: 0.55, volatility: 0.022, trend: 0.004,  points: 60, seed: 97 },
-  "MAX": { startFraction: 0.30, volatility: 0.025, trend: 0.006, points: 80, seed: 131 },
-};
-
-// Small deterministic PRNG so switching ranges shows a stable shape
-// per range (not a fresh random line on every render).
-function mulberry32(seed: number): () => number {
-  let a = seed;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function generateMockChartData(baseValue: number, range: RangeId, seedOffset: number = 0): { value: number }[] {
-  const { startFraction, volatility, trend, points, seed } = RANGE_SHAPES[range];
-  const rand = mulberry32(seed + seedOffset);
-  const start = baseValue * startFraction;
-  const step = points > 1 ? (baseValue - start) / (points - 1) : 0;
-  const data: { value: number }[] = [];
-  let value = start;
-  for (let i = 0; i < points; i++) {
-    // Base drift so the series ends near `baseValue`
-    const drift = step * i * (1 + trend * points);
-    // Random walk around the drift line
-    const noise = (rand() - 0.5) * baseValue * volatility * 2;
-    value = Math.max(baseValue * 0.1, start + drift + noise);
-    data.push({ value: Math.round(value * 100) / 100 });
-  }
-  // Pin the last point exactly on baseValue so the visible "market value"
-  // number and the chart's right edge always agree.
-  data[data.length - 1] = { value: baseValue };
-  return data;
-}
+// The synthetic chart generator (RANGE_SHAPES / mulberry32 / generateMockChartData)
+// was REMOVED (plan §6): the comparison chart now draws from REAL stored history
+// only, with honest gaps and no fabricated/interpolated series.
 
 // Deterministic mock delta — seeded by a stable string (e.g. item id) so
 // SSR and client render the SAME value and React hydration doesn't mismatch.
@@ -231,6 +190,32 @@ function MultiLineComparisonChart({
 
   // Global bounds across all series for aligned comparison
   const allValues = seriesList.flatMap((s) => s.data.map((d) => d.value));
+
+  // Honest empty state (plan §6): with real-history-only data a brand-new or
+  // priceless collection has no points. Rather than fabricate a line (or render
+  // NaN SVG coords from Math.min([])), show a clear "no history yet" message.
+  if (allValues.length === 0) {
+    return (
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--color-dojo-faint)",
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontSize: "12px",
+        }}
+        role="img"
+        aria-label="No price history yet"
+      >
+        No price history yet
+      </div>
+    );
+  }
+
   const rawMin = Math.min(...allValues);
   const rawMax = Math.max(...allValues);
   const pad = (rawMax - rawMin) * 0.08 || 1;
@@ -852,23 +837,30 @@ export default function DashboardClient({
     staleTime: 60_000,
   });
 
-  // Multi-line chart series: one curve per selected collection ending at its market value
+  // Multi-line chart series: one curve per selected collection, drawn from REAL
+  // stored history only (plan §6). The fabricated `generateMockChartData`
+  // fallback is REMOVED — if a collection has no (or one) real history point we
+  // render the real points as-is (a short/flat line) rather than inventing a
+  // synthetic trend. A collection with no points yet shows no line (honest gap),
+  // never a made-up curve. Never summed — one series per collection.
   const chartSeriesList = useMemo(() => {
-    return activeSelectedOptions.map((opt, idx) => {
-      const realHistory = realHistoriesData?.histories?.[opt.id];
-      const data = realHistory && realHistory.length >= 1 // finding #5: one real add-snapshot point renders a real (short/flat) line
-        ? realHistory
-        : (opt.marketValue > 0
-            ? generateMockChartData(opt.marketValue, activeRange, idx * 37)
-            : [{ value: 0 }, { value: 0 }]);
+    return activeSelectedOptions.map((opt) => {
+      const raw: { date?: string; value: number | null }[] =
+        realHistoriesData?.histories?.[opt.id] ?? [];
+      // Drop honest gaps (null values) — a gap is simply absent from the drawn
+      // line, never rendered as 0. Real points only.
+      const data = raw
+        .filter((p): p is { date?: string; value: number } => typeof p.value === "number")
+        .map((p) => ({ value: p.value }));
       return {
         id: opt.id,
         name: opt.name,
         color: opt.color,
+        // Empty → the chart's "No price history yet" state for this series set.
         data,
       };
     });
-  }, [activeSelectedOptions, activeRange, realHistoriesData]);
+  }, [activeSelectedOptions, realHistoriesData]);
 
   // Active tab card rows
   const getActiveRows = () => {

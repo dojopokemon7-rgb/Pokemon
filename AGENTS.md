@@ -142,15 +142,15 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 | Stub | Status |
 |---|---|
 | NotificationsPanel | UI-only empty state; future `GET /api/notifications` is a data-only change |
-| Population report | Deterministic REFERENCE data, `source: "reference"`; `fetchPsaPopulation()` is the seam for a real API |
+| Population report | REWRITTEN (scrydex-migration): PSA English only (Scrydex `include=pop_reports`), BGS unavailable; `getStoredPopulationReport` returns null until a real manual refresh — NO fabricated/reference data (the old REFERENCE_POPULATION was removed) |
 | Dashboard chart data | Synthetic shapes (deterministic PRNG); real `PricingHistory` exists only for 10 harness cards |
 | Chart accuracy gate | Validates against a MOCKED Collectr reference in `scripts/compare-chart-accuracy.ts` |
 | Graded metadata | Stored in `UserCollection.condition` ("PSA 10") + `Card.rarity`; dedicated grade columns are the planned migration |
 | `/admin/transactions` | Mock ledger mixing real users + synthetic rows, clearly banner-labeled |
-| `/profile` onboarding | Not persisted (localStorage flag only) |
-| `PATCH /api/users/me` | 501 stub |
+| Onboarding | NOW account-persisted (scrydex-migration): `User.onboardingCompletedAt` + `GET/POST /api/users/me/onboarding` (idempotent; continue→/collection/add, skip→/dashboard). Replaces the old localStorage flag — survives across devices |
+| `PATCH /api/users/me` | 501 stub (profile edit still pending; `User.displayCurrency` column added for USD/EUR but PATCH not yet wired) |
 | OTP/phone auth | Plugin disabled for MVP (no SMS provider); `/otp`, `/verify-otp` redirect to `/profile` |
-| "Sellers on the Floor" | ACTIVE eBay listings, not sold history (Browse API has no sold filter; Marketplace Insights is the upgrade path) |
+| "Recent Sales" (was "Sellers on the Floor") | REPLACED (scrydex-migration): real Scrydex eBay SOLD records via documented `/listings` (credit-gated, source=ebay, sold_at only); "No recent sales found" when empty — NEVER active listings |
 | `FindOnEbayLink.tsx` | Orphaned on purpose (client wanted users kept in-app); kept for future use |
 | Redis in dev | App runs fine WITHOUT Redis; non-fatal `[Redis] … falling through` logs are expected |
 | Card `set` filter | Matches set NAME (not id) — known limitation |
@@ -186,8 +186,17 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
   invalidates `["collection"]` + `["portfolio-collection"]`; want-list mutations
   invalidate the whole `["want-list"]` family. Full table: docs/ARCHITECTURE.md.
 - **External APIs**: pokemontcg.io, tcgdex, scrydex (Pokémon chain); apitcg,
-  cardmarket (One Piece chain); eBay Browse API (sandbox default!); PSA public
-  cert API; Google Vision; TCG Collector + Cardmarket (clean One Piece images).
+  cardmarket (One Piece chain); PSA public cert API; **Scrydex Vision**
+  (`POST /vision/v1/cards/identify`, replaced Google Vision); exchangerate.host
+  (daily FX for current-price display only); TCG Collector + Cardmarket (clean
+  One Piece images). eBay Browse active-listings is NO LONGER used for card-detail
+  sold records — those come from Scrydex `/listings`.
+- **Scrydex credit gate (scrydex-migration, load-bearing)**: every live
+  credit-consuming Scrydex call (price_history 3cr, Vision 5cr, listings 1cr,
+  bulk refresh) MUST pass `scrydex-credit-gate.ts` — DENY by default; approve via
+  env `SCRYDEX_LIVE_CREDITS_APPROVED=true` or Redis `scrydex:credit-approval`.
+  Never bypass it. Scan allowance = `User.scanCount` (lifetime 10 successful,
+  `SCAN_LIMIT`-configurable), atomic `updateMany where scanCount<limit`.
   Env vars table: docs/ARCHITECTURE.md §Environment.
 - **Daily sync**: `GET /api/cron/sync-cards` (Vercel cron 02:00 UTC,
   `CRON_SECRET`-guarded) → `runCardSync()` — max 10 stale sets/run, 7-day staleness,

@@ -1,25 +1,24 @@
 /**
  * Population report data for the card detail page.
  *
- * Source reality (verified against PSA docs + multiple 2026 sources):
- *   - The PSA *public* API (the key we have) is cert-verification only and
- *     has NO population endpoint. Real per-card pop data is only available
- *     via paid providers (PSA Marketplace Insights / PokeInvest / GemRate).
- *   - Our database has no population table either.
+ * PLAN CONSTRAINT (§1, §4): population is a Scrydex capability requested with
+ * `include=pop_reports`, and Scrydex's PUBLIC coverage is **Pokémon PSA English
+ * only** (docs/SCRYDEX_AUDIT.md). Therefore:
+ *   - **BGS population is UNAVAILABLE** under documented coverage — we never
+ *     present it as available and never fabricate BGS counts.
+ *   - **PSA English population is CONDITIONAL** — shown only where Scrydex
+ *     actually returns pop data for the card, and only on an explicit MANUAL
+ *     refresh (never on page load / search / scheduled sync).
+ *   - We NEVER invent population numbers. No reference/sample data. When no real
+ *     data is available the caller renders a fallback state (plan: "if a provider
+ *     has no value, the app must not invent one").
  *
- * So this module returns REFERENCE population data (the same shape the
- * detail page rendered before) as a graceful fallback, so the section shows
- * a grade breakdown "like it did before" rather than an empty state. The
- * `source` field is honest about where the numbers came from:
- *   - "psa"       → real PSA population (only when a real pop API is wired)
- *   - "reference" → sample reference data (current fallback)
+ * The previous REFERENCE_POPULATION sample (incl. fabricated BGS counts) was
+ * REMOVED for this reason.
  *
- * When a real population API is added, implement `fetchPsaPopulation()` to
- * return `source: "psa"` and this fallback is bypassed automatically.
- *
- * ponytail: reference (sample) pop data as fallback — a known corner cut.
- * Upgrade path: a paid population API (Marketplace Insights / GemRate),
- * then delete REFERENCE_POPULATION and return real per-card counts.
+ * Live Scrydex population is a credit-consuming call (1 credit, `include=
+ * pop_reports`), so the real fetch is OWNER-APPROVAL-GATED (scrydex-credit-gate)
+ * and wired through the manual-refresh action — not performed here on read.
  */
 
 export interface PopulationGrade {
@@ -28,89 +27,50 @@ export interface PopulationGrade {
 }
 
 export interface PopulationCompany {
-  company: "PSA" | "BGS";
+  company: "PSA";
+  /** Language scope of the coverage; Scrydex public = English only. */
+  language: "English";
   total: number;
   grades: PopulationGrade[];
 }
 
 export interface PopulationReport {
-  source: "psa" | "reference";
+  /** Always "scrydex" when present — reference/fabricated data is not produced. */
+  source: "scrydex";
   companies: PopulationCompany[];
+  /** When the data was last refreshed (manual action). */
+  refreshedAt: string;
 }
 
 /** Full grade ladder the UI renders (highest → Auth), per the design. */
 const GRADE_LADDER = ["10", "9", "8", "7", "6", "5", "4", "3", "2", "1.5", "1", "Auth"] as const;
 
-/** Sample reference distribution — the same profile the page showed before,
- *  expanded across the full grade ladder. Deterministic (not random) so the
- *  section is stable per render. */
-const REFERENCE_POPULATION: PopulationReport = {
-  source: "reference",
-  companies: [
-    {
-      company: "PSA",
-      total: 983,
-      grades: [
-        { grade: "10", count: 945 },
-        { grade: "9", count: 28 },
-        { grade: "8", count: 4 },
-        { grade: "7", count: 3 },
-        { grade: "6", count: 1 },
-        { grade: "5", count: 1 },
-        { grade: "4", count: 0 },
-        { grade: "3", count: 0 },
-        { grade: "2", count: 0 },
-        { grade: "1.5", count: 0 },
-        { grade: "1", count: 1 },
-        { grade: "Auth", count: 0 },
-      ],
-    },
-    {
-      company: "BGS",
-      total: 468,
-      grades: [
-        { grade: "10", count: 367 },
-        { grade: "9", count: 92 },
-        { grade: "8", count: 5 },
-        { grade: "7", count: 2 },
-        { grade: "6", count: 1 },
-        { grade: "5", count: 1 },
-        { grade: "4", count: 0 },
-        { grade: "3", count: 0 },
-        { grade: "2", count: 0 },
-        { grade: "1.5", count: 0 },
-        { grade: "1", count: 0 },
-        { grade: "Auth", count: 0 },
-      ],
-    },
-  ],
-};
-
 /**
- * Attempts to fetch REAL population data. The PSA public API has no pop
- * endpoint, so this always returns null today — it's the seam where a paid
- * population API gets wired in later. Never throws.
+ * Returns the STORED population report for a card, or null when none has been
+ * refreshed. This is a pure read — it never performs a live credit-consuming
+ * fetch. The manual-refresh action (owner-approval-gated) is what populates the
+ * store; until then this returns null and the UI shows the fallback state.
+ *
+ * NOTE: a persistent population store is a follow-up (plan §4 keeps population
+ * manual-only and out of the 24h price schedule). Until that store exists this
+ * honestly returns null rather than fabricating — which is the correct,
+ * non-inventing behaviour.
  */
-async function fetchPsaPopulation(): Promise<PopulationReport | null> {
-  // No real population source is available on the configured PSA key.
-  // TODO: when a paid pop API (Marketplace Insights / GemRate) is added,
-  // fetch per-card counts here and return { source: "psa", companies }.
+export async function getStoredPopulationReport(
+  _cardId: string
+): Promise<PopulationReport | null> {
+  // No fabricated fallback. BGS is never returned (unavailable coverage).
+  // PSA English is returned only from real stored Scrydex data, which does not
+  // exist until a manual, approved refresh persists it.
+  void _cardId;
   return null;
 }
 
 /**
- * Resolves a population report: PSA primary, reference fallback. Only
- * returns null when BOTH are empty (which, with the reference fallback
- * present, means never — the caller still guards for it).
+ * BGS population availability under current documented Scrydex coverage.
+ * Exported so the UI can show an explicit "not available for BGS" state rather
+ * than an empty grid that reads like "zero population".
  */
-export async function getPopulationReport(): Promise<PopulationReport | null> {
-  try {
-    const psa = await fetchPsaPopulation();
-    if (psa && psa.companies.some((c) => c.total > 0)) return psa;
-  } catch {
-    // fall through to reference
-  }
-  return REFERENCE_POPULATION;
-}
+export const BGS_POPULATION_SUPPORTED = false as const;
 
 export { GRADE_LADDER };

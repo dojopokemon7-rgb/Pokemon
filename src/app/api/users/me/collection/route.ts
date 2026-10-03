@@ -35,11 +35,17 @@ export async function GET(request: Request): Promise<NextResponse> {
         notes: true,
         isFoil: true,
         purchasePrice: true,
+        // Cost-basis provenance (plan §5): lets the UI show "unresolved" P&L
+        // honestly instead of a fabricated 0 when purchasePrice is null.
+        costBasisSource: true,
+        costBasisCurrency: true,
+        costBasisAttemptedAt: true,
         // F-22: which named collection this copy is filed under (null =
         // uncategorized) — drives the Compare Collections stats.
         collectionId: true,
         isSold: true,
         soldPrice: true,
+        soldCurrency: true,
         soldAt: true,
         addedAt: true,
         updatedAt: true,
@@ -222,7 +228,27 @@ export async function POST(request: Request): Promise<NextResponse> {
         });
       }
 
-      const purchasePrice = item.purchasePrice ?? item.marketPrice ?? card.marketPrice ?? null;
+      // Cost-basis capture (plan §5): prefer the user-entered price, else
+      // SNAPSHOT the current price at add-time. Record the SOURCE + CURRENCY +
+      // attempt timestamp so an unresolved basis (null) is distinguishable from
+      // "never tried" and never silently becomes 0. We never fabricate a cost.
+      const snapshotPrice = item.marketPrice ?? card.marketPrice ?? null;
+      let purchasePrice: number | null;
+      let costBasisSource: string | null;
+      if (item.purchasePrice != null) {
+        purchasePrice = item.purchasePrice;
+        costBasisSource = "user";
+      } else if (snapshotPrice != null && snapshotPrice > 0) {
+        purchasePrice = snapshotPrice;
+        costBasisSource = "add-snapshot";
+      } else {
+        // No usable price → UNRESOLVED (null + attempt marker). A later price
+        // fetch can lazily resolve it; until then P&L shows "unresolved".
+        purchasePrice = null;
+        costBasisSource = "unresolved";
+      }
+      const costBasisCurrency = purchasePrice != null ? "USD" : null;
+      const costBasisAttemptedAt = new Date();
       const addedAt = addedAtByExternalId.get(item.externalId) ?? new Date();
 
       // Look for an existing active (not sold) copy of this card for the user
@@ -255,6 +281,16 @@ export async function POST(request: Request): Promise<NextResponse> {
             quantity: existingItem.quantity + item.quantity,
             ...(item.condition ? { condition: item.condition } : {}),
             collectionId: item.collectionId ?? null,
+            // Only (re)set cost basis on an existing lot when the user supplied
+            // one — don't overwrite a resolved basis with a fresh snapshot.
+            ...(item.purchasePrice != null
+              ? {
+                  purchasePrice: item.purchasePrice,
+                  costBasisSource: "user",
+                  costBasisCurrency: "USD",
+                  costBasisAttemptedAt,
+                }
+              : {}),
             addedAt,
           },
         });
@@ -267,6 +303,9 @@ export async function POST(request: Request): Promise<NextResponse> {
             isFoil: item.isFoil,
             condition: item.condition ?? null,
             purchasePrice,
+            costBasisSource,
+            costBasisCurrency,
+            costBasisAttemptedAt,
             isSold: false,
             collectionId: item.collectionId ?? null,
             addedAt,

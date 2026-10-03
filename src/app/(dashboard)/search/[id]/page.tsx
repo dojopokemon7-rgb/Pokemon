@@ -293,41 +293,39 @@ function DojoChart({
 }
 
 // ── Sellers on the Floor (Task 6) ───────────────────────────────────
-// Real, current eBay listings for this card (seller / price / location /
-// listing URL) from /api/cards/[id]/ebay-sold. eBay's Browse API only
-// exposes active listings (no sold-history filter), so these are live
-// listings — genuine data, never mocked. Empty / error → "No recent sales
-// found".
-interface FloorListing {
+// Recent Sales — REAL eBay SOLD records from Scrydex's documented listings
+// endpoint (/api/cards/[id]/ebay-sold → Scrydex source=ebay, filtered to
+// records with sold_at). These are completed sales, NOT active listings — we
+// never fall back to active listings. Empty / unavailable / pending-approval →
+// "No recent sales found" (plan §4). Filtered by the selected grade/variant.
+interface SoldRecord {
   itemId: string;
-  sellerUsername: string | null;
-  price: number;
+  source: string | null;
+  title: string | null;
+  price: number | null;
   currency: string | null;
-  location: string | null;
-  itemWebUrl: string;
-  title: string;
+  soldAt: string | null;
+  grade: string | null;
+  company: string | null;
+  url: string | null;
 }
 
-function SellersOnFloor({
-  id, name, setName, rarity, number, game,
+function RecentSales({
+  id, setName, rarity, grade, variant,
 }: {
-  id: string; name: string; setName: string; rarity: string; number: string; game: "pokemon" | "onepiece";
+  id: string; setName: string; rarity: string; grade?: string; variant?: string;
 }) {
-  const { data, isLoading } = useQuery<{ listings: FloorListing[] }>({
-    queryKey: ["ebay-sold", id, name, setName, rarity, number, game],
+  const { data, isLoading } = useQuery<{ listings: SoldRecord[] }>({
+    queryKey: ["ebay-sold", id, grade ?? "", variant ?? ""],
     queryFn: async () => {
-      const qs = new URLSearchParams({ name, game });
-      if (setName) qs.set("set", setName);
-      // The card number is the strongest eBay token ("125/197" for Pokémon,
-      // the OP01-001 code for One Piece). The route weights it per game and,
-      // for One Piece, drops the set/rarity phrases that used to zero results.
-      if (number) qs.set("number", number);
+      const qs = new URLSearchParams();
+      if (grade) qs.set("grade", grade);
+      if (variant) qs.set("variant", variant);
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold?${qs.toString()}`);
       if (!res.ok) return { listings: [] };
       return res.json();
     },
-    staleTime: 60 * 60_000, // matches the route's 1h server cache
-    enabled: !!name,
+    staleTime: 24 * 60 * 60_000, // matches the route's 24h shared cache
   });
 
   const listings = data?.listings ?? [];
@@ -336,17 +334,17 @@ function SellersOnFloor({
   return (
     <>
       <div style={{ marginTop: "22px", display: "flex", alignItems: "baseline" }}>
-        <span style={heading}>Sellers on the Floor</span>
+        <span style={heading}>Recent Sales</span>
         {!isLoading && listings.length > 0 && (
           <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            {listings.length} listing{listings.length !== 1 ? "s" : ""}
+            {listings.length} sale{listings.length !== 1 ? "s" : ""}
           </span>
         )}
       </div>
 
       {isLoading ? (
         <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>Checking eBay…</span>
+          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>Checking sold records…</span>
         </div>
       ) : listings.length === 0 ? (
         <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
@@ -355,18 +353,18 @@ function SellersOnFloor({
       ) : (
         <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "2px 15px 6px" }}>
           {listings.map((l) => {
-            const seller = l.sellerUsername ?? "seller";
-            const sub = [l.location, setName, rarity].filter(Boolean).join(" · ");
-            const priceStr = l.price > 0 ? new Intl.NumberFormat("en-US", { style: "currency", currency: l.currency ?? "USD" }).format(l.price) : "—";
-            return (
-              <div key={l.itemId} style={{ display: "flex", alignItems: "center", gap: "11px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-                {/* Gold square avatar with the seller's initial. */}
-                <div aria-hidden="true" style={{ flex: "none", width: "34px", height: "34px", background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "15px" }}>
-                  {seller.charAt(0).toUpperCase()}
+            const soldLabel = l.soldAt ? new Date(l.soldAt.replace(/\//g, "-")).toLocaleDateString() : "";
+            const gradeLabel = l.company && l.grade ? `${l.company} ${l.grade}` : l.grade ?? "";
+            const sub = [gradeLabel, setName, rarity].filter(Boolean).join(" · ");
+            const priceStr = l.price != null && l.price > 0 ? new Intl.NumberFormat("en-US", { style: "currency", currency: l.currency ?? "USD" }).format(l.price) : "—";
+            const Row = (
+              <div style={{ display: "flex", alignItems: "center", gap: "11px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                <div aria-hidden="true" style={{ flex: "none", width: "34px", height: "34px", background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px" }}>
+                  {(l.source ?? "e").charAt(0).toUpperCase()}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    @{seller}
+                    Sold{soldLabel ? ` ${soldLabel}` : ""}
                   </div>
                   {sub && (
                     <div style={{ marginTop: "2px", fontSize: "10.5px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
@@ -374,12 +372,15 @@ function SellersOnFloor({
                 </div>
                 <div style={{ textAlign: "right", flex: "none" }}>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>{priceStr}</div>
-                  <a href={l.itemWebUrl} target="_blank" rel="noopener noreferrer" style={{ marginTop: "3px", display: "inline-block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}>
-                    View on Floor ›
-                  </a>
+                  {l.url && (
+                    <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ marginTop: "3px", display: "inline-block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}>
+                      View sale ›
+                    </a>
+                  )}
                 </div>
               </div>
             );
+            return <div key={l.itemId}>{Row}</div>;
           })}
         </div>
       )}
@@ -387,17 +388,18 @@ function SellersOnFloor({
   );
 }
 
-// ── Population report (PSA-primary, reference fallback) ─────────────
-// Fetches /api/cards/[id]/population, which tries a real PSA pop source
-// (none available on the public API today) then falls back to reference
-// data so the grade breakdown shows "like it did before". Only renders
-// "No population data available" if the API returns nothing at all.
-interface PopCompany { company: "PSA" | "BGS"; total: number; grades: { grade: string; count: number }[]; }
-interface PopReport { source: "psa" | "reference"; companies: PopCompany[]; }
+// ── Population report (PSA English only; BGS unavailable; no fabrication) ──
+// Plan §4: Scrydex public coverage is Pokémon PSA English only. We NEVER show
+// fabricated numbers. The GET is a pure read of STORED population; until a card
+// is refreshed (a manual, owner-approval-gated action) there is no data and we
+// show an honest fallback. BGS is explicitly "not available", not an empty grid.
+interface PopGrade { grade: string; count: number }
+interface PopCompany { company: "PSA"; language?: string; total: number; grades: PopGrade[] }
+interface PopReport { source: "scrydex"; companies: PopCompany[]; refreshedAt?: string }
 
 function PopulationReport({ id }: { id: string }) {
   const [grader, setGrader] = useState<"PSA" | "BGS">("PSA");
-  const { data, isLoading } = useQuery<{ report: PopReport | null }>({
+  const { data, isLoading } = useQuery<{ report: PopReport | null; bgsSupported?: boolean }>({
     queryKey: ["population", id],
     queryFn: async () => {
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/population`);
@@ -408,51 +410,66 @@ function PopulationReport({ id }: { id: string }) {
   });
 
   const report = data?.report ?? null;
+  const bgsSupported = data?.bgsSupported ?? false;
   const heading = { marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" as const, color: "var(--color-dojo-body)" };
-  const active = report?.companies.find((c) => c.company === grader) ?? report?.companies[0];
+  const panel = { marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" as const };
+  const faint = { fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" };
+  const psa = report?.companies.find((c) => c.company === "PSA") ?? null;
 
   return (
     <>
       <div style={heading}>Population report</div>
-      {isLoading ? (
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>Loading…</span>
+
+      {/* Grader toggle — PSA is supported, BGS is shown but marked unavailable. */}
+      <div style={{ display: "flex", gap: "10px", marginTop: "12px" }}>
+        {(["PSA", "BGS"] as const).map((c) => (
+          <button
+            key={c}
+            onClick={() => setGrader(c)}
+            style={{
+              display: "flex", flexDirection: "column", gap: "2px",
+              border: `1.5px solid ${grader === c ? "rgba(255,255,255,.55)" : "var(--color-dojo-stroke)"}`,
+              padding: "8px 14px", cursor: "pointer",
+              color: grader === c ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+              background: "transparent",
+            }}
+          >
+            <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px" }}>{c}</span>
+            <span style={{ fontSize: "11px", color: "var(--color-dojo-body)" }}>
+              {c === "PSA" ? "English" : "n/a"}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {grader === "BGS" ? (
+        // BGS population is not available under documented Scrydex coverage.
+        <div style={panel}>
+          <span style={faint}>BGS population isn’t available from our data provider</span>
         </div>
-      ) : !report || !active ? (
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>No population data available</span>
+      ) : isLoading ? (
+        <div style={panel}><span style={faint}>Loading…</span></div>
+      ) : !psa ? (
+        // Honest fallback: no stored PSA population yet (no fabricated numbers).
+        <div style={panel}>
+          <span style={faint}>No PSA population loaded yet</span>
         </div>
       ) : (
         <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "14px 15px 6px" }}>
-          <div style={{ display: "flex", gap: "10px" }}>
-            {report.companies.map((c) => (
-              <button
-                key={c.company}
-                onClick={() => setGrader(c.company)}
-                style={{
-                  display: "flex", flexDirection: "column", gap: "2px",
-                  border: `1.5px solid ${grader === c.company ? "rgba(255,255,255,.55)" : "var(--color-dojo-stroke)"}`,
-                  padding: "8px 14px", cursor: "pointer",
-                  color: grader === c.company ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
-                  background: "transparent",
-                }}
-              >
-                <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px" }}>{c.company}</span>
-                <span style={{ fontSize: "11px", color: "var(--color-dojo-body)" }}>{c.total.toLocaleString()} total</span>
-              </button>
-            ))}
+          <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px", color: "var(--color-dojo-ink)" }}>
+            PSA English · {psa.total.toLocaleString()} total
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", columnGap: "10px", marginTop: "10px" }}>
-            {active.grades.map((g) => (
+            {psa.grades.map((g) => (
               <div key={g.grade} style={{ padding: "10px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>{g.grade}</div>
                 <div style={{ marginTop: "4px", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", color: "var(--color-dojo-faint)" }}>{g.count.toLocaleString()}</div>
               </div>
             ))}
           </div>
-          {report.source === "reference" && (
+          {report?.refreshedAt && (
             <div style={{ marginTop: "8px", fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-              Typical grade distribution · live PSA/BGS population coming soon
+              Refreshed {new Date(report.refreshedAt).toLocaleDateString()}
             </div>
           )}
         </div>
@@ -1023,24 +1040,13 @@ function CardDetailInner() {
           )}
         </div>
 
-        {/* ── Population report (Task 2) — PSA primary, reference fallback ── */}
+        {/* ── Population report — PSA English only; BGS unavailable ── */}
         <PopulationReport id={id} />
 
-        {/* ── Sellers on the Floor (Task 6) — real eBay listings ── */}
-        <SellersOnFloor id={id} name={name} setName={setName} rarity={rarity} number={serialNumber} game={game} />
+        {/* ── Recent Sales — real Scrydex eBay SOLD records (never active) ── */}
+        <RecentSales id={id} setName={setName} rarity={rarity} />
 
-        {/* ── Accessories (Task 7 — kept) ── */}
-        <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-          Accessories
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "12px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-ink)" }}>3&quot;×4&quot; clear regular toploaders</div>
-            <div style={{ marginTop: "2px", fontSize: "11px", color: "var(--color-dojo-body)" }}>cardkeeper.supply</div>
-          </div>
-          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>$3.99</div>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", cursor: "pointer" }}>View</span>
-        </div>
+        {/* Accessories block REMOVED — it was dummy/hardcoded data (plan §4). */}
       </div>
 
       {/* Single toast channel — add confirmations, favorites feedback,

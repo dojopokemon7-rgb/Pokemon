@@ -82,9 +82,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
     const { isSold, soldPrice, soldQuantity, soldAt, purchasePrice, condition, collectionId, quantity } = parsed.data;
 
-    // Handle Mark as Sold
+    // Handle Mark as Sold.
+    // NOTE: the primary sale path is POST .../[id]/sell (gross-per-copy, partial
+    // splits, provenance). This PATCH branch is kept for the legacy UI control
+    // but must NOT fabricate a sale price: if no soldPrice is given and there is
+    // no market value to fall back to, we refuse rather than record a $0 sale.
     if (isSold === true) {
-      const price = soldPrice ?? existing.card.marketPrice ?? 0;
+      const price = soldPrice ?? existing.card.marketPrice ?? null;
+      if (price == null) {
+        return NextResponse.json(
+          { error: "Bad Request", message: "A sale price is required (no market value to default to)." },
+          { status: 400 }
+        );
+      }
       const saleDate = soldAt ? new Date(soldAt) : new Date();
       const qtyToSell = soldQuantity ?? existing.quantity;
 

@@ -1,20 +1,29 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
-import { detectTextWithVision, isVisionConfigured } from "@/lib/services/vision-ocr.service";
 import { recognize, type CatalogCard } from "@/lib/services/card-recognition.service";
 import { identifyCard } from "@/lib/services/scrydex.service";
+import {
+  getScanAllowance,
+  reserveSuccessfulScan,
+} from "@/lib/services/scan-allowance.service";
+import { base64ToBytes, validateScanUpload } from "@/lib/utils/scan-upload";
+import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
 
 /**
  * POST /api/cards/recognize
  *
  * Multi-signal card recognition (F-14). Accepts EITHER:
- *   - `image`: a base64 card photo — OCR'd server-side via Google Cloud
- *     Vision (TEXT_DETECTION). The Vision key is a server secret, so OCR
- *     can't run in the browser. When no Vision key is configured the route
- *     returns `ocrSource: "unavailable"` so the client falls back to
- *     on-device tesseract.js and re-submits the `text`.
+ *   - `image`: a base64 card photo — identified server-side via the Scrydex
+ *     Vision API (POST /vision/v1/cards/identify). The Scrydex key is a server
+ *     secret, so identification can't run in the browser. The image path is
+ *     session-scoped and governed by a lifetime successful-scan allowance
+ *     (plan §3), server-side upload validation (<=20MB, JPEG/PNG/WebP by
+ *     signature), and the owner credit-approval gate (Vision = 5 credits).
+ *     On no-match / provider-unavailable it returns `ocrSource: "unavailable"`
+ *     so the client falls back to on-device tesseract.js and re-submits `text`.
  *   - `text`: pre-extracted OCR text (tesseract fallback, or a manual query).
+ *     This path is anonymous and does NOT consume the scan allowance.
  *
  * The recognition ENGINE (card-recognition.service) scores every candidate
  * card on three independent signals — collector number (+50), set (+20), and
@@ -54,24 +63,98 @@ export async function POST(request: Request): Promise<NextResponse> {
   const b = body as { text?: unknown; image?: unknown; game?: unknown; source?: unknown } | null;
   const game = b?.game === "onepiece" || b?.game === "pokemon" ? b.game : undefined;
   const image = typeof b?.image === "string" ? b.image : "";
-  let text = typeof b?.text === "string" ? b.text.trim() : "";
-  let ocrSource: "vision" | "tesseract" | "manual" =
+  const text = typeof b?.text === "string" ? b.text.trim() : "";
+  const ocrSource: "vision" | "tesseract" | "manual" =
     b?.source === "tesseract" || b?.source === "manual" ? b.source : "vision";
 
-  // Vision path: an image was sent -> Use Scrydex Vision API.
+  // ======================================================================
+  // Vision path: an image was sent -> Scrydex Vision identify.
+  //
+  // Enforcement order (plan §3), each step SAFE and credit-aware:
+  //   1. Auth    — counted scans are session-scoped (userId from the server
+  //                session, never client-supplied).
+  //   2. Validate upload BEFORE any provider call: <=20MB + real MIME
+  //      (JPEG/PNG/WebP by signature). A bad upload burns NO credits and does
+  //      NOT consume the allowance.
+  //   3. Allowance — refuse when the lifetime successful-scan limit is reached.
+  //   4. Credit gate — Vision is a 5-credit live call; refuse unless owner has
+  //      approved live Scrydex credit spend. ("pending-approval" state.)
+  //   5. Identify — only now; a no-match returns the Tesseract fallback signal
+  //      and does NOT consume the allowance.
+  //   6. On SUCCESS — atomically reserve one allowance slot, then the image is
+  //      discarded (held in memory only; never persisted).
+  // ======================================================================
   if (image) {
-    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
-    const scrydexResult = await identifyCard(base64Data);
+    // 1. Auth — counted scans require a session.
+    const userId = await optionalUserId(request);
+    if (!userId) {
+      return NextResponse.json(
+        { success: false, error: "auth-required" },
+        { status: 401 }
+      );
+    }
+
+    // 2. Validate the upload server-side (actual bytes, not declared type).
+    const bytes = base64ToBytes(image);
+    const valid = validateScanUpload(bytes);
+    if (!valid.ok) {
+      // 400 for a client input error — no credits, no allowance consumed.
+      return NextResponse.json(
+        { success: false, error: valid.error }, // "too-large" | "unsupported" | "empty"
+        { status: 400 }
+      );
+    }
+
+    // 3. Allowance pre-check (fast refuse before any paid call).
+    const allowanceBefore = await getScanAllowance(userId);
+    if (allowanceBefore.remaining <= 0) {
+      return NextResponse.json(
+        { success: false, error: "limit-reached", scanAllowance: allowanceBefore },
+        { status: 200 }
+      );
+    }
+
+    // 4. Credit gate — never spend Vision credits without owner approval.
+    if (!(await isScrydexLiveApproved())) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "scan-pending-approval",
+          scanAllowance: allowanceBefore,
+        },
+        { status: 200 }
+      );
+    }
+
+    // 5. Identify (image used ONLY here; discarded after this scope).
+    const games = game ? [game] : undefined;
+    const scrydexResult = await identifyCard(
+      Buffer.from(bytes),
+      valid.mime!,
+      games
+    );
 
     if (!scrydexResult || !scrydexResult.cardId) {
-      // No server-side OCR available or failed — tell the client to run tesseract and
-      // re-submit as `text`. Not an error; a graceful fallback signal.
+      // No match / provider failure — NOT an allowance consumption. Tell the
+      // client to try on-device Tesseract and re-submit as `text`.
       return NextResponse.json({
         success: true,
         candidates: [],
         ocrSource: "unavailable",
         feedbackId: null,
+        scanAllowance: allowanceBefore,
       });
+    }
+
+    // 6. Successful identify — atomically reserve one allowance slot. The
+    //    conditional update is the concurrency guard; if a parallel scan took
+    //    the last slot we refuse rather than overrun.
+    const reservation = await reserveSuccessfulScan(userId);
+    if (!reservation.ok) {
+      return NextResponse.json(
+        { success: false, error: "limit-reached", scanAllowance: reservation.allowance },
+        { status: 200 }
+      );
     }
 
     const matchedCard = await prisma.card.findUnique({
@@ -79,26 +162,42 @@ export async function POST(request: Request): Promise<NextResponse> {
       include: { set: true },
     });
 
-    const candidates = matchedCard ? [{
-      id: matchedCard.externalId,
-      name: matchedCard.name,
-      set: matchedCard.set?.name ?? "",
-      imageUrl: matchedCard.imageUrl ?? matchedCard.imageUrlHi ?? "",
-      confidence: scrydexResult.confidence,
-    }] : [];
+    const candidates = matchedCard
+      ? [
+          {
+            id: matchedCard.externalId,
+            name: matchedCard.name,
+            set: matchedCard.set?.name ?? "",
+            imageUrl: matchedCard.imageUrl ?? matchedCard.imageUrlHi ?? "",
+            confidence: scrydexResult.confidence,
+          },
+        ]
+      : [];
 
-    // Log feedback
+    // Log feedback (match reference only — NEVER the image bytes).
     let feedbackId: string | null = null;
     try {
-      const userId = await optionalUserId(request);
       const row = await prisma.scanFeedback.create({
-        data: { userId, ocrText: `SCRYDEX_MATCH:${scrydexResult.cardId}`, ocrSource: "vision", candidates },
+        data: {
+          userId,
+          ocrText: `SCRYDEX_MATCH:${scrydexResult.cardId}`,
+          ocrSource: "vision",
+          candidates,
+        },
         select: { id: true },
       });
       feedbackId = row.id;
     } catch {}
 
-    return NextResponse.json({ success: true, candidates, feedbackId, ocrSource: "vision" });
+    // `bytes` / `image` go out of scope here — nothing is written to storage or
+    // the portfolio (plan §3: use for identification then discard).
+    return NextResponse.json({
+      success: true,
+      candidates,
+      feedbackId,
+      ocrSource: "vision",
+      scanAllowance: reservation.allowance,
+    });
   }
 
   if (!text) {
@@ -211,4 +310,29 @@ export async function PATCH(request: Request): Promise<NextResponse> {
     );
   }
   return NextResponse.json({ success: true });
+}
+
+/**
+ * GET /api/cards/recognize
+ *
+ * Returns the authenticated user's lifetime scan allowance so the scanner UI
+ * can show "N of LIMIT scans used" and whether live scanning is currently
+ * enabled (owner credit-approval gate). Anonymous callers get a null allowance.
+ *
+ *   Response: { scanAllowance: { used, limit, remaining } | null, scanEnabled }
+ */
+export async function GET(request: Request): Promise<NextResponse> {
+  const userId = await optionalUserId(request);
+  const scanEnabled = await isScrydexLiveApproved();
+  if (!userId) {
+    return NextResponse.json(
+      { scanAllowance: null, scanEnabled },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  }
+  const scanAllowance = await getScanAllowance(userId);
+  return NextResponse.json(
+    { scanAllowance, scanEnabled },
+    { headers: { "Cache-Control": "no-store" } }
+  );
 }

@@ -10,7 +10,11 @@
 
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/utils/auth-guard";
-import { createCollection, listCollections } from "@/lib/services/collection.service";
+import {
+  createCollection,
+  listCollections,
+  VirtualCollectionReadonlyError,
+} from "@/lib/services/collection.service";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 
@@ -37,6 +41,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     const collection = await createCollection(guard.session.user.id, body as never);
     return NextResponse.json({ data: collection }, { status: 201 });
   } catch (err) {
+    if (err instanceof VirtualCollectionReadonlyError) {
+      return NextResponse.json(
+        { error: "Bad Request", message: "“All Cards” is a reserved built-in view name." },
+        { status: 400 }
+      );
+    }
     if (err instanceof ZodError) {
       return NextResponse.json(
         { error: "Validation Error", message: err.issues[0]?.message ?? "Invalid input." },

@@ -1,0 +1,434 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Write the read-only audit script `scripts/audit-scrydex.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967758727
+      },
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967774973
+      },
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790968068679
+      }
+    ],
+    "1.2 Write unit test asserting the audit script issues only GET and never emits a secret value": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967758872
+      },
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790968074847
+      },
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790968234526
+      }
+    ],
+    "1.3 Generate `docs/SCRYDEX_AUDIT.md` (the Audit_Report) from the script's findings": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759012
+      },
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790968076202
+      },
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790968235320
+      }
+    ],
+    "1.4 **Owner-approval checkpoint (Checkpoint D — NON-CODING STOP).**": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759133
+      }
+    ],
+    "2.1 Update F-09/F-18 tests and the chart-accuracy harness FIRST (TDD, behavior change)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759231
+      }
+    ],
+    "2.2 Extend `ScrydexCardSchema` metadata + add BGS to `pickGradedPrice` in `scrydex.service.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759344
+      }
+    ],
+    "2.3 Write property tests for schema boundary + price accessors": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759456
+      }
+    ],
+    "2.4 Remove `scrydex-trend` backfill and store real RAW/PSA/BGS points in `scrydex-pricing.service.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759609
+      }
+    ],
+    "2.5 Write property test for no-fabrication": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759710
+      }
+    ],
+    "2.6 Add Prisma schema deltas and generate the additive migration": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759826
+      }
+    ],
+    "2.7 Implement `fx.service.ts` (NEW, server-only) current-price-only conversion": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967759949
+      }
+    ],
+    "2.8 Write property test for FX conversion": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760078
+      }
+    ],
+    "2.9 Constrain `pokewallet.service.ts` to current-price-only fallback": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760203
+      }
+    ],
+    "2.10 Write property test for PokéWallet fallback behavior": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760329
+      }
+    ],
+    "2.11 Extend `/api/cards/[id]/history` payload with native `currency`/`tier`/`grade`; keep 200-on-failure": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760455
+      }
+    ],
+    "2.12 Write integration test for public history route graceful degradation": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760587
+      }
+    ],
+    "2.13 Update docs for P1": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760726
+      }
+    ],
+    "2.14 **Owner-approval checkpoint (Checkpoint D — NON-CODING STOP) + phase close.**": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967760862
+      }
+    ],
+    "3.1 Update F-06/F-08 tests FIRST for tag-indexed metadata search + UI cleanups (TDD)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761001
+      }
+    ],
+    "3.2 Index extended metadata into searchable `tags[]` via `buildTags` in `sync-cards.service.ts` → `upsertCard`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761146
+      }
+    ],
+    "3.3 Wire Scrydex-backed search route + card-detail view": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761243
+      }
+    ],
+    "3.4 Write property tests for identifier discipline + pagination + degradation": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761347
+      }
+    ],
+    "3.5 Remove search icon + Accessories block; replace Sellers-on-the-Floor with Scrydex eBay sold records": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761461
+      }
+    ],
+    "3.6 Implement manual-only PSA/BGS population refresh": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761577
+      }
+    ],
+    "3.7 Write integration test for manual-only population": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761694
+      }
+    ],
+    "3.8 Update docs for P2 (`CODE_MAP.md` detail-page changes, `API_REFERENCE.md` search contract, `ARCHITECTURE.md` metadata-tag indexing)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761807
+      }
+    ],
+    "3.9 Checkpoint — run lint + type-check + matching test scope + `npm run verify`; report Checkpoint C evidence": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967761929
+      }
+    ],
+    "4.1 Update F-11/F-15 tests FIRST and add F-23 (sales) scaffolding (TDD)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762106
+      }
+    ],
+    "4.2 Implement pure `src/lib/utils/portfolio-accounting.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762212
+      }
+    ],
+    "4.3 Write property tests for accounting math": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762326
+      }
+    ],
+    "4.4 Implement `portfolio.service.ts` (NEW): lazy cost-basis snapshot + resolution": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762431
+      }
+    ],
+    "4.5 Write integration test for lazy resolution + ownership scoping": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762575
+      }
+    ],
+    "4.6 Implement sell route `POST /api/users/me/collection/[id]/sell` (NEW)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762705
+      }
+    ],
+    "4.7 Wire portfolio stats + Sold section (same collection)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762847
+      }
+    ],
+    "4.8 Write integration test for sell route + sold-section invariants": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967762960
+      }
+    ],
+    "4.9 Update docs for P3 (`API_REFERENCE.md` sell contract, `ARCHITECTURE.md` portfolio.service + accounting util + cost-basis flow, `CODE_MAP.md`)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763168
+      }
+    ],
+    "4.10 Checkpoint — run lint + type-check + matching test scope + `npm run verify`; report Checkpoint C evidence": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763278
+      }
+    ],
+    "5.1 Update F-14 tests FIRST for Scrydex identify, scan allowance, upload validation (TDD)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763404
+      }
+    ],
+    "5.2 Implement pure `src/lib/utils/scan-limit.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763530
+      }
+    ],
+    "5.3 Write property test for Scan_Limit resolution": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763662
+      }
+    ],
+    "5.4 Implement `scan-allowance.service.ts` (NEW) atomic reserve": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763777
+      }
+    ],
+    "5.5 Write property/integration test for allowance concurrency": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967763898
+      }
+    ],
+    "5.6 Wire Scrydex identify into `/api/cards/recognize`, replacing Vision; add upload validation + image discard": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764109
+      }
+    ],
+    "5.7 Write unit/integration tests for upload validation + image disposal + session-scoping": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764242
+      }
+    ],
+    "5.8 Update docs for P4 (`API_REFERENCE.md` recognize contract + scanAllowance states, `ARCHITECTURE.md` scan-allowance.service + identify path + Vision removal, `CODE_MAP.md`)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764347
+      }
+    ],
+    "5.9 Checkpoint — run lint + type-check + matching test scope + `npm run verify`; report Checkpoint C evidence (incl. identify credit cost)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764464
+      }
+    ],
+    "6.1 Update F-02/F-09/F-10/F-11/F-22 tests FIRST and add F-24 (onboarding) (TDD)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764592
+      }
+    ],
+    "6.2 Implement pure `src/lib/utils/collection-series.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764755
+      }
+    ],
+    "6.3 Write property tests for ALL view + comparison chart": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967764880
+      }
+    ],
+    "6.4 Implement virtual non-editable ALL view + per-collection carousel summaries": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765009
+      }
+    ],
+    "6.5 Write integration test for ALL-view mutation rejection + user-scoped collection queries": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765148
+      }
+    ],
+    "6.6 Fix dashboard home chart + card-image/loading bugs; remove intent sections": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765281
+      }
+    ],
+    "6.7 Wire real `MultiLineComparisonChart` from `collection-series.ts`": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765425
+      }
+    ],
+    "6.8 Implement account-persisted onboarding + routes": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765559
+      }
+    ],
+    "6.9 Write integration test for onboarding persistence": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765677
+      }
+    ],
+    "6.10 Update docs for P5 (`API_REFERENCE.md` onboarding routes + ALL-view write rejection, `ARCHITECTURE.md` collection-series + ALL virtual view + onboarding persistence, `CODE_MAP.md`)": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765809
+      }
+    ],
+    "6.11 Final checkpoint — run lint + type-check + `npm run verify`; report Checkpoint C evidence; confirm Verification_Gate green": [
+      {
+        "executionId": "05adba17-2585-4118-9c7e-c37b877d6239",
+        "chatSessionId": "sess_611bce8c-a682-48ea-9653-c2a134feb3e0",
+        "timestamp": 1790967765972
+      }
+    ]
+  }
+}

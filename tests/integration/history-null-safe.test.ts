@@ -104,27 +104,34 @@ describe("GET /api/cards/[id]/prices (NFR-4)", () => {
 // --- /api/users/me/collection/history -------------------------------------
 
 describe("GET /api/users/me/collection/history (NFR-2)", () => {
-  it("skips null-priced rows so an unpriced card contributes 0 only by absence", async () => {
-    // One card held (qty 2). Its history has a null-priced row that must NOT
-    // seed a fabricated $0 day, plus two real points.
-    prismaMock.userCollection.findMany.mockResolvedValue([{ cardId: "card_1", quantity: 2 }]);
+  it("never fabricates a value: null-priced rows + pre-ownership days are gaps, not $0", async () => {
+    // One card held (qty 2), added recently. The endpoint builds a daily
+    // timeline over the range and values the lot ONLY within [addedAt, soldAt)
+    // using the nearest real price. A null-priced row must not seed a value;
+    // days before a real price (or before ownership) are null gaps, never $0.
+    const addedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000); // owned 3 days
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 2, addedAt, soldAt: null, isSold: false },
+    ]);
+    const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
     prismaMock.pricingHistory.findMany.mockResolvedValue([
-      { cardId: "card_1", recordedAt: new Date("2026-01-01T00:00:00Z"), priceMarket: null }, // skipped
-      { cardId: "card_1", recordedAt: new Date("2026-01-02T00:00:00Z"), priceMarket: 10 },
-      { cardId: "card_1", recordedAt: new Date("2026-01-03T00:00:00Z"), priceMarket: 15 },
+      { cardId: "card_1", recordedAt: addedAt, priceMarket: null }, // skipped — no value seeded
+      { cardId: "card_1", recordedAt: recent, priceMarket: 10 }, // real → 10 * qty 2 = 20
     ]);
 
     const res = await collectionHistoryGET(
-      new Request("http://localhost/api/users/me/collection/history?range=ALL")
+      new Request("http://localhost/api/users/me/collection/history?range=1M")
     );
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    const series = body.histories["null"];
-    // Only the two REAL-priced days appear — no fabricated $0 day on 01-01.
-    expect(series).toHaveLength(2);
-    expect(series[0]).toEqual({ date: "2026-01-02", value: 20 }); // 10 * qty 2
-    expect(series[1]).toEqual({ date: "2026-01-03", value: 30 }); // 15 * qty 2
+    const series: { date: string; value: number | null }[] = body.histories["null"];
+    // No point ever carries a fabricated 0: every non-null value is the real
+    // carry-forward (20). Null gaps are allowed (pre-price / pre-ownership).
+    const values = series.map((p) => p.value);
+    expect(values.some((v) => v === 0)).toBe(false); // never a fabricated $0
+    expect(values).toContain(20); // the real priced day values the lot (10 × qty 2)
+    expect(values.filter((v) => v === 20).length).toBeGreaterThanOrEqual(1);
   });
 
   it("returns an empty series for a collection with no items", async () => {

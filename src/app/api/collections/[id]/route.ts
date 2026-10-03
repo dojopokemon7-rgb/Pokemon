@@ -15,9 +15,17 @@ import {
   renameCollection,
   deleteCollection,
   updateCollectionSettings,
+  VirtualCollectionReadonlyError,
 } from "@/lib/services/collection.service";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
+
+function readonlyVirtual(): NextResponse {
+  return NextResponse.json(
+    { error: "Bad Request", message: "The All Cards view is built-in and cannot be modified." },
+    { status: 400 }
+  );
+}
 
 function notFound(): NextResponse {
   return NextResponse.json(
@@ -62,6 +70,7 @@ export async function PATCH(
     }
     return NextResponse.json({ data: result });
   } catch (err) {
+    if (err instanceof VirtualCollectionReadonlyError) return readonlyVirtual();
     if (err instanceof ZodError) {
       return NextResponse.json(
         { error: "Validation Error", message: err.issues[0]?.message ?? "Invalid input." },
@@ -93,6 +102,7 @@ export async function DELETE(
     await deleteCollection(guard.session.user.id, id);
     return NextResponse.json({ data: { id } });
   } catch (err) {
+    if (err instanceof VirtualCollectionReadonlyError) return readonlyVirtual();
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
       return notFound();
     }

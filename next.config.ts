@@ -30,6 +30,13 @@ const nextConfig: NextConfig = {
   // client-side code. Add more as the project grows.
   serverExternalPackages: ["@prisma/client", "ioredis"],
 
+  // Perf: tree-shake barrel-exported client libs so only the symbols actually
+  // imported ship to the browser (smaller first-load JS → faster TTI). Safe +
+  // additive; no behaviour change. Add libs here as heavy client deps appear.
+  experimental: {
+    optimizePackageImports: ["@tanstack/react-query"],
+  },
+
   // -----------------------------------------------------------------
   // PWA headers
   // -----------------------------------------------------------------

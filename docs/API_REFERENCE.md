@@ -54,7 +54,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - **ACTIVE listings, not sold history** (Browse API limitation). Redis `ebay:sold:*` 1h.
 
 ### `GET /api/cards/[id]/history`
-- `[id]` = **externalId**. Always `200 { points: [{ date: "YYYY-MM-DD", price: number }] }` oldest→newest, sourced from stored `PricingHistory` (real `scrydex` / `scrydex-trend` / `add-snapshot` points — never fabricated). Rows with `priceMarket == null` are **dropped** (NFR-2 — no fabricated `$0` point). Unknown card / DB error → `{ points: [] }`. `Cache-Control: no-store`.
+- `[id]` = **externalId**. Always `200 { points: [{ date: "YYYY-MM-DD", price: number }] }` oldest→newest, sourced from stored `PricingHistory` (real `scrydex` / `add-snapshot` points — never fabricated; `scrydex-trend` retired). Rows with `priceMarket == null` are **dropped** (NFR-2 — no fabricated `$0` point). Unknown card / DB error → `{ points: [] }`. `Cache-Control: no-store`.
 
 ### `GET /api/cards/[id]/prices`
 - `[id]` = **externalId**. 200 `{ prices: CurrentPrice[] }` — the stored current prices for the card (one row per `source`/`currency`/`variant`/`condition`). Unknown card **and** any thrown error → `{ prices: [] }` + 200 (NFR-4 — public card route never 4xx/5xx; UI renders "—"). `Cache-Control: no-store`.

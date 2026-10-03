@@ -174,4 +174,21 @@ export const RedisKeys = {
    * TTL: 1 hour (listings change, but not every request needs a live call).
    */
   ebaySold: (key: string): string => `ebay:sold:${key.toLowerCase().trim()}`,
+
+  /**
+   * Cached daily FX rates keyed by base currency (e.g. "USD", "JPY").
+   * TTL: 24 hours. Used ONLY to convert a current-price display into the
+   * user's profile currency (USD/EUR); history chart points are never
+   * converted. A cache miss / Redis outage falls through to a live fetch,
+   * and a live-fetch failure surfaces as "conversion unavailable" (never a
+   * fabricated converted number) — see fx.service.ts.
+   */
+  fxRates: (base: string): string => `fx:rates:${base.toUpperCase().trim()}`,
+
+  /**
+   * Scrydex live-credit approval gate. When a value is present, an owner has
+   * approved live Scrydex credit spend up to the stored budget. Absent =
+   * NOT approved; credit-consuming calls must refuse. See scrydex-credit-gate.ts.
+   */
+  scrydexCreditApproval: "scrydex:credit-approval",
 } as const;

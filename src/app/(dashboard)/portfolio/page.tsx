@@ -99,9 +99,12 @@ function ListIcon() {
 // ── Delta tag ──
 function GainLossTag({ item }: { item: CollectionItem }) {
   if (item.isSold) {
+    // Unresolved cost basis → no realized % (never a fabricated number).
     if (item.soldPrice == null || item.purchasePrice == null) return null;
-    const diff = item.soldPrice - item.purchasePrice;
-    const pct = item.purchasePrice > 0 ? (diff / item.purchasePrice) * 100 : 0;
+    // soldPrice is gross total for the row's quantity; purchasePrice is per-copy.
+    const basisTotal = item.purchasePrice * item.quantity;
+    const diff = item.soldPrice - basisTotal;
+    const pct = basisTotal > 0 ? (diff / basisTotal) * 100 : 0;
     const up = diff >= 0;
     return (
       <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
@@ -580,11 +583,15 @@ export default function PortfolioPage() {
 
   const markAsSold = useMutation({
     mutationFn: async ({ id, soldPrice, soldQuantity, soldAt }: { id: string; soldPrice: number; soldQuantity: number; soldAt?: string }) => {
-      const res = await fetch(`/api/users/me/collection/${id}`, {
-        method: "PATCH",
+      // Use the dedicated sell route: it takes GROSS PRICE PER COPY (which is
+      // exactly what the modal collects — "Selling Price ($ per card)"),
+      // partial-splits the lot into a Sold row in the same collection, and
+      // records sale provenance. Correct per-copy semantics vs the old PATCH.
+      const res = await fetch(`/api/users/me/collection/${id}/sell`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ isSold: true, soldPrice, soldQuantity, soldAt }),
+        body: JSON.stringify({ quantity: soldQuantity, grossPricePerCopy: soldPrice, soldAt }),
       });
       if (!res.ok) throw new Error("Could not mark card as sold.");
       return res.json();
@@ -753,10 +760,16 @@ export default function PortfolioPage() {
 
     for (const item of rawItems) {
       if (item.isSold) {
-        realized += ((item.soldPrice ?? 0) - (item.purchasePrice ?? 0)) * item.quantity;
+        // soldPrice is the GROSS TOTAL proceeds for this sold row's quantity
+        // (sell route stores gross-per-copy × quantity). Realized = proceeds −
+        // allocated cost basis (purchasePrice is per-copy). Skip when the cost
+        // basis is UNRESOLVED (null) — never treat a missing basis as 0.
+        if (item.purchasePrice != null) {
+          realized += (item.soldPrice ?? 0) - item.purchasePrice * item.quantity;
+        }
       } else {
         marketValue += (item.card.marketPrice ?? 0) * item.quantity;
-        paid += (item.purchasePrice ?? 0) * item.quantity;
+        if (item.purchasePrice != null) paid += item.purchasePrice * item.quantity;
       }
     }
 
@@ -766,7 +779,9 @@ export default function PortfolioPage() {
 
   const totalValue = useMemo(() => {
     if (cardType === "sold") {
-      return filteredItems.reduce((a, i) => a + (i.soldPrice ?? 0) * i.quantity, 0);
+      // soldPrice is already the gross total for the row's quantity — do NOT
+      // multiply by quantity again.
+      return filteredItems.reduce((a, i) => a + (i.soldPrice ?? 0), 0);
     }
     return filteredItems.reduce((a, i) => a + (i.card.marketPrice ?? 0) * i.quantity, 0);
   }, [filteredItems, cardType]);
