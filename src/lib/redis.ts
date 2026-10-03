@@ -191,4 +191,123 @@ export const RedisKeys = {
    * NOT approved; credit-consuming calls must refuse. See scrydex-credit-gate.ts.
    */
   scrydexCreditApproval: "scrydex:credit-approval",
+
+  // ===========================================================
+  // Server-side data caches (fail-open, CACHE-ONLY — AGENTS.md RULE 1).
+  // Every reader/writer wraps redis in try/catch and falls through to the
+  // live Postgres query on ANY error. Nothing here is a source of truth.
+  // ===========================================================
+
+  /**
+   * Dashboard SSR payload (owned rows + named collections) for one user.
+   * PER-USER (RULE 5 — key embeds userId; a key without it would leak one
+   * user's private collection to another). TTL: 90s (CACHE_TTL.dashboard).
+   * INVALIDATED BY: add/sell/update/delete collection item, want-list
+   * add/move/remove, and collection create/rename/delete (dashboard reflects
+   * both collection values and want counts).
+   */
+  dashboardData: (userId: string): string => `dashboard:${userId}`,
+
+  /**
+   * `GET /api/users/me/collection` payload for one user.
+   * PER-USER (RULE 5). TTL: 90s (CACHE_TTL.userCollection).
+   * INVALIDATED BY: add/sell/update/delete collection item.
+   */
+  userCollection: (userId: string): string => `collection:${userId}`,
+
+  /**
+   * `GET /api/want-list` payload for one user, scoped by intent tab.
+   * PER-USER (RULE 5). `intent` is BUY|SELL|TRADE, or "all" when the request
+   * omits it. TTL: 60s (CACHE_TTL.wantList). The suffix is built so a future
+   * collectionId scope can extend it without colliding with existing keys —
+   * NOT implemented here.
+   * INVALIDATED BY: want-list add/move/remove (whole family — see
+   * wantListPattern — so a move between tabs can't leave a stale intent list).
+   */
+  wantList: (userId: string, intent?: string): string =>
+    `wantlist:${userId}:${intent ?? "all"}`,
+
+  /**
+   * Glob pattern matching every want-list intent key for one user. Used by
+   * invalidateUserCaches to drop the whole family (all intents + "all") on
+   * any want-list mutation. PER-USER (RULE 5).
+   */
+  wantListPattern: (userId: string): string => `wantlist:${userId}:*`,
+
+  /**
+   * `GET /api/collections` payload (the user's named collections list).
+   * PER-USER (RULE 5). TTL: 60s (CACHE_TTL.collections).
+   * INVALIDATED BY: collection create/rename/delete.
+   */
+  collections: (userId: string): string => `collections:${userId}`,
+
+  /**
+   * `GET /api/cards/search` result, keyed by the fully-normalized query
+   * params. USER-AGNOSTIC (RULE 3 — the catalog result is identical for
+   * everyone; NO userId, sharing it is the point). Distinct from the
+   * service-layer `cardSearch` 24h key above. TTL: 300s (CACHE_TTL.cardSearch).
+   * Only non-empty 200s are cached (a mid-sync empty result isn't pinned).
+   */
+  cardSearchResult: (params: {
+    game: string;
+    query: string;
+    sort: string;
+    set?: string;
+    rarity?: string;
+    graded?: string;
+    minPrice?: number;
+    maxPrice?: number;
+  }): string => {
+    // Stable, order-independent key=value join; query lowercased to match the
+    // existing lowercase search convention so ?query=Char and ?query=char hit
+    // the same entry.
+    const parts = [
+      `game=${params.game}`,
+      `q=${params.query.toLowerCase().trim()}`,
+      `sort=${params.sort}`,
+      `set=${params.set ?? ""}`,
+      `rarity=${params.rarity ?? ""}`,
+      `graded=${params.graded ?? ""}`,
+      `min=${params.minPrice ?? ""}`,
+      `max=${params.maxPrice ?? ""}`,
+    ];
+    return `card:searchq:${parts.join("|")}`;
+  },
+
+  /**
+   * `GET /api/cards/[id]/prices` payload, keyed by EXTERNAL card id (RULE 3 —
+   * `[id]` is the catalog externalId, not the internal cuid).
+   * USER-AGNOSTIC. TTL: 300s (CACHE_TTL.cardPrices). DB-read-only; NO Scrydex.
+   */
+  cardPrices: (externalId: string): string => `card:prices:${externalId}`,
+
+  /**
+   * `GET /api/cards/[id]/history` payload, keyed by EXTERNAL card id (RULE 3).
+   * USER-AGNOSTIC. TTL: 600s (CACHE_TTL.cardHistory). DB-read-only; NO Scrydex.
+   */
+  cardHistory: (externalId: string): string => `card:history:${externalId}`,
+
+  /**
+   * `GET /api/cards/[id]/population` payload, keyed by EXTERNAL card id
+   * (RULE 3). USER-AGNOSTIC. TTL: 86400s (CACHE_TTL.cardPopulation — matches
+   * the route's existing max-age=86400). READ of STORED population only; NO
+   * live, credit-consuming Scrydex fetch.
+   */
+  cardPopulation: (externalId: string): string => `card:pop:${externalId}`,
+} as const;
+
+/**
+ * TTLs (seconds) for the server-side data caches above. Imported by name so
+ * routes never hardcode a magic number. Short for mutable per-user data (tiny
+ * stale window), medium for public card data.
+ */
+export const CACHE_TTL = {
+  dashboard: 90,
+  userCollection: 90,
+  wantList: 60,
+  collections: 60,
+  cardSearch: 300, // 5 min
+  cardPrices: 300, // 5 min
+  cardHistory: 600, // 10 min
+  cardPopulation: 86400, // 24h — matches the route's existing max-age=86400
 } as const;
