@@ -225,7 +225,7 @@ function TrendCardTile({
       {/* Card art — CardImage handles missing/broken src fallbacks to initials.
           For One Piece, pass the image fallback chain so a 404/blocked source
           auto-advances to the next tier (clean → CDN → Bandai proxy). */}
-      <div style={{ width: "62%", alignSelf: "center" }}>
+      <div style={{ width: "100%" }}>
         <CardImage
           src={card.imageUrl}
           fallbackChain={
@@ -1353,29 +1353,6 @@ function SearchPageInner() {
               </div>
             )}
 
-            {/* CONTINUE / Skip footer — trending/empty state only (hidden
-                during active search per client feedback). Since + now
-                opens a bottom sheet to add a single card directly, this
-                footer is just the "I'm done browsing" affordance. */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "18px 0 4px" }}>
-              <button
-                onClick={() => router.push("/dashboard")}
-                className="dojo-btn dojo-btn-primary"
-              >
-                CONTINUE
-              </button>
-              <Link
-                href="/dashboard"
-                style={{
-                  textAlign: "center",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                  fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase",
-                  color: "var(--color-dojo-faint)", textDecoration: "none", cursor: "pointer",
-                }}
-              >
-                Skip
-              </Link>
-            </div>
           </>
         )}
 
