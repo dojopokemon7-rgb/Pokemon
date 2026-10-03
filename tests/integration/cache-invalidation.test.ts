@@ -25,8 +25,8 @@ vi.mock("@/lib/utils/auth-guard", () => ({
 
 // Prisma singleton — only the methods these two write paths touch.
 const prismaMock = vi.hoisted(() => ({
-  collection: { create: vi.fn() },
-  wantListItem: { upsert: vi.fn() },
+  collection: { create: vi.fn(), findFirst: vi.fn() },
+  wantListItem: { findFirst: vi.fn(), create: vi.fn() },
   card: { findUnique: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
@@ -90,7 +90,9 @@ describe("want-list add invalidation", () => {
     // The whole family is scanned via redis.keys(pattern) then deleted.
     const family = [RedisKeys.wantList(USER_ID, "BUY"), RedisKeys.wantList(USER_ID, "all")];
     redisMock.keys.mockResolvedValue(family);
-    prismaMock.wantListItem.upsert.mockResolvedValue({
+    // addWantListItem is findFirst (no existing row) + create, not an upsert.
+    prismaMock.wantListItem.findFirst.mockResolvedValue(null);
+    prismaMock.wantListItem.create.mockResolvedValue({
       id: "wl_1",
       userId: USER_ID,
       cardId: "base1-4",

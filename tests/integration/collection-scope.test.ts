@@ -17,6 +17,15 @@ const serviceMock = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/services/want-list.service", () => serviceMock);
 
+// The GET route reads a per-user/scope Redis cache before the service. Force a
+// miss so this query→options mapping test always exercises listWantList and is
+// never short-circuited by a live Redis entry from a prior run.
+vi.mock("@/lib/utils/cache", () => ({
+  cacheGetJson: vi.fn(async () => null),
+  cacheSetJson: vi.fn(async () => {}),
+  invalidateUserCaches: vi.fn(async () => {}),
+}));
+
 const USER_ID = "user_123";
 vi.mock("@/lib/utils/auth-guard", () => ({
   requireAuth: vi.fn(async () => ({ unauthorized: null, session: { user: { id: USER_ID } } })),
