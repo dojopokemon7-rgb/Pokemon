@@ -25,6 +25,7 @@ import { useState, useMemo } from "react";
 import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
 import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
+import { useDelayedFlag } from "@/components/useDelayedFlag";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -714,6 +715,12 @@ export default function DashboardClient({
   // are NOT skeletoned (they have SSR initialData → isLoading is already
   // false; a skeleton there would regress to a flash).
   const chartLoading = historyLoading && collectionIdsQuery.length > 0;
+  // Delay the chart skeleton by 250ms so a sub-250ms first-load history fetch
+  // draws the real chart (or its honest empty state) without ever flashing the
+  // grey skeleton — the reported flicker. A genuinely slow first load still
+  // reveals it after the delay. The "No price history yet" empty state below is
+  // untouched: it is the honest no-data state, never a forever skeleton.
+  const showChartSkeleton = useDelayedFlag(chartLoading, 250);
 
   // Multi-line chart series: one curve per selected collection, drawn from REAL
   // stored history only (plan §6). The fabricated `generateMockChartData`
@@ -987,7 +994,7 @@ export default function DashboardClient({
               200px box with a block skeleton (no empty-state flash); once
               resolved the chart or its honest empty state eases in. */}
           <div style={{ margin: "16px -22px 0", height: "200px" }}>
-            {chartLoading ? (
+            {showChartSkeleton ? (
               <Skeleton height="100%" className="dojo-fade-in-fast" />
             ) : (
               <div className="dojo-fade-in-fast" style={{ height: "100%" }}>
