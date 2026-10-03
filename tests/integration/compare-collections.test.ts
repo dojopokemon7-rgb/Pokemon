@@ -76,6 +76,17 @@ describe("compareCollections — empty collection handling", () => {
   });
 });
 
+describe("compareCollections — F-#8 want-scoping regression", () => {
+  it("still ignores collectionId:null rows now that want items can be collection-scoped", () => {
+    // Regression pin: the compare logic is unchanged by F-#8; a loose (null)
+    // owned row must never bleed into a named-collection comparison.
+    const result = compareCollections(items, "A", "B");
+    expect(result.a.totalValue).toBe(250); // the null $40 row excluded
+    expect(result.b.totalValue).toBe(60);
+    expect(result.a.totalValue + result.b.totalValue).toBe(310);
+  });
+});
+
 describe("canCompare — needs at least two collections", () => {
   it("requires two collections to compare", () => {
     expect(MIN_COLLECTIONS_TO_COMPARE).toBe(2);

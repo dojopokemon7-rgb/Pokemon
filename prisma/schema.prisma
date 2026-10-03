@@ -243,8 +243,9 @@ model Collection {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  items UserCollection[]
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     UserCollection[]
+  wantItems WantListItem[] // F-#8 back-relation for collection-scoped want lists
 
   @@unique([userId, name]) // no two same-named collections per user
   @@index([userId])
@@ -294,6 +295,14 @@ model UserCollection {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  // F-#8 per-variant uniqueness is enforced by the partial expression index
+  // `uc_variant_coalesced` (migration): UNIQUE(userId, COALESCE(collectionId,''),
+  // cardId, isFoil, COALESCE(condition,'')) WHERE isSold=false. NOT a Prisma
+  // @@unique — a plain one is NULL-distinct (won't dedupe loose lots) and non-partial
+  // (would reject repeated sold lots). `condition` holds the graded label ("PSA 10")
+  // or raw-condition string; a raw lot and a PSA 10 lot of the same card in the same
+  // collection are TWO distinct rows (different `condition`).
 
   @@index([userId])
   @@index([cardId])
@@ -450,12 +459,30 @@ model WantListItem {
   intent    WantIntent
   createdAt DateTime   @default(now())
 
+  // F-#8: scope a want item to a named collection. Null = legacy account-level
+  // (the pre-migration global list) and surfaces under the top-level All view.
+  // SetNull mirrors UserCollection.collectionId: deleting a collection unfiles
+  // its want items to account-level rather than destroying them.
+  collectionId String?
+  collection   Collection? @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Same card can't sit in the same intent list twice for a user, but the
-  // same card CAN appear under different intents (Buy and Trade, say).
-  @@unique([userId, cardId, intent])
+  // Same card+intent can live once per collection (and once at the null/account
+  // scope). The REAL uniqueness is the COALESCE expression index `wli_scope_coalesced`
+  // (migration), which Postgres cannot express in Prisma schema. We DELIBERATELY do
+  // NOT declare `@@unique([userId, cardId, intent, collectionId])` here: a plain Prisma
+  // @@unique is NULL-DISTINCT (does not dedupe account-level null rows) AND would
+  // generate a second, redundant unique index that collides with the expression one.
+  // The service uses findFirst+create (NOT upsert ON CONFLICT) so no compound Prisma
+  // key name is needed.
+  // Retained: the new [userId, collectionId, intent] index below cannot serve an
+  // intent-only (collectionId omitted = all scopes) query as a left-prefix — its
+  // second column is collectionId — so the back-compat intent-only
+  // `where:{ userId, intent }` still needs this [userId, intent] index.
   @@index([userId, intent])
+  // Serves the new per-collection want queries (GET ?collectionId=…).
+  @@index([userId, collectionId, intent])
   @@map("want_list_item")
 }
 

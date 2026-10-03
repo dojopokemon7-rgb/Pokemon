@@ -11,11 +11,25 @@ import {
   AddWantListSchema,
   MoveWantListSchema,
   type AddWantListInput,
+  type MoveWantListInput,
   type WantIntent,
 } from "@/lib/validators/want-list.validator";
 
+/** Options for scoping a want-list read (F-#8). */
+export interface ListWantListOptions {
+  intent?: WantIntent;
+  /**
+   * Collection scope filter:
+   *   - null         → account-level rows (collectionId IS NULL)
+   *   - a string id  → that collection
+   *   - key OMITTED  → all scopes (back-compat intent-only query)
+   */
+  collectionId?: string | null;
+}
+
 /**
- * Lists a user's want-list items, optionally filtered to one intent tab.
+ * Lists a user's want-list items, optionally filtered to one intent tab and/or
+ * one collection scope (F-#8).
  *
  * `WantListItem.cardId` holds the EXTERNAL card id (e.g. "base1-4"), not
  * a FK to Card, so we resolve the display fields (name + image) with a
@@ -23,9 +37,16 @@ import {
  * in the local catalog fall back to `name: null` / `imageUrl: null`; the
  * UI then shows the raw id, so an unknown card never breaks the list.
  */
-export async function listWantList(userId: string, intent?: WantIntent) {
+export async function listWantList(userId: string, opts: ListWantListOptions = {}) {
   const items = await prisma.wantListItem.findMany({
-    where: { userId, ...(intent ? { intent } : {}) },
+    where: {
+      userId,
+      ...(opts.intent ? { intent: opts.intent } : {}),
+      // Only constrain collectionId when the caller passes the key. `null`
+      // explicitly selects account-level rows (Prisma renders IS NULL);
+      // omitting the key returns every scope (FR-4.4 back-compat).
+      ...("collectionId" in opts ? { collectionId: opts.collectionId } : {}),
+    },
     orderBy: { createdAt: "desc" },
   });
 
@@ -52,23 +73,43 @@ export async function listWantList(userId: string, intent?: WantIntent) {
   });
 }
 
-/** Adds a card to a want-list tab. Idempotent on (userId, cardId, intent). */
+/**
+ * Adds a card to a want-list tab. Idempotent find-or-create on
+ * (userId, cardId, intent, collectionId) at BOTH the null (account) and
+ * non-null (collection) scopes (F-#8).
+ *
+ * NOT an upsert: there is no Prisma @@unique on WantListItem (the real
+ * uniqueness is the COALESCE expression index `wli_scope_coalesced`, which
+ * Prisma cannot model), so there is no compound key for ON CONFLICT, and an
+ * ON CONFLICT against a NULL-distinct plain unique would NOT dedupe the
+ * account-level (null) scope. `findFirst` with `collectionId: null` matches
+ * by value (IS NULL), so the null scope is idempotent in app code. The
+ * expression index remains the DB backstop for a true concurrent race (the
+ * route maps that P2002 to the same idempotent success).
+ */
 export async function addWantListItem(userId: string, input: AddWantListInput) {
-  const { cardId, intent } = AddWantListSchema.parse(input);
-  // upsert so re-adding the same card+intent is a no-op, not a unique-violation.
-  return prisma.wantListItem.upsert({
-    where: { userId_cardId_intent: { userId, cardId, intent } },
-    update: {},
-    create: { userId, cardId, intent },
+  const { cardId, intent, collectionId } = AddWantListSchema.parse(input);
+  const scope = collectionId ?? null;
+  const existing = await prisma.wantListItem.findFirst({
+    where: { userId, cardId, intent, collectionId: scope },
+  });
+  if (existing) return existing; // idempotent — no second row
+  return prisma.wantListItem.create({
+    data: { userId, cardId, intent, collectionId: scope },
   });
 }
 
-/** Moves an item to a different tab (atomic intent change). */
-export async function moveWantListItem(userId: string, id: string, intent: WantIntent) {
-  const { intent: validIntent } = MoveWantListSchema.parse({ intent });
+/**
+ * Moves an item to a different tab (atomic intent change) and optionally
+ * re-scopes it to another collection (F-#8). Ownership-scoped `where:{id,userId}`
+ * (foreign id → P2025 → 404). A move that collides on `wli_scope_coalesced`
+ * throws P2002 → the route's 409.
+ */
+export async function moveWantListItem(userId: string, id: string, data: MoveWantListInput) {
+  const { intent, collectionId } = MoveWantListSchema.parse(data);
   return prisma.wantListItem.update({
     where: { id, userId },
-    data: { intent: validIntent },
+    data: { intent, ...("collectionId" in data ? { collectionId: collectionId ?? null } : {}) },
   });
 }
 

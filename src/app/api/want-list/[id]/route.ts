@@ -8,7 +8,8 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { moveWantListItem, removeWantListItem } from "@/lib/services/want-list.service";
-import { WantIntentEnum } from "@/lib/validators/want-list.validator";
+import { MoveWantListSchema } from "@/lib/validators/want-list.validator";
+import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import { invalidateUserCaches } from "@/lib/utils/cache";
 
@@ -24,26 +25,37 @@ export async function PATCH(
   if (guard.unauthorized) return guard.unauthorized;
   const { id } = await params;
 
-  let body: { intent?: unknown };
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Bad Request", message: "Invalid JSON body." }, { status: 400 });
   }
 
-  const parsed = WantIntentEnum.safeParse(body.intent);
+  // F-#8: parse the WHOLE body — a move may re-scope the collection as well as
+  // change the intent.
+  const parsed = MoveWantListSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Validation Error", message: "intent must be BUY, SELL, or TRADE." },
+      { error: "Validation Error", message: parsed.error.issues[0]?.message ?? "Invalid input." },
       { status: 400 }
     );
   }
 
+  const userId = guard.session.user.id;
   try {
-    const item = await moveWantListItem(guard.session.user.id, id, parsed.data);
+    // Cross-user guard: a non-null target collectionId must belong to the user
+    // (the FK only checks existence). Miss → 404, no existence leak.
+    if (parsed.data.collectionId != null) {
+      const owned = await prisma.collection.findFirst({
+        where: { id: parsed.data.collectionId, userId },
+      });
+      if (!owned) return notFound();
+    }
+    const item = await moveWantListItem(userId, id, parsed.data);
     // A move changes TWO intent lists (source + target), so drop the whole
     // wantlist:{userId}:* family + dashboard:{userId}. Best-effort.
-    await invalidateUserCaches(guard.session.user.id, ["wantlist", "dashboard"]);
+    await invalidateUserCaches(userId, ["wantlist", "dashboard"]);
     return NextResponse.json({ data: item });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError) {

@@ -62,6 +62,34 @@ describe("buildCollectionSeries (plan §6 honesty rules)", () => {
   });
 });
 
+describe("Sold-per-collection at the series layer (F-#8 FR-5.2)", () => {
+  it("a NAMED-collection sold lot's [addedAt, soldAt) interval stays in that collection's series", () => {
+    const holdings: HoldingInterval[] = [
+      { collectionId: "col_A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: t0 + 2 * DAY },
+    ];
+    const prices: PricePoint[] = [{ cardId: "c1", at: t0, price: 7 }];
+    const out = buildCollectionSeries(holdings, prices, timeline);
+    const a = out.find((s) => s.collectionId === "col_A")!;
+    // Owned t0, t0+DAY (value 7); sold at t0+2DAY → excluded → null.
+    expect(a.points.map((p) => p.value)).toEqual([7, 7, null, null]);
+  });
+
+  it("a loose sold lot fed as collectionId:'null' (the real string sentinel) lands in the 'null' series", () => {
+    // The real caller (history/route.ts) builds HoldingInterval.collectionId
+    // from the query-string sentinel "null" for loose lots — NOT raw JS null,
+    // NOT "__uncat__".
+    const holdings: HoldingInterval[] = [
+      { collectionId: "null", cardId: "c1", quantity: 2, addedAt: t0, soldAt: t0 + DAY },
+    ];
+    const prices: PricePoint[] = [{ cardId: "c1", at: t0, price: 5 }];
+    const out = buildCollectionSeries(holdings, prices, timeline);
+    const loose = out.find((s) => s.collectionId === "null")!;
+    expect(loose).toBeDefined();
+    // Owned at t0 (value 10); sold at t0+DAY → excluded afterward.
+    expect(loose.points.map((p) => p.value)).toEqual([10, null, null, null]);
+  });
+});
+
 describe("isVirtualCollectionId", () => {
   it("recognises the reserved ALL view id", () => {
     expect(isVirtualCollectionId(ALL_VIEW_ID)).toBe(true);

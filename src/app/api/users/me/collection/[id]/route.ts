@@ -4,6 +4,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { prisma } from "@/lib/db";
 import { invalidateUserCaches } from "@/lib/utils/cache";
@@ -160,22 +161,53 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       return NextResponse.json({ ok: true, item: updated }, { status: 200 });
     }
 
-    // General update
-    const updated = await prisma.userCollection.update({
-      where: { id: existing.id },
-      data: {
-        ...(quantity !== undefined ? { quantity } : {}),
-        ...(purchasePrice !== undefined ? { purchasePrice } : {}),
-        ...(condition !== undefined ? { condition } : {}),
-        ...(collectionId !== undefined ? { collectionId } : {}),
-        ...(soldPrice !== undefined ? { soldPrice } : {}),
-        ...(soldAt !== undefined ? { soldAt: new Date(soldAt) } : {}),
-      },
-    });
+    // General update (this is a RE-FILE path when collectionId changes).
+    // F-#8: the FK only checks existence, so verify a non-null target
+    // collectionId belongs to the user before writing it (cross-user attach
+    // guard). Miss → 404, no existence leak, identical to a nonexistent id.
+    if (collectionId != null) {
+      const owned = await prisma.collection.findFirst({ where: { id: collectionId, userId } });
+      if (!owned) {
+        return NextResponse.json(
+          { error: "Not Found", message: "Collection not found" },
+          { status: 404 }
+        );
+      }
+    }
 
-    // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
-    await invalidateUserCaches(userId, ["collection", "dashboard"]);
-    return NextResponse.json({ ok: true, item: updated }, { status: 200 });
+    try {
+      const updated = await prisma.userCollection.update({
+        where: { id: existing.id },
+        data: {
+          ...(quantity !== undefined ? { quantity } : {}),
+          ...(purchasePrice !== undefined ? { purchasePrice } : {}),
+          ...(condition !== undefined ? { condition } : {}),
+          ...(collectionId !== undefined ? { collectionId } : {}),
+          ...(soldPrice !== undefined ? { soldPrice } : {}),
+          ...(soldAt !== undefined ? { soldAt: new Date(soldAt) } : {}),
+        },
+      });
+
+      // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+      await invalidateUserCaches(userId, ["collection", "dashboard"]);
+      return NextResponse.json({ ok: true, item: updated }, { status: 200 });
+    } catch (e) {
+      // F-#8: a re-file/edit that collides with an existing variant in the
+      // target collection trips `uc_variant_coalesced` → P2002. Reject with 409
+      // (consistent with the want-list move 409) rather than a surprising silent
+      // merge on a user-initiated single-item edit, or a raw 500.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002" &&
+        String((e.meta as { target?: unknown })?.target ?? "").includes("uc_variant_coalesced")
+      ) {
+        return NextResponse.json(
+          { error: "Conflict", message: "That variant is already in the target collection" },
+          { status: 409 }
+        );
+      }
+      throw e; // any other error → the existing generic 500 catch
+    }
   } catch (error) {
     console.error("[api/users/me/collection/[id]] Error updating item:", error);
     return NextResponse.json({ error: "Internal Server Error", message: "Failed to update item" }, { status: 500 });

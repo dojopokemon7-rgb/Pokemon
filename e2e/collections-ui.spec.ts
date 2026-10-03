@@ -63,6 +63,24 @@ test.describe("F-10 collections management", () => {
     // The private caption + the PRIVATE pill being active reflect privacy.
     await expect(row.getByText(/only you/i)).toBeVisible();
     await expect(row.getByRole("button", { name: /set private/i })).toHaveAttribute("aria-pressed", "true");
+
+    // F-#8: the row shows the five-bucket chip bar (Main/All/Buy/Sell/Sold).
+    // A brand-new collection reads 0 across the board; Main must equal All.
+    await expect(row.getByTestId("bucket-chip-main")).toBeVisible();
+    await expect(row.getByTestId("bucket-chip-all")).toBeVisible();
+    await expect(row.getByTestId("bucket-chip-buy")).toBeVisible();
+    await expect(row.getByTestId("bucket-chip-sell")).toBeVisible();
+    await expect(row.getByTestId("bucket-chip-sold")).toBeVisible();
+    const mainText = await row.getByTestId("bucket-chip-main").innerText();
+    const allText = await row.getByTestId("bucket-chip-all").innerText();
+    expect(mainText.replace(/main/i, "").trim()).toBe(allText.replace(/all/i, "").trim());
+  });
+
+  test("dashboard shows NO 'Want to Buy' collection option (FR-7)", async ({ page }) => {
+    await page.goto("/dashboard");
+    // The __want_buy__ injection stays removed — no Want-to-Buy collection in
+    // the dashboard selector.
+    await expect(page.getByRole("option", { name: /want to buy/i })).toHaveCount(0);
   });
 
   test("toggle privacy via the PUBLIC/PRIVATE pill: make it public", async ({ page }) => {

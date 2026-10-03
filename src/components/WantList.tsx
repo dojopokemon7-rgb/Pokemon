@@ -34,8 +34,12 @@ const TABS: { intent: Intent; label: string }[] = [
   { intent: "TRADE", label: "Want to Trade" },
 ];
 
-async function fetchItems(intent: Intent): Promise<WantItem[]> {
-  const res = await fetch(`/api/want-list?intent=${intent}`, { credentials: "include" });
+async function fetchItems(intent: Intent, collectionId?: string): Promise<WantItem[]> {
+  // Build the query string with URLSearchParams so every value is encoded at
+  // the trust boundary (never raw interpolation).
+  const qs = new URLSearchParams({ intent });
+  if (collectionId) qs.set("collectionId", collectionId);
+  const res = await fetch(`/api/want-list?${qs}`, { credentials: "include" });
   if (!res.ok) throw new Error("Failed to load want list");
   const json = await res.json();
   return json.data as WantItem[];
@@ -47,15 +51,24 @@ const linkBtn: React.CSSProperties = {
   letterSpacing: "0.14em", textTransform: "uppercase",
 };
 
-export function WantList({ heading = true }: { heading?: boolean }) {
+export function WantList({
+  heading = true,
+  collectionId,
+}: {
+  heading?: boolean;
+  /** F-#8: scope the list to one collection (undefined = account/all view). */
+  collectionId?: string;
+}) {
   const qc = useQueryClient();
   const [active, setActive] = useState<Intent>("BUY");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const { data: items = [], isLoading } = useQuery({
-    queryKey: ["want-list", active],
-    queryFn: () => fetchItems(active),
+    // F-#8: add the collection dimension. TanStack prefix invalidation on
+    // ["want-list"] still matches this 3-tuple AND the legacy 2-tuple keys.
+    queryKey: ["want-list", active, collectionId ?? "__account__"],
+    queryFn: () => fetchItems(active, collectionId),
   });
 
   async function refreshAll() {
@@ -70,7 +83,8 @@ export function WantList({ heading = true }: { heading?: boolean }) {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ intent }),
+        // F-#8: a scoped view keeps the item in its collection when moving tabs.
+        body: JSON.stringify({ intent, ...(collectionId ? { collectionId } : {}) }),
       });
       setMenuOpenId(null);
       await refreshAll();

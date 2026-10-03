@@ -10,9 +10,13 @@ import { STORAGE_STATE } from "./constants";
  * Explore/Search into a chosen tab, then can be moved between tabs or
  * removed.
  *
- * EXPECTED TO FAIL today: there is no /wantlist page, no tabs, no
- * add-to-want-list action on search (only a local-state "WANT TO BUY"
- * toggle that persists nothing), and no want-list API.
+ * F-#8: want items can now be scoped to a collection via an optional
+ * `collectionId`. The standalone `/wantlist` page renders the ACCOUNT/ALL view
+ * (no collectionId), so a card added from the card-detail page — which adds at
+ * the account level (null scope) — surfaces here. A collection-scoped want list
+ * (adding Buy to collection A does NOT appear under collection B) is covered by
+ * the service/route integration tests; `/wantlist` here asserts the
+ * account-level rows show up.
  */
 
 // The add → move → remove scenarios form one lifecycle against the real

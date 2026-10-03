@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { CollectionBucketBar, type CollectionBuckets } from "@/components/CollectionBucketBar";
 
 type TypeTag = "POKEMON" | "ONE_PIECE" | "MIXED";
 
@@ -18,6 +19,8 @@ interface Collection {
   name: string;
   isPrivate: boolean;
   typeTag: TypeTag;
+  // F-#8: the five derived buckets GET /api/collections now returns per row.
+  buckets?: CollectionBuckets;
 }
 
 const TYPE_OPTIONS: TypeTag[] = ["POKEMON", "ONE_PIECE", "MIXED"];
@@ -279,6 +282,8 @@ export function CollectionsSection() {
                 <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
                   {c.isPrivate ? "Only you" : "Visible to everyone"}
                 </div>
+                {/* F-#8: the five per-collection buckets. */}
+                {c.buckets && <CollectionBucketBar buckets={c.buckets} />}
               </div>
 
               {/* PUBLIC / PRIVATE pills — stop propagation so toggling privacy

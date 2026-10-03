@@ -7,6 +7,8 @@ import {
   ALL_COLLECTIONS,
   type AggregatableItem,
 } from "@/lib/utils/collection-aggregation";
+// F-#8: the dual-All resolver must agree with the aggregator's scoping.
+import { toScope, activeWhere } from "@/lib/utils/collection-scope";
 
 // Minimal item shape the dashboard already has (card marketPrice, quantity,
 // purchasePrice) plus the F-10 collectionId used to scope the view.
@@ -48,6 +50,28 @@ describe("aggregateCollectionStats — specific collection", () => {
     const stats = aggregateCollectionStats(items, "op");
     expect(stats.totalValue).toBe(60); // 3*20
     expect(stats.cardCount).toBe(3);
+  });
+});
+
+describe("dual-All contract (F-#8) — scope resolver agrees with the aggregator", () => {
+  it("in-collection All resolves to the SAME where as Main (collectionId + isSold:false)", () => {
+    // toScope("<id>") → {kind:"collection"} → activeWhere pins the exact Main where.
+    expect(activeWhere("user_123", toScope("holo"))).toEqual({
+      userId: "user_123",
+      isSold: false,
+      collectionId: "holo",
+    });
+  });
+
+  it("top-level All (ALL_COLLECTIONS) still sums across collectionId:null rows", () => {
+    // The aggregator's top-level All includes the loose (null) $40 card.
+    const stats = aggregateCollectionStats(items, ALL_COLLECTIONS);
+    expect(stats.totalValue).toBe(350); // 250 holo + 60 op + 40 loose
+    // And the resolver maps the same signal to a where with NO collectionId key.
+    expect(activeWhere("user_123", toScope(ALL_COLLECTIONS))).toEqual({
+      userId: "user_123",
+      isSold: false,
+    });
   });
 });
 

@@ -193,8 +193,8 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 |---|---|---|
 | `["collection"]` | `GET /api/users/me/collection` | DashboardClient with SSR `initialData`; `/you` |
 | `["portfolio-collection"]` | same endpoint | portfolio page; both keys prefetched by shell on nav hover |
-| `["want-list", "all"\|"BUY"\|"SELL"\|"TRADE"]` | `GET /api/want-list(?intent=)` | whole family invalidated by any want-list mutation |
-| `["collections"]` | `GET /api/collections` | AddCardSheet, portfolio filter, CollectionsSection |
+| `["want-list", intent, collectionId ?? "__account__"]` | `GET /api/want-list(?intent=&collectionId=)` | F-#8: 3-tuple adds the collection dimension (`__account__` = null scope). TanStack PREFIX invalidation on `["want-list"]` still matches BOTH this and the legacy 2-tuple keys, so the whole family is invalidated by any want-list mutation |
+| `["collections"]` | `GET /api/collections` | AddCardSheet, portfolio filter, CollectionsSection, **CollectionBucketBar** (F-#8 per-collection `buckets`) |
 | `["trending-cards", game, sort]` | `GET /api/cards/trending` | **infinite query**, offset cursor |
 | `["card-search", game, q, sort, set, rarity, graded, minPrice, maxPrice]` | `GET /api/cards/search` | enabled only when q non-empty |
 | `["search-suggest", game, q]` | same route | autocomplete, staleTime 60s |
@@ -211,13 +211,21 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 ```
 User 1─n Session / Account / UserCollection / Collection / SupportTicket / WantListItem
 CardSet 1─n Card
-Card 1─n UserCollection (unique [userId, cardId, isFoil] — re-add increments quantity)
+Card 1─n UserCollection (per-variant uniqueness: PARTIAL expression unique index
+      `uc_variant_coalesced` UNIQUE(userId, COALESCE(collectionId,''), cardId, isFoil,
+      COALESCE(condition,'')) WHERE isSold=false — re-add of the same variant increments
+      quantity; NOT a plain Prisma @@unique (NULL-distinct + non-partial); sold lots repeat)
       1─n PricingHistory
       1─n CurrentPrice
 Collection 1─n UserCollection (collectionId nullable, onDelete: SetNull — deleting a
              collection unfiles cards, never deletes owned copies)
+Collection 1─n WantListItem (F-#8: collectionId nullable, onDelete: SetNull — null =
+             legacy account-level scope surfaced under top-level All)
 UserCollection.purchasePrice = what the user paid (distinct from Card.marketPrice)
-WantListItem.cardId = EXTERNAL id string (NOT a FK — a card can be wanted pre-sync)
+WantListItem.cardId = EXTERNAL id string (NOT a FK — a card can be wanted pre-sync).
+WantListItem per-scope uniqueness: expression unique index `wli_scope_coalesced`
+  UNIQUE(userId, cardId, intent, COALESCE(collectionId,'')) — same card+intent once per
+  collection and once at the null/account scope; replaced the old [userId,cardId,intent].
 AuditLog, ScanFeedback: append-only operational tables
 SyncLog: append-only metering/metering table (job, cardId?, credits, status, error, ranAt)
 ```
@@ -230,7 +238,7 @@ SyncLog: append-only metering/metering table (job, cardId?, credits, status, err
 - `CurrentPrice` — latest price per provenance. Unique `[cardId, source, currency, variant, condition]` with `source=DataSource` enum.
 - `SyncLog` — `job`/`cardId?`/`credits`/`status`/`error`/`ranAt`; the Scrydex freshness gate + credit meter read/write `job="scrydex_history"` rows.
 
-Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([tags], type: Gin)` (`has` search), `CardSet.@@index([name])` (set filter), `PricingHistory.@@index([cardId, recordedAt])` (history chart), `UserCollection.@@index([userId, addedAt])` (dashboard/portfolio/collection `where userId + orderBy addedAt desc`), `SyncLog.@@index([job, ranAt])` + `@@index([job, cardId, ranAt])` (the Scrydex freshness-gate query). Graded metadata lives in `UserCollection.condition` ("PSA 10") + `Card.rarity` — dedicated columns are the planned migration.
+Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([tags], type: Gin)` (`has` search), `CardSet.@@index([name])` (set filter), `PricingHistory.@@index([cardId, recordedAt])` (history chart), `UserCollection.@@index([userId, addedAt])` (dashboard/portfolio/collection `where userId + orderBy addedAt desc`), `SyncLog.@@index([job, ranAt])` + `@@index([job, cardId, ranAt])` (the Scrydex freshness-gate query), `WantListItem.@@index([userId, intent])` (back-compat intent-only query) + `@@index([userId, collectionId, intent])` (F-#8 per-collection want query), plus the two F-#8 partial/expression unique indexes `uc_variant_coalesced` and `wli_scope_coalesced` (first real migration under `prisma/migrations/`; the project previously used `db push`). Graded metadata lives in `UserCollection.condition` ("PSA 10") + `Card.rarity` — dedicated columns are the planned migration.
 
 ## 9. External API inventory
 

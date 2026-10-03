@@ -169,7 +169,8 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | `NotificationsPanel.tsx` | C | Header bell + dropdown. **UI-only empty state**; `notifications` prop + list markup ready for a future `GET /api/notifications`. |
 | `PwaRegistrar.tsx` | C | Registers `/sw.js` (scope /) after `window.load`. Renders null. |
 | `Toast.tsx` | C | Dumb fixed bottom-center toast (`message`, `duration` 2600ms, `tone: neutral\|error`) + **`useTimeoutToast(pending, msg, ms=3000)`** "still working…" helper. Parent owns message state. |
-| `WantList.tsx` | C | F-07 reusable body: BUY/SELL/TRADE tabs (`["want-list", active]`), per-item Move menu (`PATCH {intent}`) + Remove (`DELETE`); invalidates whole `["want-list"]` family. Used by `/wantlist`. |
+| `WantList.tsx` | C | F-07 reusable body: BUY/SELL/TRADE tabs; F-#8 optional `collectionId` prop scopes the view (key `["want-list", active, collectionId ?? "__account__"]`, `URLSearchParams`-encoded fetch, threads `collectionId` into Move); per-item Move (`PATCH {intent, collectionId?}`) + Remove (`DELETE`); invalidates whole `["want-list"]` family. Used by `/wantlist`. |
+| `CollectionBucketBar.tsx` | C | F-#8 presentational 5-chip bar (Main · All · Want to Buy · Want to Sell · Sold) reading `buckets` from the `["collections"]` query; design tokens, square corners, hard-offset shadows. Wired per-row in `CollectionsSection`. |
 
 ---
 
@@ -225,6 +226,8 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | `portfolio-accounting.ts` | P | `allocateBasis` (proportional, null-safe), `realizedPnL` (proceeds−basis, no fees, unresolved-aware), `unrealizedPnL`, `aggregatePortfolio` (Market/Paid/Realized/Unrealized; unresolved lots excluded from sums + counted). |
 | `collection-series.ts` | P | `buildCollectionSeries(holdings,prices,timeline)` → one series PER collection (never summed); ownership interval `[addedAt,soldAt)`; nearest-real-price carry-forward; null gaps (no pre-ownership value, no fabrication). |
 | `collections-virtual.ts` | P | `ALL_VIEW_ID` (`__all__`), `ALL_VIEW_NAME` ("All Cards"), `isVirtualCollectionId()`. Reserved built-in ALL view. |
+| `collection-scope.ts` | P | F-#8 dual-All resolver: `toScope(id)` (collapses null/`__all__`/`all` → `{kind:"all"}`, `__uncat__` → loose, else collection), `activeWhere`/`soldWhere` Prisma `where` fragments. Consumed by the want-list GET route + collection-detail read path. |
+| `collection-buckets.ts` | P | F-#8 pure 5-bucket selector `selectBuckets(lots, wants, scope)` → `{main, all, buy, sell, sold}`; Main==All in-collection, union at top-level, TRADE excluded. Consumed by `CollectionBucketBar`. |
 | `scan-limit.ts` | P | `resolveScanLimit(env)` (default 10, defensive), `getScanLimit()`, `remainingScans()`. `SCAN_LIMIT`-configurable for paid tiers. |
 | `scan-upload.ts` | P | `validateScanUpload(bytes)` (20MB cap + `sniffImageMime` by magic bytes JPEG/PNG/WebP, not declared type), `base64ToBytes`. |
 | `card-tags.ts` | P | `buildTags({rarity, types, number, set})` — lowercase deduped keyword tags (types, rarity/number/set/series word tokens ≥2 chars). Same builder across seed + sync + backfill. |
@@ -281,10 +284,10 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 ## 13. Tests
 
 ### `tests/unit/` (Vitest + jsdom — pure logic)
-`card-price`, `card-image`, `card-sort`, `graded-price`, `collection-aggregation`, `card-recognition` (parse+score), `ebay-query` (`buildEbayQuery`), `app-renders` (harness smoke), `pokewallet-price` (FR-1 — `pickOnePiecePrice`/`fetchOnePieceSetPrices`/`fetchPokemonCardPrice`, mocked fetch), `scrydex-price` (FR-2 — `pickRawPrice`/`pickGradedPrice`/`resolveScrydexCard`/headers/`gameSlug`, mocked fetch). (The `scrydex-trend-backfill` unit test is removed with the backfill — Req 7.2.)
+`card-price`, `card-image`, `card-sort`, `graded-price`, `collection-aggregation` (+ F-#8 dual-All scope pins), `collection-scope` (F-#8 resolver), `collection-buckets` (F-#8 selector), `collection-series`, `card-recognition` (parse+score), `ebay-query` (`buildEbayQuery`), `app-renders` (harness smoke), `pokewallet-price` (FR-1 — `pickOnePiecePrice`/`fetchOnePieceSetPrices`/`fetchPokemonCardPrice`, mocked fetch), `scrydex-price` (FR-2 — `pickRawPrice`/`pickGradedPrice`/`resolveScrydexCard`/headers/`gameSlug`, mocked fetch). (The `scrydex-trend-backfill` unit test is removed with the backfill — Req 7.2.)
 
 ### `tests/integration/` (Vitest — mocked Prisma/fetch, no live DB/network)
-`bulk-add-order` (F-15), `collections` (F-10 service CRUD), `compare-collections` (F-22), `contact-support` (F-21), `psa-price` (F-17 + resolveGradedPrice interplay), `pokemon-price`, `graded-pricing.golden` (±10% vs `tests/fixtures/golden_prices.json`), `golden-prices` (fixture validity), `scrydex-pricing` (FR-4 — freshness gate / store / SyncLog metering / trend backfill, mocked Prisma+client), `portfolio-snapshot` (FR-5 — add-snapshot write via the collection POST route), `graded-routing` (FR-6 — `resolveGradedPrice` + the `GET /api/cards/[id]/graded` route), `history-null-safe` (NFR-2/NFR-4 — history/prices/collection-history null-safety + graceful 200s).
+`bulk-add-order` (F-15), `collections` (F-10 service CRUD + F-#8 `listCollectionsWithBuckets`, exact-condition dedupe, P2002 race, PATCH `[id]` 409/404), `compare-collections` (F-22 + F-#8 null-row regression), `want-list-scoping` (F-#8 service find-or-create/scoped list/move), `collection-scope` (F-#8 want-list GET query mapping), `contact-support` (F-21), `psa-price` (F-17 + resolveGradedPrice interplay), `pokemon-price`, `graded-pricing.golden` (±10% vs `tests/fixtures/golden_prices.json`), `golden-prices` (fixture validity), `scrydex-pricing` (FR-4 — freshness gate / store / SyncLog metering / trend backfill, mocked Prisma+client), `portfolio-snapshot` (FR-5 — add-snapshot write via the collection POST route), `graded-routing` (FR-6 — `resolveGradedPrice` + the `GET /api/cards/[id]/graded` route), `history-null-safe` (NFR-2/NFR-4 — history/prices/collection-history null-safety + graceful 200s).
 
 ### `e2e/` (Playwright, port 3001, standalone build)
 `auth.setup.ts` (provisions real session → storageState), `constants.ts` (STORAGE_STATE),

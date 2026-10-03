@@ -96,6 +96,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 ## Collections & want list (authed CRUD)
 
 ### `GET /api/collections` → 200 `{ data: Collection[] }` (`createdAt desc`, `no-store`).
+- F-#8: each entry carries `buckets: { main, all, buy, sell, sold }`. UNITS DIFFER: `main`/`all`/`sold` = summed QUANTITIES (`_sum.quantity`); `buy`/`sell` = ROW COUNTS (`_count._all`). A trailing `{ id: "__uncat__", buckets }` pseudo-collection carries the loose (`collectionId=null`) counts. Degradation (rule 7/8): a `groupBy` hiccup → every collection's `buckets` ZEROED (always present, never omitted); a base `findMany` failure → 200 `{ data: [] }`.
 ### `POST /api/collections`
 - Body `{ name, isPrivate? = true, typeTag? = "MIXED" }`. 201 `{ data: Collection }`; 400 zod; 409 duplicate name (`P2002` on `@@unique([userId,name])`).
 
@@ -104,12 +105,13 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ### `DELETE /api/collections/[id]` → 200 `{ data: { id } }`; 404. (Cards unfile, not deleted — SetNull.)
 
-### `GET /api/want-list` — Query `intent?` (`BUY|SELL|TRADE`; invalid silently ignored → all).
-- 200 `{ data: [{ id, userId, cardId /* EXTERNAL id */, intent, createdAt, name?, imageUrl?, marketPrice?, setName? }] }` — display fields null when card not in local catalog. DB error → 200 `{ data: [] }`. `no-store`.
+### `GET /api/want-list` — Query `intent?` (`BUY|SELL|TRADE`; invalid silently ignored → all) + F-#8 `collectionId?`.
+- `collectionId=<id>` → that collection; `collectionId=__account__` → account-level (`null`) rows; ABSENT → all scopes.
+- 200 `{ data: [{ id, userId, cardId /* EXTERNAL id */, intent, collectionId, createdAt, name?, imageUrl?, marketPrice?, setName? }] }` — display fields null when card not in local catalog. DB error → 200 `{ data: [] }`. `no-store`.
 
-### `POST /api/want-list` — Body `{ cardId /* externalId */, intent }`. Idempotent upsert. 201 `{ data: item }`; 400.
+### `POST /api/want-list` — Body `{ cardId /* externalId */, intent, collectionId? }`. Idempotent find-or-create per `(userId, cardId, intent, collectionId)` (null scope matches by IS NULL). 201 `{ data: item }` (a concurrent `P2002` on `wli_scope_coalesced` is re-read → same idempotent 201, NEVER a 409); 400; 404 if a non-null `collectionId` isn't owned by the user (ownership guard — no existence leak).
 
-### `PATCH /api/want-list/[id]` — Body `{ intent }` (move tab). 200; 404; 409 already-in-target (`P2002`).
+### `PATCH /api/want-list/[id]` — Body `{ intent, collectionId? }` (move tab and/or re-scope collection; omitting `collectionId` changes only intent). 200; 404 (foreign item id OR non-owned target `collectionId`); 409 collision on `wli_scope_coalesced` (`P2002`).
 
 ### `DELETE /api/want-list/[id]` → 200 `{ data: { id } }`; 404.
 
@@ -122,9 +124,13 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ### `POST /api/users/me/collection` — bulk add (F-15)
 - Body (`AddCollectionRequestSchema`): `{ cards: [{ externalId, name, setName?, imageUrl?, rarity?, types?, marketPrice?, quantity = 1 (1–999), isFoil = false, condition?, purchasePrice?, collectionId? }] }` — 1–50 cards.
-- Flow: `assignBulkAddOrder` (selection-order `addedAt` stamps) → per card: upsert `CardSet` (`user-added-<slug>`) → upsert `Card` by `externalId` → upsert `UserCollection` on `[userId, cardId, isFoil]` (**re-add increments quantity**); `purchasePrice` defaults `?? marketPrice ?? card.marketPrice`.
+- Flow: `assignBulkAddOrder` (selection-order `addedAt` stamps) → per card: upsert `CardSet` (`user-added-<slug>`) → upsert `Card` by `externalId` → find-or-create `UserCollection` matched on the SAME key as the DB index `uc_variant_coalesced` — `(userId, collectionId ?? null, cardId, isFoil, COALESCE(condition,''))` with `isSold=false` (**re-add of the same variant increments quantity**; F-#8: app-side compare uses EXACT normalized `condition`, so raw `null` vs raw `"NM"` vs `"PSA 10"` are distinct lots). A concurrent `P2002` on `uc_variant_coalesced` is caught per-card → re-read + increment (`ok:true`), never a failed card. `purchasePrice` defaults `?? marketPrice ?? card.marketPrice`.
 - **FR-5 add-snapshot:** after each successful add of a **priced** card (`marketPrice ?? card.marketPrice` non-null **and** `> 0`), writes ONE `PricingHistory` point `{ source: "add-snapshot", variant: "normal", condition: "NM", currency: "USD" }` so the portfolio graph has a real datapoint from the moment of add. Best-effort (try/catch — a snapshot failure never fails the add); a null/zero price writes **no** row (NFR-2 — never a fabricated `$0`).
 - 200 `{ added, total, results: [{ externalId, ok: true } | { externalId, ok: false, error }] }`; 400 zod/JSON; 500 only if EVERY card failed.
+
+### `PATCH /api/users/me/collection/[id]` — `[id]` = UserCollection row id, ownership-scoped.
+- Body (`UpdateCollectionItemSchema`): `{ quantity?, purchasePrice?, condition?, collectionId?, isSold?, soldPrice?, soldQuantity?, soldAt? }`. Mark-as-sold splits/updates the lot (preserving `collectionId`); the general-update branch may re-file a lot into another collection.
+- F-#8 (re-file path): a non-null target `collectionId` must be owned by the user → 404 on miss (cross-user attach guard, no existence leak); a re-file/edit that collides with an existing variant in the target collection trips `uc_variant_coalesced` → **409 "That variant is already in the target collection"** (not a raw 500). 200 `{ ok: true, item }`; 400 zod/JSON.
 
 ### `DELETE /api/users/me/collection/[id]` — `[id]` = UserCollection row id, ownership-scoped. 200 `{ ok: true }`; 404; 500.
 

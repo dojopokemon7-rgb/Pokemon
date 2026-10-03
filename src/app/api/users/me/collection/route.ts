@@ -7,6 +7,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { prisma } from "@/lib/db";
 import { assignBulkAddOrder } from "@/lib/utils/bulk-add-order";
@@ -266,10 +267,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       const costBasisAttemptedAt = new Date();
       const addedAt = addedAtByExternalId.get(item.externalId) ?? new Date();
 
-      // Look for an existing active (not sold) copy of this card for the user
-      // Respect graded condition vs raw and specific collection
-      const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
-      const isItemGraded = !!item.condition && GRADED_RE.test(item.condition);
+      // Look for an existing active (not sold) copy of this card for the user,
+      // scoped to the SAME variant: foil + specific collection + EXACT condition.
+      //
+      // F-#8: the app-side identity MUST key identically to the DB index
+      // `uc_variant_coalesced` (COALESCE(condition,'')), so we compare on exact
+      // normalized `condition` for EVERY lot (graded OR raw). A raw `null` lot and
+      // a raw `"NM"` lot are therefore TWO distinct rows in both layers, and a
+      // graded `"PSA 10"` lot stays distinct from both. (The old code matched the
+      // first raw lot regardless of condition — looser than the index.)
+      const norm = (c: string | null | undefined) => (c ?? "").trim().toUpperCase();
 
       const existingItems = await prisma.userCollection.findMany({
         where: {
@@ -281,13 +288,9 @@ export async function POST(request: Request): Promise<NextResponse> {
         },
       });
 
-      const existingItem = existingItems.find((existing) => {
-        const isExistingGraded = !!existing.condition && GRADED_RE.test(existing.condition);
-        if (isItemGraded || isExistingGraded) {
-          return (existing.condition ?? "").trim().toUpperCase() === (item.condition ?? "").trim().toUpperCase();
-        }
-        return true;
-      });
+      const existingItem = existingItems.find(
+        (existing) => norm(existing.condition) === norm(item.condition)
+      );
 
       if (existingItem) {
         await prisma.userCollection.update({
@@ -310,22 +313,51 @@ export async function POST(request: Request): Promise<NextResponse> {
           },
         });
       } else {
-        await prisma.userCollection.create({
-          data: {
-            userId,
-            cardId: card.id,
-            quantity: item.quantity,
-            isFoil: item.isFoil,
-            condition: item.condition ?? null,
-            purchasePrice,
-            costBasisSource,
-            costBasisCurrency,
-            costBasisAttemptedAt,
-            isSold: false,
-            collectionId: item.collectionId ?? null,
-            addedAt,
-          },
-        });
+        try {
+          await prisma.userCollection.create({
+            data: {
+              userId,
+              cardId: card.id,
+              quantity: item.quantity,
+              isFoil: item.isFoil,
+              condition: item.condition ?? null,
+              purchasePrice,
+              costBasisSource,
+              costBasisCurrency,
+              costBasisAttemptedAt,
+              isSold: false,
+              collectionId: item.collectionId ?? null,
+              addedAt,
+            },
+          });
+        } catch (e) {
+          // F-#8: a concurrent add raced past our findMany and created this exact
+          // variant first → P2002 on `uc_variant_coalesced`. Re-read the raced lot
+          // (same scoped find + exact-condition match) and increment it, so a race
+          // resolves idempotently instead of becoming a user-visible failed card.
+          if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+            const raced = await prisma.userCollection.findFirst({
+              where: {
+                userId,
+                cardId: card.id,
+                isFoil: item.isFoil,
+                isSold: false,
+                collectionId: item.collectionId ?? null,
+              },
+            });
+            const match = raced && norm(raced.condition) === norm(item.condition) ? raced : null;
+            if (match) {
+              await prisma.userCollection.update({
+                where: { id: match.id },
+                data: { quantity: match.quantity + item.quantity },
+              });
+            } else {
+              throw e; // not the race we expected → let the generic catch mark it failed
+            }
+          } else {
+            throw e;
+          }
+        }
       }
 
       // FR-5 (design §5): capture ONE add-snapshot PricingHistory point so the

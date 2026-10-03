@@ -12,7 +12,7 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import {
   createCollection,
-  listCollections,
+  listCollectionsWithBuckets,
   VirtualCollectionReadonlyError,
 } from "@/lib/services/collection.service";
 import { ZodError } from "zod";
@@ -27,8 +27,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   const userId = guard.session.user.id;
 
   // Per-user cache (RULE 5 — key embeds userId). A Redis fault returns null →
-  // live listCollections below. The `Cache-Control: no-store` header is a
-  // BROWSER directive, independent of this server-side Redis cache.
+  // live listCollectionsWithBuckets below. The `Cache-Control: no-store` header
+  // is a BROWSER directive, independent of this server-side Redis cache.
   // INVALIDATED BY: collection create (POST below) / rename / delete.
   const cacheKey = RedisKeys.collections(userId);
   const cached = await cacheGetJson<{ data: unknown[] }>(cacheKey);
@@ -36,9 +36,17 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
   }
 
-  const collections = await listCollections(userId);
-  await cacheSetJson(cacheKey, { data: collections }, CACHE_TTL.collections);
-  return NextResponse.json({ data: collections }, { headers: { "Cache-Control": "no-store" } });
+  // F-#8: the list now carries each collection's five derived buckets. A base
+  // findMany failure has no list to zero, so degrade to HTTP 200 {data:[]}
+  // (rule 7/8) rather than a 500 that would break the collections UI.
+  try {
+    const collections = await listCollectionsWithBuckets(userId);
+    await cacheSetJson(cacheKey, { data: collections }, CACHE_TTL.collections);
+    return NextResponse.json({ data: collections }, { headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    console.error("[collections] GET failed", err instanceof Error ? err.message : err);
+    return NextResponse.json({ data: [] }, { headers: { "Cache-Control": "no-store" } });
+  }
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
