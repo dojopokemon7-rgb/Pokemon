@@ -30,6 +30,7 @@ import { useState, useMemo, Suspense, useEffect, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
+import { AreaChart } from "@/components/AreaChart";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 
 // ── Icons ──────────────────────────────────────────────────────────
@@ -117,210 +118,11 @@ function fmtChartDate(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 }
 
-function DojoChart({
-  series,
-  height = 170,
-  points,
-}: {
-  series: { pts: number[]; color: string }[];
-  height?: number;
-  /** F-09: real {date, price} for the PRIMARY series, index-aligned with
-   *  series[0].pts. When present, hovering/tapping shows a tooltip with the
-   *  exact date + price of the nearest point. Absent (mock-only cards) → no
-   *  tooltip, just the existing guide line. */
-  points?: { date: string; price: number }[];
-}) {
-  const H = height, W = 330, P = 6;
-  const gridLines = [0.25, 0.5, 0.75].map((f) => P + f * (H - P * 2));
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
-  // Tracks the last interaction type. On touch, the browser fires COMPAT
-  // mouse events (incl. a spurious mouseleave) after the tap — we must not
-  // let that mouseleave clear the tooltip. Only a genuine mouse hover-out
-  // should clear it; touch stays until an outside click dismisses it.
-  const lastPointerType = useRef<string>("mouse");
-
-  const nPts = series[0]?.pts.length ?? 0;
-  const step = nPts > 1 ? (W - P * 2) / (nPts - 1) : 0;
-
-  const idxFromClientX = (clientX: number): number => {
-    const el = wrapRef.current;
-    if (!el || nPts < 2) return 0;
-    const rect = el.getBoundingClientRect();
-    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return Math.round(frac * (nPts - 1));
-  };
-  // Timestamp of the last open, so the dismiss listener can ignore the
-  // trailing synthesized events of the SAME gesture that opened the tooltip.
-  const openedAt = useRef<number>(0);
-  const handleMove = (clientX: number) => {
-    openedAt.current = Date.now();
-    setActiveIdx(idxFromClientX(clientX));
-  };
-  const clear = () => setActiveIdx(null);
-
-  // F-09 dismissal: a click/tap OUTSIDE the chart wrapper hides the tooltip.
-  // Listen on `click` only (not touchstart/mousedown) so the tap that OPENS
-  // the tooltip on touch can't also dismiss it via its own low-level events —
-  // a real outside click still fires `click` and dismisses. Registered on a
-  // microtask delay so the opening gesture's trailing click never counts.
-  useEffect(() => {
-    if (activeIdx == null) return;
-    const onDocPointerDown = (e: Event) => {
-      // Ignore events within ~350ms of opening — those are the trailing
-      // pieces of the SAME tap/click gesture (touch fires compat mouse
-      // events after touchend), not a fresh "click away".
-      if (Date.now() - openedAt.current < 350) return;
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setActiveIdx(null);
-      }
-    };
-    document.addEventListener("pointerdown", onDocPointerDown);
-    document.addEventListener("click", onDocPointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", onDocPointerDown);
-      document.removeEventListener("click", onDocPointerDown);
-    };
-  }, [activeIdx]);
-
-  const yFor = (v: number) => P + (v / 90) * (H - P * 2);
-  const activeX = activeIdx != null ? P + activeIdx * step : 0;
-
-  // Tooltip data for the active point (only when we have real points).
-  // Clamp the index into `points`: activeIdx may have been computed against a
-  // different-length series (e.g. the mock 12-pt shape shown before the real
-  // 6-pt history finished loading), so guard against an out-of-range index.
-  const activePoint =
-    activeIdx != null && points && points.length > 0
-      ? points[Math.min(activeIdx, points.length - 1)]
-      : null;
-  // Horizontal position as a % of the wrapper width so the HTML tooltip
-  // lands over the active sample regardless of the SVG's rendered scale.
-  const activeXFrac = activeIdx != null && nPts > 1 ? activeIdx / (nPts - 1) : 0;
-
-  return (
-    <div
-      ref={wrapRef}
-      style={{ width: "100%", position: "relative", touchAction: "none" }}
-      // Pointer events unify mouse + touch: hover (mouse move), tap and drag
-      // (touch) all resolve to the nearest sample. Desktop mouse-leave clears;
-      // touch stays until an outside tap dismisses it (handled by the effect).
-      onPointerDown={(e) => {
-        lastPointerType.current = e.pointerType;
-        handleMove(e.clientX);
-      }}
-      onPointerMove={(e) => {
-        // Only track on hover (mouse) or an active touch drag — not stray
-        // pointer moves with no button on touch devices.
-        if (e.pointerType === "mouse" || e.buttons > 0 || e.pressure > 0) {
-          lastPointerType.current = e.pointerType;
-          handleMove(e.clientX);
-        }
-      }}
-      // Ignore the compat mouseleave that follows a touch tap; only clear on a
-      // real mouse hover-out.
-      onMouseLeave={() => {
-        if (lastPointerType.current === "mouse") clear();
-      }}
-      role="img"
-      aria-label="Price history chart"
-    >
-      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
-        <defs>
-          {series.map((s, si) => (
-            <linearGradient key={si} id={`dojoDetailGrad-${si}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={s.color} stopOpacity="0.3" />
-              <stop offset="100%" stopColor={s.color} stopOpacity="0" />
-            </linearGradient>
-          ))}
-        </defs>
-        {gridLines.map((y, i) => (
-          <line key={i} x1={P} y1={y} x2={W - P} y2={y} stroke="rgba(255,255,255,.07)" strokeWidth={1} />
-        ))}
-        {series.map((s, si) => {
-          const n = s.pts.length;
-          const st = (W - P * 2) / (n - 1);
-          const coords = s.pts.map((y, i) => [+(P + i * st).toFixed(1), +(P + (y / 90) * (H - P * 2)).toFixed(1)] as const);
-          const pointsStr = coords.map(([x, y]) => `${x},${y}`).join(" ");
-          const areaStr = `${P},${H - P} ${pointsStr} ${W - P},${H - P}`;
-          return (
-            <g key={si}>
-              {/* Vertical gradient area fill (design AreaChart) — replaces the
-                  old flat polygon opacity. */}
-              <polygon points={areaStr} fill={`url(#dojoDetailGrad-${si})`} />
-              <polyline points={pointsStr} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" />
-            </g>
-          );
-        })}
-        {/* Hover/touch guide + per-series marker dots */}
-        {activeIdx != null && nPts > 1 && (
-          <g pointerEvents="none">
-            <line x1={activeX} y1={P} x2={activeX} y2={H - P} stroke="var(--color-dojo-stroke-strong)" strokeWidth={1} strokeDasharray="3 3" />
-            {series.map((s, si) => (
-              <circle
-                key={si}
-                cx={activeX}
-                cy={yFor(s.pts[activeIdx] ?? 0)}
-                r={4}
-                fill={s.color}
-                stroke="var(--color-dojo-raised)"
-                strokeWidth={2}
-              />
-            ))}
-          </g>
-        )}
-      </svg>
-
-      {/* F-09 tooltip — HTML overlay so it can show the real date + price of
-          the nearest point. Follows the active x, clamped from the edges so
-          it never overflows the chart. */}
-      {activePoint && (
-        <div
-          data-testid="chart-tooltip"
-          style={{
-            position: "absolute",
-            top: 4,
-            left: `${Math.min(85, Math.max(15, activeXFrac * 100))}%`,
-            transform: "translateX(-50%)",
-            background: "var(--color-dojo-raised)",
-            border: "1px solid var(--color-dojo-stroke)",
-            padding: "6px 9px",
-            pointerEvents: "none",
-            whiteSpace: "nowrap",
-            zIndex: 2,
-          }}
-        >
-          <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            {fmtChartDate(activePoint.date)}
-          </div>
-          <div style={{ marginTop: "2px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-gold)" }}>
-            {fmtUSD(activePoint.price)}
-          </div>
-        </div>
-      )}
-
-      {/* X-axis date-label row (design AreaChart) — only when we have real
-          points (never fabricated for the flat-baseline/mock case). Sampled to
-          ~5 evenly-spaced labels so the narrow mobile chart doesn't crowd. */}
-      {points && points.length > 1 && (
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-          {(() => {
-            const n = points.length;
-            const want = Math.min(5, n);
-            const idxs = Array.from({ length: want }, (_, i) =>
-              Math.round((i / (want - 1)) * (n - 1))
-            );
-            return [...new Set(idxs)].map((i) => (
-              <span key={i} style={{ fontSize: 11, color: "var(--color-dojo-faint)" }}>
-                {fmtChartDate(points[i].date)}
-              </span>
-            ));
-          })()}
-        </div>
-      )}
-    </div>
-  );
-}
+// Price-history chart now renders via the shared, design-system-faithful
+// AreaChart port (src/components/AreaChart.tsx) — see the call site below. The
+// old hand-rolled DojoChart (custom hover/tooltip/markers/x-axis) was removed
+// in favour of that single canonical component. `fmtChartDate` is kept: it
+// builds the AreaChart x-axis labels from the REAL {date} points.
 
 // ── Sellers on the Floor (Task 6) ───────────────────────────────────
 // Recent Sales — REAL eBay SOLD records from Scrydex's documented listings
@@ -530,6 +332,10 @@ function CardDetailInner() {
   });
 
   const currentPrices = pricesData?.prices ?? [];
+  // REAL 7-day % change (Scrydex trends.days_7). Null until a priced pull runs
+  // → the trend row renders "—" (never a fabricated number — AGENTS.md rule 2).
+  const weeklyChangePct: number | null =
+    typeof pricesData?.weeklyChangePct === "number" ? pricesData.weeklyChangePct : null;
   const rawPriceData = currentPrices.find((p: any) => p.condition === "NM") || currentPrices[0];
   const fetchedPrice = rawPriceData?.priceMarket ?? rawPriceData?.priceLow;
   // No fabricated fallback (AGENTS.md rule 2): when neither a live price nor a
@@ -718,22 +524,29 @@ function CardDetailInner() {
     return prices.map((p) => 4 + ((p - min) / range) * (86 - 4));
   }, [windowPts]);
 
-  const chartSeries = useMemo(() => {
-    const active = SERIES.filter((d) => activeSeries.has(d.id));
-    // No real history for this window → one flat baseline so the chart still
-    // renders (responsive, no crash) instead of a fabricated curve.
-    const flat = [45, 45];
-    if (!realPts) {
-      const color = active[0]?.color ?? "#9AA0A6";
-      return [{ pts: flat, color }];
+  // Data for the shared AreaChart (single-series mode). We draw the ONE real
+  // raw-history series (date + price) — there is no real per-grade series, so
+  // the grade chips drive the price LABELS, not separate curves (honest, no
+  // fabrication). < 2 real points in the window → a flat, label-less baseline
+  // so the chart still renders without inventing dates/prices.
+  const detailChartData = useMemo(() => {
+    if (realPts && windowPts.length >= 2) {
+      return windowPts.map((p) => ({ label: fmtChartDate(p.date), value: p.price }));
     }
-    const list = active.length === 0 ? [SERIES[0]] : active;
-    // ponytail: no per-grade history series yet — PSA 10 / PSA 9 lines reuse
-    // the REAL raw-history SHAPE (same normalized movement), distinguished only
-    // by the chip's graded price label. Upgrade path: a per-grade PricingHistory
-    // feed would let each graded line carry its own curve.
-    return list.map((d) => ({ pts: realPts, color: d.color }));
-  }, [activeSeries, realPts]);
+    // Honest flat baseline (no fabricated date labels, no fabricated price).
+    return [
+      { label: "", value: 1 },
+      { label: "", value: 1 },
+    ];
+  }, [realPts, windowPts]);
+
+  // When exactly one grade chip is selected, color the line with that chip's
+  // color; otherwise let the AreaChart's trend coloring (green rising / red
+  // dipping) decide. (Matches the old per-series chip color affordance.)
+  const detailChartColor = useMemo(() => {
+    const active = SERIES.filter((d) => activeSeries.has(d.id));
+    return active.length === 1 ? active[0].color : undefined;
+  }, [activeSeries]);
 
   const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * (d.price ?? 0), 0);
 
@@ -880,9 +693,18 @@ function CardDetailInner() {
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "26px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
               {price != null ? fmtUSD(price) : "—"}
             </div>
-            <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
-              ▲ +4.1% · 1M
-            </div>
+            {/* REAL weekly change (weeklyChangePct). Sign drives the arrow +
+                jade/vermilion color. Null (no priced pull yet) → muted "—",
+                never a fabricated number (AGENTS.md rule 2). */}
+            {weeklyChangePct != null ? (
+              <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: weeklyChangePct >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
+                {weeklyChangePct >= 0 ? "▲" : "▼"} {weeklyChangePct >= 0 ? "+" : ""}{weeklyChangePct.toFixed(1)}% · 1W
+              </div>
+            ) : (
+              <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+                —
+              </div>
+            )}
           </div>
           <button
             data-testid="want-to-buy-btn"
@@ -956,16 +778,15 @@ function CardDetailInner() {
         </div>
 
         <div style={{ margin: "12px -22px 0" }}>
-          {/* F-09: hand the chart the real {date, price} points for the
-              SELECTED range window so the hover/tap tooltip shows exact
-              values. All drawn lines share the real raw-history shape (PSA
-              lines are scaled by label only), so index-0 always aligns with
-              these points. No real points for this window → no tooltip, just
-              the graceful flat baseline. */}
-          <DojoChart
-            series={chartSeries}
+          {/* Design-system AreaChart port (single-series): the ONE real
+              raw-history series for the selected range window. It renders the
+              gradient fill, gridlines, dashed hover guide, markers, no-shadow
+              tooltip, and the per-point date x-axis itself. < 2 real points →
+              the flat, label-less baseline above (never a fabricated curve). */}
+          <AreaChart
+            data={detailChartData}
             height={170}
-            points={realPts ? windowPts : undefined}
+            color={detailChartColor}
           />
         </div>
         <div style={{ display: "flex", marginTop: "4px" }}>

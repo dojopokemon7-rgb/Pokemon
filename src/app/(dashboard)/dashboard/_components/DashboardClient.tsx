@@ -6,21 +6,24 @@
  * HYBRID APPROACH (MVP):
  * - UI matches the prototype exactly (chart, tabs, layout)
  * - Card lists use REAL data from the database
- * - Historical trends and daily % changes are MOCKED for MVP
+ * - Weekly % changes use the REAL stored Card.weeklyChangePct (Scrydex
+ *   trends.days_7); when a card has no recorded change the row shows "—",
+ *   never a fabricated number (AGENTS.md rule 2).
  *
  * Tabs:
- * - Most Valuable: Real user's top 5 cards by marketPrice (mocked deltas)
+ * - Most Valuable: Real user's top 5 cards by marketPrice (real weekly delta or "—")
  * - Collections: Real cards grouped by CardSet.name
- * - Gainers: Real cards with mocked positive deltas
- * - Losers: Real cards with mocked negative deltas
+ * - Gainers: Real cards sorted by real weeklyChangePct desc (nulls excluded)
+ * - Losers: Real cards sorted by real weeklyChangePct asc (nulls excluded)
  *
- * Chart: 30-day mock data showing upward trend (visual only)
+ * Chart: the comparison chart draws REAL stored history only (honest gaps).
  */
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
+import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -42,6 +45,9 @@ export interface CollectionItem {
     externalId?: string;
     name: string;
     marketPrice: number | null;
+    /** REAL stored 7-day % change (Scrydex trends.days_7); null until a priced
+     *  pull runs → the row's delta renders "—" (never fabricated). */
+    weeklyChangePct?: number | null;
     set: { name: string } | null;
   };
 }
@@ -79,6 +85,8 @@ interface WantListApiItem {
   name: string | null;
   imageUrl: string | null;
   marketPrice: number | null;
+  /** REAL stored 7-day % change; null until a priced pull runs → "—". */
+  weeklyChangePct: number | null;
   setName: string | null;
 }
 
@@ -104,30 +112,6 @@ type RangeId = (typeof RANGES)[number];
 // The synthetic chart generator (RANGE_SHAPES / mulberry32 / generateMockChartData)
 // was REMOVED (plan §6): the comparison chart now draws from REAL stored history
 // only, with honest gaps and no fabricated/interpolated series.
-
-// Deterministic mock delta — seeded by a stable string (e.g. item id) so
-// SSR and client render the SAME value and React hydration doesn't mismatch.
-// TODO Week 3: Replace with real PricingHistory delta calculations.
-function seededFrac(seed: string): number {
-  // FNV-1a 32-bit hash → [0, 1)
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return ((h >>> 0) / 4294967296);
-}
-
-function mockDelta(positive: boolean, seed: string = ""): { delta: string; pct: number } {
-  const r = seededFrac(seed || "default");
-  const pct = positive
-    ? 1 + r * 8    // +1% to +9%
-    : -(0.5 + r * 4); // -0.5% to -4.5%
-  return {
-    delta: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`,
-    pct,
-  };
-}
 
 // ── Icons ──────────────────────────────────────────────────────────
 function EyeIcon({ off }: { off?: boolean }) {
@@ -160,16 +144,17 @@ export interface CollectionSeries {
 
 function MultiLineComparisonChart({
   seriesList,
-  focusedId,
-  formatValue,
+  hidden,
 }: {
   seriesList: CollectionSeries[];
-  focusedId?: string | null;
-  formatValue?: (v: number) => string;
+  /** When true, the "hide values" eye toggle is on. The ported AreaChart's
+   *  tooltip shows raw values and has no mask hook, so to preserve the privacy
+   *  the eye toggle promises we render a "values hidden" placeholder instead of
+   *  the chart (shape + exact dollar amounts return the instant hiding is off). */
+  hidden?: boolean;
 }) {
-  const [activeIdx, setActiveIdx] = useState<number | null>(null);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
+  // Honest empty states (plan §6): no series, or every series with < 2 real
+  // points → nothing to compare yet. Never fabricate a line.
   if (seriesList.length === 0 || seriesList.every((s) => s.data.length < 2)) {
     return (
       <div
@@ -185,28 +170,16 @@ function MultiLineComparisonChart({
     );
   }
 
-  const W = 400;
-  const H = 200;
-
-  // Global bounds across all series for aligned comparison
-  const allValues = seriesList.flatMap((s) => s.data.map((d) => d.value));
-
-  // Honest empty state (plan §6): with real-history-only data a brand-new or
-  // priceless collection has no points. Rather than fabricate a line (or render
-  // NaN SVG coords from Math.min([])), show a clear "no history yet" message.
-  if (allValues.length === 0) {
+  // With real-history-only data a brand-new / priceless collection has no
+  // points. Show an honest "no history yet" rather than a fabricated line.
+  const anyValues = seriesList.some((s) => s.data.length > 0);
+  if (!anyValues) {
     return (
       <div
         style={{
-          width: "100%",
-          height: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--color-dojo-faint)",
-          fontFamily: "var(--font-display)",
-          fontWeight: 700,
-          fontSize: "12px",
+          width: "100%", height: "100%", display: "flex", alignItems: "center",
+          justifyContent: "center", color: "var(--color-dojo-faint)",
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px",
         }}
         role="img"
         aria-label="No price history yet"
@@ -216,172 +189,65 @@ function MultiLineComparisonChart({
     );
   }
 
-  const rawMin = Math.min(...allValues);
-  const rawMax = Math.max(...allValues);
-  const pad = (rawMax - rawMin) * 0.08 || 1;
-  const min = Math.max(0, rawMin - pad);
-  const max = rawMax + pad;
-  const range = max - min || 1;
+  if (hidden) {
+    return (
+      <div
+        style={{
+          width: "100%", height: "100%", display: "flex", alignItems: "center",
+          justifyContent: "center", color: "var(--color-dojo-faint)",
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px",
+          letterSpacing: "0.08em", textTransform: "uppercase",
+        }}
+        role="img"
+        aria-label="Values hidden"
+      >
+        Values hidden
+      </div>
+    );
+  }
 
-  const pointsCount = seriesList[0]?.data.length || 2;
-  const step = W / (pointsCount - 1);
-  const y = (v: number) => H - ((v - min) / range) * (H - 24) - 12;
-
-  const idxFromClientX = (clientX: number): number => {
-    const el = wrapRef.current;
-    if (!el) return 0;
-    const rect = el.getBoundingClientRect();
-    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return Math.round(frac * (pointsCount - 1));
-  };
-
-  const handleMove = (clientX: number) => setActiveIdx(idxFromClientX(clientX));
-  const clear = () => setActiveIdx(null);
-
-  const activeXFrac = activeIdx != null ? activeIdx / (pointsCount - 1) : 0;
-  const fmtV = formatValue ?? ((v: number) => `$${Math.round(v).toLocaleString()}`);
+  // Transpose the per-series arrays into the ported AreaChart's row-per-x-index
+  // shape (one AreaChartSeries per collection). All series share the x-length;
+  // the shortest bounds the row count so we never read past a series.
+  const pointsCount = Math.min(...seriesList.map((s) => s.data.length));
+  // The real history points carry no per-point date labels here, so we OMIT the
+  // x-axis labels (empty strings) rather than fabricate dates (task Item A.2).
+  const data: AreaChartDatum[] = Array.from({ length: pointsCount }, (_, i) => {
+    const row: AreaChartDatum = { label: "" };
+    for (const s of seriesList) row[s.id] = s.data[i].value;
+    return row;
+  });
+  const series: AreaChartSeries[] = seriesList.map((s) => ({
+    valueKey: s.id,
+    label: s.name,
+    color: s.color,
+  }));
 
   return (
-    <div
-      ref={wrapRef}
-      style={{ position: "relative", width: "100%", height: "100%", touchAction: "none" }}
-      onMouseMove={(e) => handleMove(e.clientX)}
-      onMouseLeave={clear}
-      onTouchStart={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
-      onTouchMove={(e) => e.touches[0] && handleMove(e.touches[0].clientX)}
-      onTouchEnd={clear}
-      role="img"
-      aria-label="Portfolio comparison chart"
-    >
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        width="100%"
-        height="100%"
-        aria-hidden="true"
-      >
-        <defs>
-          {seriesList.map((s) => (
-            <linearGradient key={`grad-${s.id}`} id={`dojoGrad-${s.id}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={s.color} stopOpacity={0.3} />
-              <stop offset="100%" stopColor={s.color} stopOpacity={0} />
-            </linearGradient>
-          ))}
-        </defs>
-
-        {/* Gradient area fill for EVERY series (design AreaChart draws an area
-            per series under its line). Drawn before the polylines so the lines
-            sit on top. */}
-        {seriesList.map((s) => (
-          <path
-            key={`area-${s.id}`}
-            d={
-              `M0,${H} L` +
-              s.data.map((d, i) => `${i * step},${y(d.value)}`).join(" L") +
-              ` L${W},${H} Z`
-            }
-            fill={`url(#dojoGrad-${s.id})`}
-          />
-        ))}
-
-        {/* Multi-line comparison polylines */}
-        {seriesList.map((s) => {
-          const isFocused = focusedId === s.id;
-          const strokeWidth = isFocused ? 3.0 : focusedId ? 1.6 : 2.4;
-          const opacity = isFocused ? 1 : focusedId ? 0.45 : 1;
-          const linePoints = s.data
-            .map((d, i) => `${i * step},${y(d.value)}`)
-            .join(" ");
-
-          return (
-            <polyline
-              key={s.id}
-              points={linePoints}
-              fill="none"
-              stroke={s.color}
-              strokeWidth={strokeWidth}
-              opacity={opacity}
-              vectorEffect="non-scaling-stroke"
-            />
-          );
-        })}
-
-        {/* Vertical guide line on hover — dashed strong-stroke (design NeoPOP,
-            no glow). */}
-        {activeIdx != null && (
-          <line
-            x1={activeIdx * step}
-            y1={0}
-            x2={activeIdx * step}
-            y2={H}
-            stroke="var(--color-dojo-stroke-strong)"
-            strokeWidth={1}
-            strokeDasharray="3 3"
-            vectorEffect="non-scaling-stroke"
-          />
-        )}
-
-        {/* Marker dots — SVG circles with a raised-surface ring (design marker:
-            fill=series color, stroke=surface-raised). No CSS glow/box-shadow. */}
-        {activeIdx != null &&
-          seriesList.map((s) => {
-            const val = s.data[activeIdx]?.value ?? 0;
-            const isFocused = focusedId === s.id;
-            return (
-              <circle
-                key={`dot-${s.id}`}
-                cx={activeIdx * step}
-                cy={y(val)}
-                r={isFocused ? 5 : 4}
-                fill={s.color}
-                stroke="var(--color-dojo-raised)"
-                strokeWidth={2}
-                vectorEffect="non-scaling-stroke"
-              />
-            );
-          })}
-      </svg>
-
-      {/* Floating tooltip */}
-      {activeIdx != null && (
-        <div
-          style={{
-            position: "absolute",
-            left: `${Math.min(78, Math.max(22, activeXFrac * 100))}%`,
-            top: 4,
-            transform: "translateX(-50%)",
-            background: "var(--color-dojo-raised)",
-            border: "1px solid var(--color-dojo-stroke)",
-            padding: "6px 10px",
-            fontFamily: "var(--font-display)",
-            fontWeight: 700,
-            fontSize: "11px",
-            color: "var(--color-dojo-ink)",
-            whiteSpace: "nowrap",
-            pointerEvents: "none",
-            // NeoPOP hard-offset shadow (no blur) for elevation.
-            boxShadow: "5px 5px 0 0 #000",
-            zIndex: 10,
-          }}
-        >
-          {seriesList.map((s) => {
-            const val = s.data[activeIdx]?.value ?? 0;
-            return (
-              <div key={`tip-${s.id}`} style={{ display: "flex", alignItems: "center", gap: "6px", lineHeight: "1.4" }}>
-                <span style={{ width: "7px", height: "7px", background: s.color, flex: "none" }} />
-                <span style={{ color: "var(--color-dojo-body)", fontSize: "10px" }}>{s.name}:</span>
-                <span style={{ fontVariantNumeric: "tabular-nums", color: s.color }}>{fmtV(val)}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+    <div style={{ width: "100%", height: "100%" }}>
+      <AreaChart data={data} series={series} height={200} />
     </div>
   );
 }
 
 // ── Delta tag component ────────────────────────────────────────────
-function DeltaTag({ delta, up }: { delta: string; up: boolean }) {
+// `delta` is the formatted REAL weekly % change, or null when the card has no
+// recorded change yet — null renders a muted "—" (never a fabricated number,
+// AGENTS.md rule 2), so no arrow/color is shown.
+function DeltaTag({ delta, up }: { delta: string | null; up: boolean }) {
+  if (delta == null) {
+    return (
+      <span
+        style={{
+          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px",
+          letterSpacing: "0.14em", textTransform: "uppercase",
+          color: "var(--color-dojo-faint)",
+        }}
+      >
+        —
+      </span>
+    );
+  }
   return (
     <span
       style={{
@@ -395,11 +261,18 @@ function DeltaTag({ delta, up }: { delta: string; up: boolean }) {
   );
 }
 
+// Format a REAL weekly % change into a delta label + direction. Null in → null
+// out (the "—" state). Never fabricates a value.
+function fmtDelta(pct: number | null | undefined): { delta: string | null; up: boolean } {
+  if (typeof pct !== "number") return { delta: null, up: true };
+  return { delta: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`, up: pct >= 0 };
+}
+
 // ── Card row component ─────────────────────────────────────────────
 // F-08: rows are clickable and carry the `card-result` testid so a click
 // opens the shared details popup (same behaviour as the Explore tiles).
 function SectionRow({ name, sub, price, delta, up, onOpen }: {
-  name: string; sub: string; price: string; delta: string; up: boolean;
+  name: string; sub: string; price: string; delta: string | null; up: boolean;
   onOpen?: () => void;
 }) {
   return (
@@ -440,7 +313,7 @@ function SectionRow({ name, sub, price, delta, up, onOpen }: {
 // Sub line matches the design's "120 cards · 4 graded" format; the graded
 // count is omitted when zero so ungraded collections read cleanly.
 function CollectionRow({ name, count, graded, value, delta, up }: {
-  name: string; count: number; graded: number; value: number; delta: string; up: boolean;
+  name: string; count: number; graded: number; value: number; delta: string | null; up: boolean;
 }) {
   const sub = graded > 0
     ? `${count} card${count !== 1 ? "s" : ""} · ${graded} graded`
@@ -540,16 +413,14 @@ export default function DashboardClient({
       wantItems
         .filter((w) => w.intent === intent)
         .map((w) => {
-          // Seed includes the id + intent so BUY and SELL deltas differ for same card
-          const seed = `want-${w.id}-${intent}`;
-          const positive = seededFrac(seed + "dir") > 0.5;
-          const { delta, pct } = mockDelta(positive, seed);
+          // REAL weekly change (null → "—"), never a fabricated delta.
+          const { delta, up } = fmtDelta(w.weeklyChangePct);
           return {
             name: w.name ?? w.cardId,
             sub: w.setName ?? "—",
             price: w.marketPrice != null ? fmt(w.marketPrice) : "—",
             delta,
-            up: pct >= 0,
+            up,
             card: {
               externalId: w.cardId,
               name: w.name ?? w.cardId,
@@ -688,9 +559,8 @@ export default function DashboardClient({
       .sort((a, b) => (b.card.marketPrice ?? 0) * b.quantity - (a.card.marketPrice ?? 0) * a.quantity)
       .slice(0, 5)
       .map((item) => {
-        // Seed by stable id — deterministic on both server and client
-        const seed = `mv-${item.id}`;
-        const { delta, pct } = mockDelta(seededFrac(seed + "dir") > 0.3, seed);
+        // REAL weekly change (null → "—"), never a fabricated delta.
+        const { delta, up } = fmtDelta(item.card.weeklyChangePct);
         const conditionStr = item.condition ? item.condition : "Raw";
         const setStr = item.card.set?.name ?? "";
         const foilStr = item.isFoil ? "Foil" : "";
@@ -703,58 +573,55 @@ export default function DashboardClient({
           sub,
           price: fmt((item.card.marketPrice ?? 0) * item.quantity),
           delta,
-          up: pct >= 0,
+          up,
           card: toPopupCard(item),
         };
       });
 
-    // Collections: REAL named collections (F-10)
+    // Collections: REAL named collections (F-10). A collection has no single
+    // weeklyChangePct (it's an aggregate of many cards), and we have no stored
+    // per-collection weekly delta — so show "—" rather than fabricate one.
     const collections = collOptions.map((opt) => {
-      const seed = `coll-${opt.id}`;
-      const { delta, pct } = mockDelta(seededFrac(seed + "dir") > 0.4, seed);
       return {
         key: opt.id,
         name: opt.name,
         count: opt.cardCount,
         graded: 0,
         value: opt.marketValue,
-        delta,
-        up: pct >= 0,
+        delta: null as string | null,
+        up: true,
       };
     });
 
-    // Gainers & Losers
-    const gainers = [...items]
-      .sort((a, b) => (b.card.marketPrice ?? 0) - (a.card.marketPrice ?? 0))
+    // Gainers & Losers — sort by REAL weeklyChangePct (nulls excluded, never
+    // fabricated). Gainers = biggest positive change first; Losers = most
+    // negative first. Cards with no recorded change simply don't appear.
+    const withPct = items.filter(
+      (i) => typeof i.card.weeklyChangePct === "number"
+    );
+    const toRow = (item: CollectionItem) => {
+      const { delta, up } = fmtDelta(item.card.weeklyChangePct);
+      const sub = `${item.condition || item.card.set?.name || "Raw"} · Qty ${item.quantity}`;
+      return {
+        name: item.card.name,
+        sub,
+        price: fmt((item.card.marketPrice ?? 0) * item.quantity),
+        delta,
+        up,
+        card: toPopupCard(item),
+      };
+    };
+    const gainers = [...withPct]
+      .filter((i) => (i.card.weeklyChangePct as number) >= 0)
+      .sort((a, b) => (b.card.weeklyChangePct as number) - (a.card.weeklyChangePct as number))
       .slice(0, 5)
-      .map((item) => {
-        const { delta } = mockDelta(true, `gain-${item.id}`);
-        const sub = `${item.condition || item.card.set?.name || "Raw"} · Qty ${item.quantity}`;
-        return {
-          name: item.card.name,
-          sub,
-          price: fmt((item.card.marketPrice ?? 0) * item.quantity),
-          delta,
-          up: true,
-          card: toPopupCard(item),
-        };
-      });
+      .map(toRow);
 
-    const losers = [...items]
-      .sort((a, b) => (a.card.marketPrice ?? 0) - (b.card.marketPrice ?? 0))
+    const losers = [...withPct]
+      .filter((i) => (i.card.weeklyChangePct as number) < 0)
+      .sort((a, b) => (a.card.weeklyChangePct as number) - (b.card.weeklyChangePct as number))
       .slice(0, 5)
-      .map((item) => {
-        const { delta } = mockDelta(false, `lose-${item.id}`);
-        const sub = `${item.condition || item.card.set?.name || "Raw"} · Qty ${item.quantity}`;
-        return {
-          name: item.card.name,
-          sub,
-          price: fmt((item.card.marketPrice ?? 0) * item.quantity),
-          delta,
-          up: false,
-          card: toPopupCard(item),
-        };
-      });
+      .map(toRow);
 
     const OVERALL_PCT_BY_RANGE: Record<RangeId, number> = {
       "1D": 0.4,
@@ -1095,8 +962,7 @@ export default function DashboardClient({
           <div style={{ margin: "16px -22px 0", height: "200px" }}>
             <MultiLineComparisonChart
               seriesList={chartSeriesList}
-              focusedId={focusedId}
-              formatValue={(v) => (hidden ? `$ ${mask}` : fmt(v))}
+              hidden={hidden}
             />
           </div>
 
