@@ -38,7 +38,12 @@ import { prisma } from "@/lib/db";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { CardSortEnum, orderByForCardSort } from "@/lib/utils/card-sort";
 import { onePieceImageChain } from "@/lib/utils/card-image";
-import type { NormalizedCard } from "@/lib/validators/card.validator";
+import {
+  NormalizedCardSchema,
+  type NormalizedCard,
+} from "@/lib/validators/card.validator";
+import { RedisKeys, CACHE_TTL } from "@/lib/redis";
+import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 
 /** Flip to `true` to gate search behind a valid Better Auth session. */
 const ENFORCE_AUTH = false;
@@ -104,6 +109,38 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const { game, query, sort, set, rarity, graded, minPrice, maxPrice } = parsed.data;
+
+  // USER-AGNOSTIC cache (RULE 3 — the catalog result is identical for every
+  // user, so NO userId in the key; sharing it is the point). Keyed by the
+  // PARSED+normalized params (query lowercased) so ?query=Char and ?query=char
+  // collide. A Redis fault / malformed payload falls through to the live query.
+  const cacheKey = RedisKeys.cardSearchResult({
+    game,
+    query,
+    sort,
+    set,
+    rarity,
+    graded,
+    minPrice,
+    maxPrice,
+  });
+  const cached = await cacheGetJson<{ cards: unknown[]; source: string }>(cacheKey);
+  if (cached) {
+    // Re-validate the cached cards with the SAME schema the live path uses; a
+    // parse failure is treated as a miss (fall through to live), never served.
+    const revalidated = z.array(NormalizedCardSchema).safeParse(cached.cards);
+    if (revalidated.success) {
+      return NextResponse.json(
+        { cards: revalidated.data, source: cached.source },
+        {
+          status: 200,
+          headers: {
+            "Cache-Control": "public, max-age=30, stale-while-revalidate=300",
+          },
+        }
+      );
+    }
+  }
 
   // ---------------------------------------------------------------
   // Local catalog query
@@ -213,6 +250,10 @@ export async function GET(request: Request): Promise<NextResponse> {
       "",
     marketPrice: r.marketPrice,
   }));
+
+  // Best-effort cache fill. Only non-empty 200s reach here (zero rows returned
+  // a 404 above and is NOT cached, so a mid-sync empty result isn't pinned).
+  await cacheSetJson(cacheKey, { cards, source: "local-db" }, CACHE_TTL.cardSearch);
 
   return NextResponse.json(
     { cards, source: "local-db" },
