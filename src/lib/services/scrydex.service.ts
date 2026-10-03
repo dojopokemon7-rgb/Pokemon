@@ -11,9 +11,12 @@
  *     (missing team id → instant 401 INVALID_CREDENTIALS).
  *   - Search uses legacy colon syntax `q=name:<term>`; `include=prices` is
  *     REQUIRED or the prices array is absent — this client always appends it.
- *   - There is NO history endpoint (`/prices/history/...` → 404). History is
- *     store-and-accumulate (scrydex-pricing.service.ts); `fetchPriceHistory`
- *     is deleted.
+ *   - A documented price-history endpoint DOES exist and IS wired here:
+ *     `GET /{slug}/v1/cards/{id}/price_history` (3 credits/call, credit-gated).
+ *     See `fetchScrydexPriceHistory` below and `pullAndStoreScrydexHistory` in
+ *     scrydex-pricing.service.ts. (The legacy `/prices/history/...` path 404s
+ *     and the old `fetchPriceHistory` is gone — but real multi-point history is
+ *     available via the endpoint named above, NOT store-and-accumulate only.)
  *
  * ID NAMESPACES (AGENTS.md non-negotiable #3 — three distinct ids):
  *   Scrydex uses its OWN native id ("me55c-4"), NOT Card.externalId (TCGdex

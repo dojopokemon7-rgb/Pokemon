@@ -22,8 +22,9 @@ export async function GET(
   const { id: externalId } = await params;
 
   // Always resolve to a points array. Unknown card, no history, or a DB
-  // error all return `{ points: [] }` (200) so the detail page's chart
-  // falls back to its mock series instead of surfacing a 404/500.
+  // error all return `{ points: [] }` (200) so the detail page's chart shows
+  // its honest empty state — a flat, label-less baseline (NOT a fabricated
+  // mock series; the old mock curve was removed) — instead of a 404/500.
   try {
     const card = await prisma.card.findUnique({
       where: { externalId },
