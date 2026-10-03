@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { prisma } from "@/lib/db";
+import { invalidateUserCaches } from "@/lib/utils/cache";
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const guard = await requireAuth(request);
@@ -29,6 +30,8 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
       );
     }
 
+    // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(userId, ["collection", "dashboard"]);
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (error) {
     console.error("[api/users/me/collection/[id]] Error deleting collection item:", error);
@@ -122,6 +125,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           },
         });
 
+        // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+        await invalidateUserCaches(userId, ["collection", "dashboard"]);
         return NextResponse.json({ ok: true, item: soldItem }, { status: 200 });
       } else {
         // Complete sale of this entry
@@ -134,6 +139,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           },
         });
 
+        // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+        await invalidateUserCaches(userId, ["collection", "dashboard"]);
         return NextResponse.json({ ok: true, item: updated }, { status: 200 });
       }
     }
@@ -148,6 +155,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           soldAt: null,
         },
       });
+      // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+      await invalidateUserCaches(userId, ["collection", "dashboard"]);
       return NextResponse.json({ ok: true, item: updated }, { status: 200 });
     }
 
@@ -164,6 +173,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       },
     });
 
+    // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(userId, ["collection", "dashboard"]);
     return NextResponse.json({ ok: true, item: updated }, { status: 200 });
   } catch (error) {
     console.error("[api/users/me/collection/[id]] Error updating item:", error);

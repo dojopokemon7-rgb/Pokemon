@@ -19,6 +19,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { prisma } from "@/lib/db";
+import { invalidateUserCaches } from "@/lib/utils/cache";
 
 const SellSchema = z.object({
   quantity: z.number().int().min(1),
@@ -87,6 +88,8 @@ export async function POST(
           soldAt: saleDate,
         },
       });
+      // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+      await invalidateUserCaches(userId, ["collection", "dashboard"]);
       return NextResponse.json({ ok: true, item: updated }, { status: 200 });
     }
 
@@ -120,6 +123,8 @@ export async function POST(
       }),
     ]);
 
+    // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(userId, ["collection", "dashboard"]);
     return NextResponse.json({ ok: true, item: soldRow }, { status: 200 });
   } catch (err) {
     console.error("[collection/sell] failed:", err instanceof Error ? err.message : err);

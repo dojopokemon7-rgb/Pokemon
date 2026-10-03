@@ -10,6 +10,7 @@ import { requireAuth } from "@/lib/utils/auth-guard";
 import { moveWantListItem, removeWantListItem } from "@/lib/services/want-list.service";
 import { WantIntentEnum } from "@/lib/validators/want-list.validator";
 import { Prisma } from "@prisma/client";
+import { invalidateUserCaches } from "@/lib/utils/cache";
 
 function notFound(): NextResponse {
   return NextResponse.json({ error: "Not Found", message: "Want-list item not found." }, { status: 404 });
@@ -40,6 +41,9 @@ export async function PATCH(
 
   try {
     const item = await moveWantListItem(guard.session.user.id, id, parsed.data);
+    // A move changes TWO intent lists (source + target), so drop the whole
+    // wantlist:{userId}:* family + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(guard.session.user.id, ["wantlist", "dashboard"]);
     return NextResponse.json({ data: item });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError) {
@@ -66,6 +70,8 @@ export async function DELETE(
 
   try {
     await removeWantListItem(guard.session.user.id, id);
+    // Invalidate the wantlist:{userId}:* family + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(guard.session.user.id, ["wantlist", "dashboard"]);
     return NextResponse.json({ data: { id } });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {

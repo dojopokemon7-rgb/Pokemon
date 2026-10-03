@@ -19,6 +19,7 @@ import {
 } from "@/lib/services/collection.service";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
+import { invalidateUserCaches } from "@/lib/utils/cache";
 
 function readonlyVirtual(): NextResponse {
   return NextResponse.json(
@@ -68,6 +69,8 @@ export async function PATCH(
         { status: 400 }
       );
     }
+    // Invalidate collections:{userId} + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(userId, ["collections", "dashboard"]);
     return NextResponse.json({ data: result });
   } catch (err) {
     if (err instanceof VirtualCollectionReadonlyError) return readonlyVirtual();
@@ -97,9 +100,12 @@ export async function DELETE(
   const guard = await requireAuth(request);
   if (guard.unauthorized) return guard.unauthorized;
   const { id } = await params;
+  const userId = guard.session.user.id;
 
   try {
-    await deleteCollection(guard.session.user.id, id);
+    await deleteCollection(userId, id);
+    // Invalidate collections:{userId} + dashboard:{userId}. Best-effort.
+    await invalidateUserCaches(userId, ["collections", "dashboard"]);
     return NextResponse.json({ data: { id } });
   } catch (err) {
     if (err instanceof VirtualCollectionReadonlyError) return readonlyVirtual();
