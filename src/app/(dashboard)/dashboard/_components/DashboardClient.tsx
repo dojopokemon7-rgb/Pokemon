@@ -352,12 +352,27 @@ interface DashboardClientProps {
   initialItems: CollectionItem[];
   /** F-11: the user's named collections for the dashboard selector. */
   collections?: { id: string; name: string }[];
+  /** SSR-computed default-range chart histories, wrapped exactly as the
+   *  history query's queryFn resolves it (`{ histories }`). Hydrates the chart
+   *  query's `initialData` ONLY when the live key matches the SSR key below, so
+   *  the chart draws on first paint with NO skeleton flash. */
+  initialHistories?: { histories: Record<string, { date: string; value: number | null }[]> };
+  /** The range the SSR histories were built for (the client's first-render
+   *  default). */
+  initialRange?: RangeId;
+  /** The `collectionIdsQuery` string the SSR histories were built for — must
+   *  equal the client's first-render `collectionIdsQuery` for the SSR data to
+   *  hydrate. */
+  initialCollectionIdsQuery?: string;
 }
 
 export default function DashboardClient({
   firstName,
   initialItems,
   collections: collectionList = [],
+  initialHistories,
+  initialRange,
+  initialCollectionIdsQuery,
 }: DashboardClientProps) {
   const [activeTab, setActiveTab] = useState<TabId>("mv");
   const [activeRange, setActiveRange] = useState<RangeId>("1M");
@@ -691,6 +706,18 @@ export default function DashboardClient({
       return res.json();
     },
     staleTime: 60_000,
+    // ROOT-CAUSE flicker fix (ssr-dashboard-chart): hydrate this query with the
+    // SSR-computed default histories ONLY when the live key equals the SSR key
+    // (same selection string AND same range). On first paint of the default
+    // view that match holds → `data` is defined → `isLoading` is false →
+    // `chartLoading` false → `showChartSkeleton` never flips → the real chart
+    // (or its honest empty state) is the FIRST thing painted, no grey Skeleton
+    // swap. Any mismatch (user changed range/selection before first fetch) →
+    // undefined → the normal fetch + delayed-skeleton path still covers it.
+    initialData:
+      collectionIdsQuery === initialCollectionIdsQuery && activeRange === initialRange
+        ? initialHistories
+        : undefined,
     // Blink fix (same keep-previous principle as Batch 2B's trending/search
     // queries, which this portfolio-history query had missed): switching the
     // RANGE tab or the COLLECTIONS selection changes this query key, which
