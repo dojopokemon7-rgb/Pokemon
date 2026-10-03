@@ -16,16 +16,31 @@ import {
   getStoredPopulationReport,
   BGS_POPULATION_SUPPORTED,
 } from "@/lib/services/population.service";
+import { RedisKeys, CACHE_TTL } from "@/lib/redis";
+import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
+  const { id } = await params;
+
+  // USER-AGNOSTIC cache keyed by externalId (RULE 3). This is a READ of STORED
+  // population only — getStoredPopulationReport makes NO live, credit-consuming
+  // Scrydex fetch, so caching it has no credit impact. A Redis fault falls
+  // through to the live stored read below.
+  const cacheKey = RedisKeys.cardPopulation(id);
+  const cached = await cacheGetJson<{ report: unknown; bgsSupported: boolean }>(cacheKey);
+  if (cached) {
+    return NextResponse.json(cached, { headers: { "Cache-Control": "private, max-age=86400" } });
+  }
+
   try {
-    const { id } = await params;
     const report = await getStoredPopulationReport(id);
+    const payload = { report, bgsSupported: BGS_POPULATION_SUPPORTED };
+    await cacheSetJson(cacheKey, payload, CACHE_TTL.cardPopulation);
     return NextResponse.json(
-      { report, bgsSupported: BGS_POPULATION_SUPPORTED },
+      payload,
       { headers: { "Cache-Control": "private, max-age=86400" } }
     );
   } catch (err) {
