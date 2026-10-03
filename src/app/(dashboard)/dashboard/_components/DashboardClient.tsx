@@ -240,7 +240,6 @@ function MultiLineComparisonChart({
 
   const activeXFrac = activeIdx != null ? activeIdx / (pointsCount - 1) : 0;
   const fmtV = formatValue ?? ((v: number) => `$${Math.round(v).toLocaleString()}`);
-  const isSingle = seriesList.length === 1;
 
   return (
     <div
@@ -264,23 +263,26 @@ function MultiLineComparisonChart({
         <defs>
           {seriesList.map((s) => (
             <linearGradient key={`grad-${s.id}`} id={`dojoGrad-${s.id}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={s.color} stopOpacity={0.25} />
-              <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
+              <stop offset="0%" stopColor={s.color} stopOpacity={0.3} />
+              <stop offset="100%" stopColor={s.color} stopOpacity={0} />
             </linearGradient>
           ))}
         </defs>
 
-        {/* If single series, draw subtle gradient fill */}
-        {isSingle && (
+        {/* Gradient area fill for EVERY series (design AreaChart draws an area
+            per series under its line). Drawn before the polylines so the lines
+            sit on top. */}
+        {seriesList.map((s) => (
           <path
+            key={`area-${s.id}`}
             d={
               `M0,${H} L` +
-              seriesList[0].data.map((d, i) => `${i * step},${y(d.value)}`).join(" L") +
+              s.data.map((d, i) => `${i * step},${y(d.value)}`).join(" L") +
               ` L${W},${H} Z`
             }
-            fill={`url(#dojoGrad-${seriesList[0].id})`}
+            fill={`url(#dojoGrad-${s.id})`}
           />
-        )}
+        ))}
 
         {/* Multi-line comparison polylines */}
         {seriesList.map((s) => {
@@ -304,46 +306,41 @@ function MultiLineComparisonChart({
           );
         })}
 
-        {/* Vertical guide line on hover */}
+        {/* Vertical guide line on hover — dashed strong-stroke (design NeoPOP,
+            no glow). */}
         {activeIdx != null && (
           <line
             x1={activeIdx * step}
             y1={0}
             x2={activeIdx * step}
             y2={H}
-            stroke="rgba(255,255,255,0.25)"
+            stroke="var(--color-dojo-stroke-strong)"
             strokeWidth={1}
+            strokeDasharray="3 3"
             vectorEffect="non-scaling-stroke"
           />
         )}
-      </svg>
 
-      {/* Marker dots */}
-      {activeIdx != null &&
-        seriesList.map((s) => {
-          const val = s.data[activeIdx]?.value ?? 0;
-          const isFocused = focusedId === s.id;
-          return (
-            <span
-              key={`dot-${s.id}`}
-              aria-hidden
-              style={{
-                position: "absolute",
-                left: `${activeXFrac * 100}%`,
-                top: `${(y(val) / H) * 100}%`,
-                width: isFocused ? 11 : 8,
-                height: isFocused ? 11 : 8,
-                marginLeft: isFocused ? -5.5 : -4,
-                marginTop: isFocused ? -5.5 : -4,
-                borderRadius: "50%",
-                background: s.color,
-                boxShadow: `0 0 0 2px rgba(0,0,0,0.8), 0 0 8px ${s.color}`,
-                pointerEvents: "none",
-                zIndex: isFocused ? 5 : 4,
-              }}
-            />
-          );
-        })}
+        {/* Marker dots — SVG circles with a raised-surface ring (design marker:
+            fill=series color, stroke=surface-raised). No CSS glow/box-shadow. */}
+        {activeIdx != null &&
+          seriesList.map((s) => {
+            const val = s.data[activeIdx]?.value ?? 0;
+            const isFocused = focusedId === s.id;
+            return (
+              <circle
+                key={`dot-${s.id}`}
+                cx={activeIdx * step}
+                cy={y(val)}
+                r={isFocused ? 5 : 4}
+                fill={s.color}
+                stroke="var(--color-dojo-raised)"
+                strokeWidth={2}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+      </svg>
 
       {/* Floating tooltip */}
       {activeIdx != null && (
@@ -353,8 +350,7 @@ function MultiLineComparisonChart({
             left: `${Math.min(78, Math.max(22, activeXFrac * 100))}%`,
             top: 4,
             transform: "translateX(-50%)",
-            background: "rgba(18, 18, 18, 0.95)",
-            backdropFilter: "blur(6px)",
+            background: "var(--color-dojo-raised)",
             border: "1px solid var(--color-dojo-stroke)",
             padding: "6px 10px",
             fontFamily: "var(--font-display)",
@@ -363,7 +359,8 @@ function MultiLineComparisonChart({
             color: "var(--color-dojo-ink)",
             whiteSpace: "nowrap",
             pointerEvents: "none",
-            boxShadow: "0 6px 18px rgba(0,0,0,0.6)",
+            // NeoPOP hard-offset shadow (no blur) for elevation.
+            boxShadow: "5px 5px 0 0 #000",
             zIndex: 10,
           }}
         >
@@ -613,22 +610,12 @@ export default function DashboardClient({
       cardCount: countMap.get("__uncat__") ?? 0,
     });
 
-    // "Want to buy" tracking collection (matches Image 1: #0AC27E Mint, $2,481)
-    const hasNamedWant = collectionList.some((c) => c.name.toLowerCase().includes("want to buy"));
-    if (!hasNamedWant) {
-      const wantBuyTotal = wantItems
-        .filter((w) => w.intent === "BUY" && w.marketPrice != null)
-        .reduce((sum, w) => sum + (w.marketPrice ?? 0), 0);
-      opts.push({
-        id: "__want_buy__",
-        name: "Want to buy",
-        color: "#0AC27E", // Mint green
-        marketValue: wantBuyTotal > 0 ? wantBuyTotal : 0,
-        paid: Math.round(wantBuyTotal * 0.74), // realistic purchase target
-        realized: 0,
-        cardCount: wantItems.filter((w) => w.intent === "BUY").length,
-      });
-    }
+    // "Want to buy" is a want-list bucket, not a portfolio collection — it is
+    // no longer injected into the dashboard selector/comparison chart (client
+    // feedback: don't show it on the dashboard). The want-list page and the
+    // useWantToBuy star read the ["want-list"] query family directly and are
+    // unaffected. (This also drops the fabricated `paid = ×0.74` estimate —
+    // AGENTS.md rule 2.)
 
     // Named collections from database
     const namedPalette = ["#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A", "#00C9A7", "#845EC2"];
@@ -645,7 +632,7 @@ export default function DashboardClient({
     });
 
     return opts;
-  }, [collectionList, collectionData, wantItems]);
+  }, [collectionList, collectionData]);
 
   // Active selected ids (empty set = all collections selected by default)
   const activeSelectedIds = useMemo(() => {
