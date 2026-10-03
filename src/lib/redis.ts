@@ -8,11 +8,23 @@
  *   - General key-value caching (Week 3+)
  *
  * REDIS_URL is set to:
- *   - `redis://redis:6379`    in Docker Compose (uses service name)
- *   - `redis://localhost:6379` for local development without Docker
+ *   - `redis://redis:6379`     in Docker Compose (uses service name) — NO TLS
+ *   - `redis://localhost:6379` for local development without Docker — NO TLS
+ *   - `rediss://default:<password>@<host>.upstash.io:6379` on Vercel/Upstash — TLS
+ *
+ * TLS: the `rediss://` scheme (or an `*.upstash.io` host) enables TLS via
+ * `tls: {}`; plain `redis://` stays plaintext. ioredis does not reliably enable
+ * TLS from the scheme alone on Vercel serverless, so we set it explicitly — see
+ * shouldUseTls() in src/lib/utils/redis-tls.ts.
+ *
+ * Fail-open hardening (AGENTS.md RULE 1 — a Redis outage must NEVER break a
+ * request): `enableOfflineQueue: false` + `maxRetriesPerRequest: 1` make a
+ * command fail FAST on a dead/unreachable server so callers fall through to
+ * Postgres instead of blocking the serverless function on a queued command.
  */
 
 import Redis from "ioredis";
+import { shouldUseTls } from "@/lib/utils/redis-tls";
 
 // Extend global to hold the singleton across Next.js hot reloads
 const globalForRedis = globalThis as unknown as {
@@ -25,13 +37,21 @@ function createRedisClient(): Redis {
   if (!redisUrl) {
     throw new Error(
       "REDIS_URL environment variable is not set. " +
-        "Set it to `redis://localhost:6379` for local dev or `redis://redis:6379` inside Docker."
+        "Set it to `redis://localhost:6379` for local dev, `redis://redis:6379` inside Docker, " +
+        "or `rediss://default:<password>@<host>.upstash.io:6379` for Vercel/Upstash (TLS)."
     );
   }
 
+  const useTls = shouldUseTls(redisUrl);
+
   const client = new Redis(redisUrl, {
-    // Automatically retry failed commands when Redis reconnects
-    enableOfflineQueue: true,
+    // Fail-open fast (AGENTS.md RULE 1): don't queue commands against a dead
+    // socket — fail the command so callers fall through to Postgres.
+    enableOfflineQueue: false,
+    // Cap the time a single command waits on a command/connect before failing,
+    // so a serverless invocation never blocks on an unreachable Redis.
+    connectTimeout: 10000,
+    maxRetriesPerRequest: 1,
     // Retry logic: exponential backoff, max 10 retries
     retryStrategy(times: number): number | null {
       if (times > 10) {
@@ -44,6 +64,8 @@ function createRedisClient(): Redis {
       return Math.min(Math.pow(2, times) * 100, 3000);
     },
     lazyConnect: false,
+    // TLS last: rediss:// / Upstash host ⇒ TLS; plain redis:// ⇒ plaintext.
+    ...(useTls ? { tls: {} } : {}),
   });
 
   client.on("connect", () => {
