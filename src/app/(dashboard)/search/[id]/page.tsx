@@ -72,7 +72,7 @@ function ShareIcon() {
 const SERIES = [
   { id: "raw", label: "Raw", grade: "Raw", group: "Raw", color: "#9AA0A6" },
   { id: "psa10", label: "PSA 10", grade: "10", group: "PSA", color: "var(--color-dojo-gold)" },
-  { id: "psa9", label: "PSA 9", grade: "9", group: "PSA", color: "#0AC27E" },
+  { id: "psa9", label: "PSA 9", grade: "9", group: "PSA", color: "var(--color-dojo-jade)" },
 ];
 const GROUPS = ["Raw", "PSA"];
 
@@ -226,6 +226,14 @@ function DojoChart({
       aria-label="Price history chart"
     >
       <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+        <defs>
+          {series.map((s, si) => (
+            <linearGradient key={si} id={`dojoDetailGrad-${si}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={s.color} stopOpacity="0.3" />
+              <stop offset="100%" stopColor={s.color} stopOpacity="0" />
+            </linearGradient>
+          ))}
+        </defs>
         {gridLines.map((y, i) => (
           <line key={i} x1={P} y1={y} x2={W - P} y2={y} stroke="rgba(255,255,255,.07)" strokeWidth={1} />
         ))}
@@ -237,7 +245,9 @@ function DojoChart({
           const areaStr = `${P},${H - P} ${pointsStr} ${W - P},${H - P}`;
           return (
             <g key={si}>
-              <polygon points={areaStr} fill={s.color} opacity={series.length > 1 ? 0.1 : 0.14} />
+              {/* Vertical gradient area fill (design AreaChart) — replaces the
+                  old flat polygon opacity. */}
+              <polygon points={areaStr} fill={`url(#dojoDetailGrad-${si})`} />
               <polyline points={pointsStr} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" />
             </g>
           );
@@ -245,16 +255,16 @@ function DojoChart({
         {/* Hover/touch guide + per-series marker dots */}
         {activeIdx != null && nPts > 1 && (
           <g pointerEvents="none">
-            <line x1={activeX} y1={P} x2={activeX} y2={H - P} stroke="rgba(255,255,255,0.3)" strokeWidth={1} />
+            <line x1={activeX} y1={P} x2={activeX} y2={H - P} stroke="var(--color-dojo-stroke-strong)" strokeWidth={1} strokeDasharray="3 3" />
             {series.map((s, si) => (
               <circle
                 key={si}
                 cx={activeX}
                 cy={yFor(s.pts[activeIdx] ?? 0)}
-                r={3.5}
+                r={4}
                 fill={s.color}
-                stroke="var(--color-dojo-app)"
-                strokeWidth={1.5}
+                stroke="var(--color-dojo-raised)"
+                strokeWidth={2}
               />
             ))}
           </g>
@@ -272,7 +282,7 @@ function DojoChart({
             top: 4,
             left: `${Math.min(85, Math.max(15, activeXFrac * 100))}%`,
             transform: "translateX(-50%)",
-            background: "var(--color-dojo-overlay)",
+            background: "var(--color-dojo-raised)",
             border: "1px solid var(--color-dojo-stroke)",
             padding: "6px 9px",
             pointerEvents: "none",
@@ -286,6 +296,26 @@ function DojoChart({
           <div style={{ marginTop: "2px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-gold)" }}>
             {fmtUSD(activePoint.price)}
           </div>
+        </div>
+      )}
+
+      {/* X-axis date-label row (design AreaChart) — only when we have real
+          points (never fabricated for the flat-baseline/mock case). Sampled to
+          ~5 evenly-spaced labels so the narrow mobile chart doesn't crowd. */}
+      {points && points.length > 1 && (
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
+          {(() => {
+            const n = points.length;
+            const want = Math.min(5, n);
+            const idxs = Array.from({ length: want }, (_, i) =>
+              Math.round((i / (want - 1)) * (n - 1))
+            );
+            return [...new Set(idxs)].map((i) => (
+              <span key={i} style={{ fontSize: 11, color: "var(--color-dojo-faint)" }}>
+                {fmtChartDate(points[i].date)}
+              </span>
+            ));
+          })()}
         </div>
       )}
     </div>
@@ -502,7 +532,9 @@ function CardDetailInner() {
   const currentPrices = pricesData?.prices ?? [];
   const rawPriceData = currentPrices.find((p: any) => p.condition === "NM") || currentPrices[0];
   const fetchedPrice = rawPriceData?.priceMarket ?? rawPriceData?.priceLow;
-  const price = fetchedPrice ?? (priceParam > 0 ? priceParam : 246);
+  // No fabricated fallback (AGENTS.md rule 2): when neither a live price nor a
+  // tile-passed ?price= exists, price is null and every consumer renders "—".
+  const price: number | null = fetchedPrice ?? (priceParam > 0 ? priceParam : null);
 
   // `game` is passed by the search grid tile (see search/page.tsx).
   // Older entry points (like the portfolio list) don't include it yet,
@@ -585,13 +617,16 @@ function CardDetailInner() {
   // Ungraded (raw) = actual market price. PSA 10 uses the real server graded
   // price when available, falling back to the local heuristic below.
   const ADD_ROWS = useMemo(() => {
-    const rawPrice = price || 0;
+    const rawPrice = price; // number | null — null stays null, never faked to 0
     // Heuristic fallback (used only when the graded route returns no price):
     // graded always trades above raw; cheap cards carry the biggest relative
     // premium (grading fee dominates), so start at ~4.5x and ease toward ~2x
-    // for high-value cards. Continuous curve (no step at $10).
-    const psa10Multiplier = 2 + 50 / (rawPrice + 10);
-    const psa10Price = gradedData?.price ?? rawPrice * psa10Multiplier;
+    // for high-value cards. Continuous curve (no step at $10). When raw is
+    // null we have no base, so the PSA 10 price is null too (never computed
+    // off a fabricated number — AGENTS.md rule 2).
+    const psa10Multiplier = 2 + 50 / ((rawPrice ?? 0) + 10);
+    const psa10Price =
+      gradedData?.price ?? (rawPrice != null ? rawPrice * psa10Multiplier : null);
 
     return [
       { id: "raw", section: "raw" as const, label: "Foil", price: rawPrice },
@@ -700,7 +735,7 @@ function CardDetailInner() {
     return list.map((d) => ({ pts: realPts, color: d.color }));
   }, [activeSeries, realPts]);
 
-  const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * d.price, 0);
+  const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * (d.price ?? 0), 0);
 
   // Live price for each price-history chip (null → "—"). Raw = the card's
   // market price; PSA 10 / PSA 9 come from the /graded route. Never fabricated.
@@ -842,8 +877,8 @@ function CardDetailInner() {
 
         <div style={{ marginTop: "16px", display: "flex", alignItems: "flex-end", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "26px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-              {fmtUSD(price)}
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "26px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
+              {price != null ? fmtUSD(price) : "—"}
             </div>
             <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
               ▲ +4.1% · 1M
@@ -1058,13 +1093,13 @@ function CardDetailInner() {
 
 
 // ── Quantity stepper row — ported from app.js addQtyRow() ──────────
-function AddQtyRow({ label, sub, price, qty, onChange }: { label: string; sub?: string; price: number; qty: number; onChange: (q: number) => void }) {
+function AddQtyRow({ label, sub, price, qty, onChange }: { label: string; sub?: string; price: number | null; qty: number; onChange: (q: number) => void }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-ink)" }}>{label}</div>
         {sub && <div style={{ marginTop: "2px", fontSize: "10.5px", color: "var(--color-dojo-body)" }}>{sub}</div>}
-        <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-gold)" }}>{fmtUSD(price)}</div>
+        <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-gold)" }}>{price != null ? fmtUSD(price) : "—"}</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", flex: "none" }}>
         <button
