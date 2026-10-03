@@ -151,6 +151,26 @@ The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measu
 | `card:trending:{game\|all}:{sort}:{limit}:{offset}` (built inline in route) | 120s | `/api/cards/trending` |
 | `circuit_breaker:fail:{name}` / `circuit_breaker:{name}` | 600s | `fallback-executor` |
 | `otp:{phone}` / `otp:rate:{phone}` | 600s / 3600s | phone plugin (disabled MVP) |
+| `dashboard:{userId}` | 90s | dashboard SSR `page.tsx` — **per-user (RULE 5)** |
+| `collection:{userId}` | 90s | `GET /api/users/me/collection` — **per-user (RULE 5)** |
+| `wantlist:{userId}:{intent\|all}` | 60s | `GET /api/want-list` — **per-user (RULE 5)**, per-intent |
+| `collections:{userId}` | 60s | `GET /api/collections` — **per-user (RULE 5)** |
+| `card:searchq:{normalizedParams}` | 300s | `GET /api/cards/search` — user-agnostic (RULE 3); cards re-parsed with `NormalizedCardSchema` on read; only non-empty 200s cached |
+| `card:prices:{externalId}` | 300s | `GET /api/cards/[id]/prices` — user-agnostic (RULE 3), DB-read-only (no Scrydex) |
+| `card:history:{externalId}` | 600s | `GET /api/cards/[id]/history` — user-agnostic (RULE 3), DB-read-only (no Scrydex) |
+| `card:pop:{externalId}` | 86400s | `GET /api/cards/[id]/population` — user-agnostic (RULE 3), stored-read only (no Scrydex) |
+
+The per-user keys above (`dashboard`/`collection`/`wantlist`/`collections`) go through `src/lib/utils/cache.ts` (`cacheGetJson`/`cacheSetJson`), and TTLs live in `CACHE_TTL` in `redis.ts`. **Every** per-user key embeds the `userId` (RULE 5 — a key without it would leak one user's private data to another); the card keys are deliberately user-AGNOSTIC (RULE 3 — the catalog result is identical for everyone). `/api/cards/[id]/graded` is intentionally NOT cached — it routes through the credit-gated `pullAndStoreScrydexPrice`, so a cache there could alter gate/freshness behavior.
+
+#### Mutation → invalidated keys
+
+Every mutation deletes the keys its data feeds, best-effort via `invalidateUserCaches(userId, scopes)` on the WRITE path (after the DB write commits — a failed delete never fails the mutation, only costs one later cache miss). The want-list family is dropped via `redis.keys(wantlist:{userId}:*)` so a move between tabs can't leave a stale intent list.
+
+| Mutation | Invalidated keys |
+|---|---|
+| add / sell / update / delete collection item (`POST/PATCH/DELETE /api/users/me/collection[...]`, `POST .../[id]/sell`) | `collection:{userId}` + `dashboard:{userId}` |
+| want-list add / move / remove (`POST /api/want-list`, `PATCH/DELETE /api/want-list/[id]`) | `wantlist:{userId}:*` (whole family) + `dashboard:{userId}` |
+| collection create / rename / delete (`POST /api/collections`, `PATCH/DELETE /api/collections/[id]`) | `collections:{userId}` + `dashboard:{userId}` |
 
 **Every** Redis read/write is individually try/caught → outage falls through to live data. Non-fatal `[Redis] … falling through` logs in dev are expected. `redis` is a lazy Proxy so `next build` never needs `REDIS_URL`.
 
