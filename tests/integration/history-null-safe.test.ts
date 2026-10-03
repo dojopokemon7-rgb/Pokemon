@@ -23,6 +23,20 @@ const prismaMock = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
+// The card-detail history/prices routes now go through the fail-open Redis
+// cache. Mock the ioredis singleton to a permanent MISS so these tests stay
+// hermetic (no live Redis) and each assertion exercises the live Prisma path.
+const redisMock = vi.hoisted(() => ({
+  get: vi.fn(async () => null),
+  set: vi.fn(async () => "OK"),
+  del: vi.fn(async () => 0),
+  keys: vi.fn(async () => []),
+}));
+vi.mock("@/lib/redis", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/redis")>();
+  return { ...actual, redis: redisMock };
+});
+
 const USER_ID = "user_123";
 vi.mock("@/lib/utils/auth-guard", () => ({
   requireAuth: vi.fn(async () => ({ unauthorized: null, session: { user: { id: USER_ID } } })),
@@ -36,6 +50,11 @@ const ctxFor = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Keep the cache a permanent MISS after clearAllMocks wipes implementations.
+  redisMock.get.mockResolvedValue(null);
+  redisMock.set.mockResolvedValue("OK");
+  redisMock.del.mockResolvedValue(0);
+  redisMock.keys.mockResolvedValue([]);
 });
 
 // --- /api/cards/[id]/history ----------------------------------------------
