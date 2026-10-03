@@ -10,6 +10,8 @@ import { z } from "zod";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { prisma } from "@/lib/db";
 import { assignBulkAddOrder } from "@/lib/utils/bulk-add-order";
+import { RedisKeys, CACHE_TTL } from "@/lib/redis";
+import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
 
 export async function GET(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
@@ -17,6 +19,13 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   const { session } = guard;
   const userId = session.user.id;
+
+  // Per-user cache (RULE 5 — key embeds userId). A Redis fault returns null →
+  // falls through to the live findMany below (NOT a 500). INVALIDATED BY:
+  // add (POST below) / sell / update / delete collection item.
+  const cacheKey = RedisKeys.userCollection(userId);
+  const cached = await cacheGetJson<{ items: unknown[] }>(cacheKey);
+  if (cached) return NextResponse.json(cached, { status: 200 });
 
   try {
     // Explicit `select`: `include: { set: true }` was pulling every
@@ -67,6 +76,9 @@ export async function GET(request: Request): Promise<NextResponse> {
         },
       },
     });
+
+    // Best-effort cache fill on a miss (helper swallows Redis errors).
+    await cacheSetJson(cacheKey, { items }, CACHE_TTL.userCollection);
 
     return NextResponse.json({ items }, { status: 200 });
   } catch (error) {
@@ -363,6 +375,13 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const addedCount = results.filter((r) => r.ok).length;
   const allFailed = addedCount === 0;
+
+  // Invalidate the per-user caches this add feeds (best-effort, after the DB
+  // writes committed): collection:{userId} + dashboard:{userId}. Skip when
+  // nothing was actually added.
+  if (addedCount > 0) {
+    await invalidateUserCaches(userId, ["collection", "dashboard"]);
+  }
 
   return NextResponse.json(
     {
