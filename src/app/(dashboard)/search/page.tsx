@@ -1076,6 +1076,16 @@ function SearchPageInner() {
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: !hasQuery,
+    // Item 2 (Batch 2B): keep the previous results painted while the new
+    // set loads (TanStack v5 keepPreviousData) so a sort switch doesn't
+    // blank the grid. GATED on matching game (flagged risk #6): the query
+    // key is ["trending-cards", game, sort]; carrying a DIFFERENT game's
+    // pages across a Pokémon↔One Piece switch would flash the wrong
+    // franchise's cards past the externalId de-dupe, so only reuse the
+    // placeholder when the game is unchanged (sort-only switch). Does NOT
+    // change the queryFn or key — correctness is identical.
+    placeholderData: (prev, prevQuery) =>
+      (prevQuery?.queryKey as [string, Game, SortKey] | undefined)?.[1] === game ? prev : undefined,
   });
 
   // Flatten paginated trending pages, de-duplicating by externalId so a
@@ -1094,7 +1104,7 @@ function SearchPageInner() {
     return out;
   })();
 
-  const { data, isFetching, isError } = useQuery<SearchApiResponse>({
+  const { data, isFetching, isLoading: searchLoading, isError } = useQuery<SearchApiResponse>({
     queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter],
     queryFn: async () => {
       // Compose the optional F-06 filter params only when set.
@@ -1112,6 +1122,13 @@ function SearchPageInner() {
       return res.json();
     },
     enabled: initialQ.trim().length > 0,
+    // Item 2 (Batch 2B): keep the previous results painted while a new
+    // search/sort/filter loads so the grid doesn't blank. GATED on
+    // matching game (key index 1) for the same reason as trending — never
+    // flash the other franchise's cards across a game switch. queryFn/key
+    // unchanged → identical correctness.
+    placeholderData: (prev, prevQuery) =>
+      (prevQuery?.queryKey as [string, Game, ...unknown[]] | undefined)?.[1] === game ? prev : undefined,
   });
 
   const rawCards = data?.cards ?? [];
@@ -1588,9 +1605,13 @@ function SearchPageInner() {
               </div>
             </div>
 
-            {/* Card grid — adaptive columns (2 mobile / 3 tablet / 4–5 desktop) */}
+            {/* Card grid — adaptive columns (2 mobile / 3 tablet / 4–5 desktop).
+                Item 2: skeletons only on the FIRST load (searchLoading);
+                with placeholderData a sort/filter/game refetch keeps the
+                previous results painted (the "Searching…" header still
+                reflects the background isFetching). */}
             <div className="dojo-card-grid">
-              {isFetching
+              {searchLoading
                 ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
                 : isError
                 ? (

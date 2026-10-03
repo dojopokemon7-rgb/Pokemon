@@ -322,6 +322,14 @@ function CardDetailInner() {
   const img = searchParams.get("img") ?? "/cards/card-front.webp";
   const priceParam = Number(searchParams.get("price") ?? 0);
   
+  // Batch 2B · Item 2 (paint-from-cache): this query intentionally sets NO
+  // staleTime, so it inherits the global 5-minute default (providers.tsx).
+  // A revisited card therefore paints instantly from cache then
+  // background-refreshes — do NOT lower it to 0. ["card-history", id] +
+  // ["graded", …] below keep their 60s staleTime (quick back/forward cache
+  // hit without harming correctness). The search grid prefetches these
+  // exact keys on hover (search/page.tsx prefetchCardDetail), so the first
+  // open is usually already a cache hit too.
   const { data: pricesData } = useQuery({
     queryKey: ["card-prices", id],
     queryFn: async () => {
