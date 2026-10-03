@@ -24,6 +24,7 @@ import Link from "next/link";
 import { useState, useMemo } from "react";
 import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
 import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
+import { Skeleton } from "@/components/Skeleton";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -680,7 +681,7 @@ export default function DashboardClient({
   }, [focusedId, activeSelectedIds, collOptions, activeSelectedOptions, stats.overallPct]);
 
   const collectionIdsQuery = Array.from(activeSelectedIds).join(",");
-  const { data: realHistoriesData } = useQuery({
+  const { data: realHistoriesData, isLoading: historyLoading } = useQuery({
     queryKey: ["portfolio-history", collectionIdsQuery, activeRange],
     queryFn: async () => {
       if (!collectionIdsQuery) return { histories: {} };
@@ -690,6 +691,14 @@ export default function DashboardClient({
     },
     staleTime: 60_000,
   });
+  // Batch 2B · Item 3: show a block skeleton (not the "No price history yet"
+  // empty state) while the history query is genuinely loading AND a
+  // collection is selected — otherwise a range switch / selection change
+  // flashes the empty state then flips back. When the load finishes with no
+  // points, MultiLineComparisonChart's honest empty state takes over. The
+  // stat blocks are NOT skeletoned (they have SSR initialData → isLoading is
+  // already false; a skeleton there would regress to a flash).
+  const chartLoading = historyLoading && collectionIdsQuery.length > 0;
 
   // Multi-line chart series: one curve per selected collection, drawn from REAL
   // stored history only (plan §6). The fabricated `generateMockChartData`
@@ -959,11 +968,20 @@ export default function DashboardClient({
           )}
 
           {/* ── Multi-Line Comparison Chart ── */}
+          {/* Batch 2B · Item 3+4: a loading history query reserves the chart's
+              200px box with a block skeleton (no empty-state flash); once
+              resolved the chart or its honest empty state eases in. */}
           <div style={{ margin: "16px -22px 0", height: "200px" }}>
-            <MultiLineComparisonChart
-              seriesList={chartSeriesList}
-              hidden={hidden}
-            />
+            {chartLoading ? (
+              <Skeleton height="100%" className="dojo-fade-in-fast" />
+            ) : (
+              <div className="dojo-fade-in-fast" style={{ height: "100%" }}>
+                <MultiLineComparisonChart
+                  seriesList={chartSeriesList}
+                  hidden={hidden}
+                />
+              </div>
+            )}
           </div>
 
           {/* ── Range selector tabs with centered gold underline bar ── */}

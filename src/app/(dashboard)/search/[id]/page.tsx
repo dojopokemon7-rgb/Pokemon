@@ -31,6 +31,7 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
 import { AreaChart } from "@/components/AreaChart";
+import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 
 // ── Icons ──────────────────────────────────────────────────────────
@@ -330,7 +331,7 @@ function CardDetailInner() {
   // hit without harming correctness). The search grid prefetches these
   // exact keys on hover (search/page.tsx prefetchCardDetail), so the first
   // open is usually already a cache hit too.
-  const { data: pricesData } = useQuery({
+  const { data: pricesData, isLoading: pricesLoading } = useQuery({
     queryKey: ["card-prices", id],
     queryFn: async () => {
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/prices`);
@@ -499,7 +500,7 @@ function CardDetailInner() {
   // lines reuse their shape. Cards with < 2 points in the selected window
   // show a graceful flat baseline, never a fabricated mock curve. Never
   // errors — an empty/failed fetch just leaves realPts null.
-  const { data: historyData } = useQuery<{ points: { date: string; price: number }[] }>({
+  const { data: historyData, isLoading: historyLoading } = useQuery<{ points: { date: string; price: number }[] }>({
     queryKey: ["card-history", id],
     queryFn: async () => {
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/history`);
@@ -698,6 +699,19 @@ function CardDetailInner() {
 
         <div style={{ marginTop: "16px", display: "flex", alignItems: "flex-end", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Batch 2B · Item 3: while the price query is loading show block
+                skeletons sized to the real price + delta rows (zero layout
+                shift). Once resolved, the honest value or "—" renders (an
+                unpriced card is a real empty state, never a forever
+                skeleton — AGENTS.md #2). The .dojo-fade-in-fast class
+                (Item 4) eases the swap in. */}
+            {pricesLoading ? (
+              <div className="dojo-fade-in-fast" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <Skeleton height={26} width="55%" />
+                <Skeleton height={12} width="38%" />
+              </div>
+            ) : (
+            <div className="dojo-fade-in-fast">
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "26px", lineHeight: 1.05, fontVariantNumeric: "tabular-nums", color: price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
               {price != null ? fmtUSD(price) : "—"}
             </div>
@@ -712,6 +726,8 @@ function CardDetailInner() {
               <div style={{ marginTop: "6px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
                 —
               </div>
+            )}
+            </div>
             )}
           </div>
           <button
@@ -786,16 +802,30 @@ function CardDetailInner() {
         </div>
 
         <div style={{ margin: "12px -22px 0" }}>
-          {/* Design-system AreaChart port (single-series): the ONE real
-              raw-history series for the selected range window. It renders the
-              gradient fill, gridlines, dashed hover guide, markers, no-shadow
-              tooltip, and the per-point date x-axis itself. < 2 real points →
-              the flat, label-less baseline above (never a fabricated curve). */}
-          <AreaChart
-            data={detailChartData}
-            height={170}
-            color={detailChartColor}
-          />
+          {/* Batch 2B · Item 3: while history is loading, reserve the chart's
+              exact 170px height with a block skeleton (no layout shift). Once
+              resolved the AreaChart renders — with < 2 real points it draws
+              its honest flat baseline (never a fabricated curve, AGENTS.md
+              #2). Item 4 fades the swap in. */}
+          {historyLoading ? (
+            <div className="dojo-fade-in-fast" style={{ padding: "0 22px" }}>
+              <Skeleton height={170} />
+            </div>
+          ) : (
+            <div className="dojo-fade-in-fast">
+              {/* Design-system AreaChart port (single-series): the ONE real
+                  raw-history series for the selected range window. It renders
+                  the gradient fill, gridlines, dashed hover guide, markers,
+                  no-shadow tooltip, and the per-point date x-axis itself.
+                  < 2 real points → the flat, label-less baseline above
+                  (never a fabricated curve). */}
+              <AreaChart
+                data={detailChartData}
+                height={170}
+                color={detailChartColor}
+              />
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", marginTop: "4px" }}>
           {RANGE_TABS.map(([label, key]) => (

@@ -41,6 +41,7 @@ import { useState, useRef, useEffect, useCallback, Suspense } from "react";
 import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import { Toast } from "@/components/Toast";
+import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 
 // ── Prefetch-on-intent (Batch 2B · Item 1) ─────────────────────────
@@ -457,6 +458,11 @@ function FilterSheet({
 }
 
 // ── Skeleton Card ──────────────────────────────────────────────────
+// Batch 2B · Item 3: composed from the shared <Skeleton> primitive
+// (reduced-motion-safe class-based pulse) instead of the old inline
+// animation. The art box uses the SAME "660 / 921" aspect ratio as the
+// real tile's CardImage, so there is ZERO layout shift when real cards
+// replace the skeletons.
 function SkeletonCard() {
   return (
     <div
@@ -468,11 +474,11 @@ function SkeletonCard() {
         overflow: "hidden",
       }}
     >
-      <div style={{ aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", animation: "dojo-pulse 1.5s ease-in-out infinite" }} />
+      <Skeleton aspectRatio="660 / 921" />
       <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: "6px" }}>
-        <div style={{ height: "13px", background: "var(--color-dojo-raised)", width: "70%" }} />
-        <div style={{ height: "11px", background: "var(--color-dojo-stroke)", width: "50%" }} />
-        <div style={{ height: "14px", background: "var(--color-dojo-raised)", width: "40%", marginTop: "2px" }} />
+        <Skeleton height={13} width="70%" />
+        <Skeleton height={11} width="50%" />
+        <Skeleton height={14} width="40%" style={{ marginTop: "2px" }} />
       </div>
     </div>
   );

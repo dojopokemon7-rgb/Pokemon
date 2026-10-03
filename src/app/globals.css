@@ -948,6 +948,19 @@ body {
   }
 }
 
+/* --- Skeleton primitive (Batch 2B · Item 3) ---
+   Flat, token-driven loading placeholder for <Skeleton>
+   (src/components/Skeleton.tsx). Square corners, NO blur / glow /
+   backdrop-filter — NeoPOP hard-edge. The pulse is a CLASS (not an
+   inline animation) so the reduced-motion block below zeroes it for
+   opt-out users. The ~1.5s loop is a calm shimmer, deliberately NOT the
+   150–200ms snappy budget (that budget is the Item-4 fade on the
+   skeleton→content swap; a 150ms loop would strobe). */
+.dojo-skeleton {
+  background: var(--color-dojo-raised);
+  animation: dojo-pulse 1.5s ease-in-out infinite;
+}
+
 /* --- Card grid fade-up (new; reference grid never animates) --- */
 @keyframes dojo-fade-up {
   from {
