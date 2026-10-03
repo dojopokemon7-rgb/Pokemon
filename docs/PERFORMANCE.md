@@ -35,6 +35,26 @@ honest remaining levers (so nobody "optimizes" something already optimal).
   `next.config.ts` — tree-shakes the barrel export so only used symbols ship,
   shrinking first-load JS. Safe/additive, no behaviour change.
 
+### perf-optimize pass (network/DB round-trips — bundle was already healthy)
+
+- **"Want to Buy" optimistic UI** (`src/lib/hooks/useWantToBuy.ts`): both the
+  add and remove mutations now use the standard TanStack `onMutate`/`onError`
+  pattern — the `["want-list","BUY"]` cache (which drives `isWanted`) updates on
+  tap, so the star flips immediately instead of after a POST/DELETE + the
+  family-invalidate refetch (two sequential round-trips the user felt as lag).
+  `onSettled` still invalidates the whole `["want-list"]` family for eventual
+  consistency (ARCHITECTURE.md §7). Fixes all three callers at the shared hook.
+- **`UserCollection.@@index([userId, addedAt])`** (`prisma/schema.prisma`): backs
+  the hot `where userId + orderBy addedAt desc` read issued by the dashboard SSR,
+  portfolio, and the collection GET so Postgres serves the sort index-ordered
+  instead of sorting matched rows per request. Additive index — no query, API, or
+  result-shape change.
+- **Trending page-1 `count` parallelized** (`src/app/api/cards/trending/route.ts`):
+  the `card.count` used only for `hasMore` is independent of the ranked/backfill
+  fetches, so it's kicked off concurrently and awaited only when computing
+  `hasMore` — the cold Explore load (120s TTL miss) does one fewer serial
+  round-trip. Pure await-reorder; identical result set, cursor math, and cache.
+
 ## Honest remaining levers (measure before changing)
 
 - **Cold card-detail load** depends on how many stored price points exist. With

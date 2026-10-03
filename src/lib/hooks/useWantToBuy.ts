@@ -45,6 +45,12 @@ export function useWantToBuy() {
   // externalId → want-list row id, so toggle-off knows which row to DELETE.
   const rowByCard = new Map(rows.map((r) => [r.cardId, r.id]));
 
+  // Optimistic cache helpers — the star reflects the tap IMMEDIATELY instead
+  // of waiting for POST/DELETE + the family invalidate's refetch (the two
+  // sequential round-trips the user reported as "Want to Buy taking too long").
+  // onMutate mutates the ["want-list","BUY"] cache that drives `isWanted`,
+  // onError reverts to the pre-tap snapshot, onSettled still invalidates the
+  // whole family for eventual consistency (ARCHITECTURE.md §7 contract intact).
   const add = useMutation({
     mutationFn: async (externalId: string) => {
       const res = await fetch("/api/want-list", {
@@ -56,6 +62,20 @@ export function useWantToBuy() {
       if (!res.ok) throw new Error("Want-to-buy add failed");
       return res.json();
     },
+    onMutate: async (externalId: string) => {
+      await queryClient.cancelQueries({ queryKey: ["want-list"] });
+      const previous = queryClient.getQueryData<{ data: WantRow[] }>(["want-list", "BUY"]);
+      queryClient.setQueryData<{ data: WantRow[] }>(["want-list", "BUY"], (old) => {
+        const existing = old?.data ?? [];
+        if (existing.some((r) => r.cardId === externalId)) return old ?? { data: existing };
+        // Synthetic optimistic row; the onSettled refetch replaces it with the real id.
+        return { data: [...existing, { id: `optimistic-${externalId}`, cardId: externalId, intent: "BUY" }] };
+      });
+      return { previous };
+    },
+    onError: (_e, _externalId, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(["want-list", "BUY"], ctx.previous);
+    },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["want-list"] }),
   });
 
@@ -64,6 +84,17 @@ export function useWantToBuy() {
       const res = await fetch(`/api/want-list/${rowId}`, { method: "DELETE", credentials: "include" });
       if (!res.ok) throw new Error("Want-to-buy remove failed");
       return res.json();
+    },
+    onMutate: async (rowId: string) => {
+      await queryClient.cancelQueries({ queryKey: ["want-list"] });
+      const previous = queryClient.getQueryData<{ data: WantRow[] }>(["want-list", "BUY"]);
+      queryClient.setQueryData<{ data: WantRow[] }>(["want-list", "BUY"], (old) => ({
+        data: (old?.data ?? []).filter((r) => r.id !== rowId),
+      }));
+      return { previous };
+    },
+    onError: (_e, _rowId, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(["want-list", "BUY"], ctx.previous);
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["want-list"] }),
   });

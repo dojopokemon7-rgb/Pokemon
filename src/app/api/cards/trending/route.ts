@@ -210,6 +210,11 @@ export async function GET(request: Request): Promise<NextResponse> {
       // (findMany `in` doesn't preserve order). If fewer than a full page
       // trend, backfill with newest-synced cards so the grid is never
       // sparse on low activity.
+      // `count` (for hasMore) is independent of the ranked/backfill reads, so
+      // kick it off NOW and await it only when computing hasMore — the cold
+      // Explore load (120s TTL miss) then pays it concurrently instead of as a
+      // 4th serial round-trip after the ranked+backfill chain.
+      const totalPromise = prisma.card.count({ where: gameFilter });
       const rankedIds = await topTrendingCardIds(gameFilter, limit);
 
       const ranked = rankedIds.length
@@ -237,7 +242,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       // "More" if the catalog holds cards beyond this first page. Page 2+
       // browses the catalog by `updatedAt desc` (the backfill order) so
       // Show More keeps loading rather than dead-ending at one page.
-      const total = await prisma.card.count({ where: gameFilter });
+      const total = await totalPromise;
       hasMore = total > rows.length;
     } else if (sort === "trending") {
       // PAGE 2+ of the trending sort — plain catalog pagination by the

@@ -298,6 +298,13 @@ model UserCollection {
   @@index([userId])
   @@index([cardId])
   @@index([collectionId])
+  // Serves the hot `where userId + orderBy addedAt desc` read issued by the
+  // dashboard SSR, portfolio, and the collection GET — the largest-payload
+  // queries on the first-byte-critical path. Without it Postgres filters on
+  // the userId index then sorts the matched rows every time; the composite
+  // lets the sort be index-ordered (same rationale as Card.@@index([updatedAt])
+  // serving trending).
+  @@index([userId, addedAt])
   @@map("user_collection")
 }
 
