@@ -21,19 +21,36 @@
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getServerSession } from "@/lib/utils/get-server-session";
+import { RedisKeys, CACHE_TTL } from "@/lib/redis";
+import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import DashboardClient, {
   type CollectionItem,
 } from "./_components/DashboardClient";
+
+/** Cached SSR payload: the dashboard reads owned rows + named collections. */
+type DashboardCache = {
+  rows: CollectionItem[];
+  collections: { id: string; name: string }[];
+};
 
 export default async function DashboardPage() {
   const session = await getServerSession();
   if (!session) redirect("/login");
 
+  // Per-user SSR cache (RULE 5 — key embeds userId; a cache fault falls
+  // through to the live Prisma reads via the helper, so SSR never blocks or
+  // throws on Redis). INVALIDATED BY: add/sell/update/delete collection item,
+  // want-list add/move/remove, and collection create/rename/delete.
+  const cacheKey = RedisKeys.dashboardData(session.user.id);
+  const cached = await cacheGetJson<DashboardCache>(cacheKey);
+
   // Same shape as `/api/users/me/collection` returns, minus the
   // fields the dashboard never reads (notes, condition, addedAt,
   // etc.). Kept narrow so we ship the smallest payload possible
   // during SSR.
-  const [rows, collections] = await Promise.all([
+  const [rows, collections] = cached
+    ? [cached.rows, cached.collections]
+    : await Promise.all([
     prisma.userCollection.findMany({
       where: { userId: session.user.id },
       orderBy: { addedAt: "desc" },
@@ -70,6 +87,13 @@ export default async function DashboardPage() {
       select: { id: true, name: true },
     }),
   ]);
+
+  // Best-effort cache fill on a miss (helper swallows Redis errors). Date
+  // fields serialize to ISO strings over JSON — the client already consumes
+  // that same API JSON shape, so the cached form reproduces it exactly.
+  if (!cached) {
+    await cacheSetJson(cacheKey, { rows, collections }, CACHE_TTL.dashboard);
+  }
 
   const initialItems: CollectionItem[] = rows;
 
