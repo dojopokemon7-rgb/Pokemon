@@ -10,7 +10,9 @@ const pulse = "dojo-pulse 1.5s ease-in-out infinite";
 
 export default function DashboardLoading() {
   return (
-    <div style={{ padding: "16px 22px 24px" }} aria-busy="true" aria-label="Loading dashboard">
+    // dojo-delayed-skeleton: start invisible, reveal only after ~250ms (see globals.css)
+    // so a sub-250ms server fetch swaps to real content before any grey flash.
+    <div className="dojo-delayed-skeleton" style={{ padding: "16px 22px 24px" }} aria-busy="true" aria-label="Loading dashboard">
       {/* Headline value block */}
       <div style={{ height: "12px", width: "40%", background: "var(--color-dojo-raised)", animation: pulse }} />
       <div style={{ marginTop: "10px", height: "40px", width: "60%", background: "var(--color-dojo-raised)", animation: pulse }} />

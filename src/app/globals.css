@@ -973,6 +973,43 @@ body {
   animation: dojo-pulse 1.5s ease-in-out infinite;
 }
 
+/* --- Delayed skeleton reveal (skeleton-flicker fix) ---
+   A route-level loading.tsx is painted INSTANTLY by the Next.js router while
+   the server component awaits Prisma, and it cannot delay its own mount in JS
+   (the router owns its lifecycle). So the only lever is CSS: start the whole
+   skeleton at opacity:0 and reveal it only after a short delay. A sub-250ms
+   server fetch swaps to real content before this ever fires → NO grey-skeleton
+   flicker on fast loads (the reported awkwardness); a genuinely slow fetch
+   reveals the skeleton after the delay.
+
+   250ms: inside the project's snappy-motion budget (120/150/200/250ms), long
+   enough to swallow the under-a-second loads the user reported, short enough
+   that a slow load still gets a prompt skeleton. Mirrors DEFAULT_DELAY_MS in
+   src/components/useDelayedFlag.ts — keep the two in lockstep.
+
+   MUST be a CLASS, not an inline `animation:` style: the reduced-motion block
+   below zeroes animation-duration AND -delay to 0.01ms !important for every
+   element, which collapses the 250ms delay so the end-state (opacity:1) applies
+   immediately. Reduced-motion users therefore see a steady placeholder right
+   away — the least-jarring behavior (no fade/pop-in surprise mid-load). An
+   inline animation would NOT be covered by that block, so do not inline it.
+
+   Token colors only (inherited by the inner placeholders), square corners,
+   NO blur — matches the existing dojo-pulse look. */
+@keyframes dojo-skeleton-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.dojo-delayed-skeleton {
+  opacity: 0;
+  /* 1ms visible transition after a 250ms delay; `forwards` holds opacity:1. */
+  animation: dojo-skeleton-appear 1ms linear 250ms forwards;
+}
+
 /* --- Card grid fade-up (new; reference grid never animates) --- */
 @keyframes dojo-fade-up {
   from {

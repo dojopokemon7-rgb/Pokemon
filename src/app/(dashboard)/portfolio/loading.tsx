@@ -10,7 +10,9 @@ const pulse = "dojo-pulse 1.5s ease-in-out infinite";
 
 export default function PortfolioLoading() {
   return (
-    <div style={{ padding: "6px 22px 24px" }} aria-busy="true" aria-label="Loading portfolio">
+    // dojo-delayed-skeleton: start invisible, reveal only after ~250ms (see globals.css)
+    // so a sub-250ms server fetch swaps to real content before any grey flash.
+    <div className="dojo-delayed-skeleton" style={{ padding: "6px 22px 24px" }} aria-busy="true" aria-label="Loading portfolio">
       {/* Search bar */}
       <div style={{ marginTop: "16px", height: "44px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", animation: pulse }} />
 
