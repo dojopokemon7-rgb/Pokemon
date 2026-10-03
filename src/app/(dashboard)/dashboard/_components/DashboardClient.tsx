@@ -690,14 +690,29 @@ export default function DashboardClient({
       return res.json();
     },
     staleTime: 60_000,
+    // Blink fix (same keep-previous principle as Batch 2B's trending/search
+    // queries, which this portfolio-history query had missed): switching the
+    // RANGE tab or the COLLECTIONS selection changes this query key, which
+    // without a placeholder makes TanStack drop `data` → undefined and flip
+    // `isLoading` → true, swapping the chart for the Skeleton (the reported
+    // blink). `placeholderData: (prev) => prev` keeps the PREVIOUS histories
+    // rendered while the new key loads: `data` stays defined, `isLoading`
+    // stays false on every switch after the first (only `isFetching` /
+    // `isPlaceholderData` go true), so the previous chart stays painted and
+    // updates in place when the new data arrives. Does NOT change the
+    // queryFn, key, staleTime, or data source — correctness is identical.
+    placeholderData: (prev) => prev,
   });
   // Batch 2B · Item 3: show a block skeleton (not the "No price history yet"
   // empty state) while the history query is genuinely loading AND a
-  // collection is selected — otherwise a range switch / selection change
-  // flashes the empty state then flips back. When the load finishes with no
-  // points, MultiLineComparisonChart's honest empty state takes over. The
-  // stat blocks are NOT skeletoned (they have SSR initialData → isLoading is
-  // already false; a skeleton there would regress to a flash).
+  // collection is selected. With placeholderData above, `historyLoading`
+  // (isLoading) is now true ONLY on the genuine FIRST load (no previous data
+  // to keep) — a range switch / selection change keeps isLoading false, so
+  // the skeleton no longer flashes on a mere switch; the previous chart stays
+  // up until the new data draws in place. When a load finishes with no points,
+  // MultiLineComparisonChart's honest empty state takes over. The stat blocks
+  // are NOT skeletoned (they have SSR initialData → isLoading is already
+  // false; a skeleton there would regress to a flash).
   const chartLoading = historyLoading && collectionIdsQuery.length > 0;
 
   // Multi-line chart series: one curve per selected collection, drawn from REAL
