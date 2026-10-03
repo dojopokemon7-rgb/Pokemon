@@ -800,7 +800,7 @@ export default function DashboardClient({
                       position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61,
                       minWidth: "270px", background: "var(--color-dojo-card)",
                       border: "1px solid var(--color-dojo-stroke)",
-                      boxShadow: "0 12px 36px rgba(0,0,0,0.75)",
+                      boxShadow: "5px 5px 0 0 #000",
                     }}
                   >
                     <div style={{ padding: "12px 16px 8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-faint)", borderBottom: "1px solid var(--color-dojo-divider)" }}>

@@ -94,7 +94,7 @@ export function NotificationsPanel({
             overflowY: "auto",
             background: "var(--color-dojo-card)",
             border: "1px solid var(--color-dojo-stroke)",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            boxShadow: "5px 5px 0 0 #000",
             animation: "dojo-fade-in 160ms ease-out both",
           }}
         >

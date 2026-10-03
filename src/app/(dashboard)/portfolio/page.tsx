@@ -850,7 +850,7 @@ export default function PortfolioPage() {
             {typeOpen && (
               <>
                 <div onClick={() => setTypeOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 60 }} />
-                <div role="listbox" aria-label="Filter by card type" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61, minWidth: "210px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
+                <div role="listbox" aria-label="Filter by card type" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61, minWidth: "210px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", boxShadow: "5px 5px 0 0 #000" }}>
                   {CARD_TYPE_OPTIONS.map((o) => {
                     const on = cardType === o.id;
                     return (
@@ -879,7 +879,7 @@ export default function PortfolioPage() {
             {collOpen && cardType !== "want-to-buy" && (
               <>
                 <div onClick={() => setCollOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 60 }} />
-                <div role="listbox" aria-label="Filter by collection" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61, minWidth: "200px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", boxShadow: "0 10px 30px rgba(0,0,0,0.5)" }}>
+                <div role="listbox" aria-label="Filter by collection" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 61, minWidth: "200px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", boxShadow: "5px 5px 0 0 #000" }}>
                   {collOptions.map((o) => {
                     const on = selectedColl === o.id;
                     return (
