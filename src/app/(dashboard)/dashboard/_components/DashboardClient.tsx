@@ -47,6 +47,7 @@ export interface CollectionItem {
     id: string;
     externalId?: string;
     name: string;
+    imageUrl?: string | null;
     marketPrice: number | null;
     /** REAL stored 7-day % change (Scrydex trends.days_7); null until a priced
      *  pull runs → the row's delta renders "—" (never fabricated). */
@@ -61,6 +62,7 @@ function toPopupCard(item: CollectionItem): CardDetailsData {
     externalId: item.card.externalId || item.cardId,
     name: item.card.name,
     setName: item.card.set?.name ?? undefined,
+    imageUrl: item.card.imageUrl ?? undefined,
     marketPrice: item.card.marketPrice,
   };
 }
@@ -291,8 +293,11 @@ function fmtDelta(pct: number | null | undefined): { delta: string | null; up: b
 // threaded — the detail page infers it from the externalId pattern. Price is
 // only appended when non-null (AGENTS.md rule 2 — no fabricated price).
 function cardDetailHref(card: CardDetailsData): string {
+  // (img threaded below so the detail page shows THIS card's art, not a
+  // placeholder/stale image — the "wrong photo from dashboard" bug.)
   const params = new URLSearchParams({ name: card.name });
   if (card.setName) params.set("set", card.setName);
+  if (card.imageUrl) params.set("img", card.imageUrl);
   if (card.marketPrice != null) params.set("price", String(card.marketPrice));
   return `/search/${encodeURIComponent(card.externalId)}?${params.toString()}`;
 }

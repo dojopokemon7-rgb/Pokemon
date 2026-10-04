@@ -92,6 +92,7 @@ export default async function DashboardPage() {
             id: true,
             externalId: true,
             name: true,
+            imageUrl: true,
             marketPrice: true,
             set: { select: { name: true } },
           },
