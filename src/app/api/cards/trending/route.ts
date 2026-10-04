@@ -66,13 +66,19 @@ const TRENDING_SELECT = {
   imageUrl: true,
   imageUrlHi: true,
   marketPrice: true,
-  // Prefer the raw NM/normal CurrentPrice (same source the card-detail prices
-  // route reads) over the cached Card.marketPrice, which is null for many
-  // cards that DO have a real NM price row. Bounded take:1 on the
+  // Prefer the raw NM CurrentPrice (same source the card-detail prices route
+  // reads) over the cached Card.marketPrice — which is stale/garbage for some
+  // cards (e.g. a seed placeholder of 50000) and null for many that DO have a
+  // real NM row. Match ANY variant: a holo card stores its raw NM price under
+  // variant "holofoil", not "normal", so the old `variant: "normal"` filter
+  // missed it and fell through to the bad marketPrice. Filter on the raw type
+  // (company is null) + NM; order by variant so the pick is deterministic when
+  // a card has raw NM rows in several variants. Bounded take:1 on the
   // current_price @@index([cardId]) — no N+1. All three fetch branches reuse
   // TRENDING_SELECT, so this widens every trending read at once.
   currentPrices: {
-    where: { variant: "normal", condition: "NM" },
+    where: { type: "raw", condition: "NM" },
+    orderBy: { variant: "asc" },
     select: { priceMarket: true },
     take: 1,
   },

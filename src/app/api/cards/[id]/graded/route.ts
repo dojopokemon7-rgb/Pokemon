@@ -71,6 +71,31 @@ export async function GET(
       return NextResponse.json(nullPayload, { headers: { "Cache-Control": "no-store" } });
     }
 
+    // REAL graded price FIRST (AGENTS.md rule 2 — no fabricated prices). We now
+    // store full per-grade graded CurrentPrice rows (company+grade+type, from
+    // pullAndStoreScrydexPrice's full capture). When the requested PSA grade is
+    // stored, return that exact value — this is the SAME number the detail-page
+    // chips show (they read /prices), so the add-row and chip never disagree.
+    // Only when no stored PSA row exists do we fall through to the gated Scrydex
+    // refetch + curated/multiplier heuristic below.
+    const storedGraded = await prisma.currentPrice.findFirst({
+      where: {
+        cardId: card.id,
+        type: "graded",
+        company: "PSA",
+        grade,
+        priceMarket: { not: null },
+      },
+      orderBy: { priceMarket: "desc" },
+      select: { priceMarket: true, updatedAt: true },
+    });
+    if (storedGraded?.priceMarket != null) {
+      return NextResponse.json(
+        { price: storedGraded.priceMarket, isFallback: false, isStale: false },
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
     // Route the Scrydex fetch through the central freshness gate + metering +
     // scrydexId write-back (MEDIUM-1). Returns the resolved ScrydexCard on a
     // fresh pull, or null when the 24h gate short-circuits (credit-free).
