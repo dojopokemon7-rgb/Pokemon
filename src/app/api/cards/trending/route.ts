@@ -66,6 +66,16 @@ const TRENDING_SELECT = {
   imageUrl: true,
   imageUrlHi: true,
   marketPrice: true,
+  // Prefer the raw NM/normal CurrentPrice (same source the card-detail prices
+  // route reads) over the cached Card.marketPrice, which is null for many
+  // cards that DO have a real NM price row. Bounded take:1 on the
+  // current_price @@index([cardId]) — no N+1. All three fetch branches reuse
+  // TRENDING_SELECT, so this widens every trending read at once.
+  currentPrices: {
+    where: { variant: "normal", condition: "NM" },
+    select: { priceMarket: true },
+    take: 1,
+  },
   rarity: true,
   set: { select: { name: true } },
 } satisfies Prisma.CardSelect;
@@ -300,7 +310,9 @@ export async function GET(request: Request): Promise<NextResponse> {
         game === "onepiece"
           ? onePieceImageChain(c.externalId, c.imageUrl, c.imageUrlHi)
           : undefined,
-      price: c.marketPrice ?? null,
+      // NM CurrentPrice first, then the cached Card.marketPrice, else null →
+      // '—'. Stays number|null (never a fabricated 0).
+      price: c.currentPrices?.[0]?.priceMarket ?? c.marketPrice ?? null,
       // Graded-ness rides on `rarity` ("PSA 10") — the popup uses it to
       // open the graded add flow (F-19). No dedicated grade column yet.
       rarity: c.rarity ?? null,

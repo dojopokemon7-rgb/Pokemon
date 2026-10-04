@@ -212,6 +212,16 @@ export async function GET(request: Request): Promise<NextResponse> {
       imageUrl: true,
       imageUrlHi: true,
       marketPrice: true,
+      // Prefer the raw NM/normal CurrentPrice — the SAME source the
+      // card-detail prices route reads. Many cards have a real NM price row
+      // while Card.marketPrice is still null, so selecting only marketPrice
+      // made priced cards (e.g. One Piece "Perfect Order") show "No price
+      // data". Bounded (take:1, uses current_price @@index([cardId])) — no N+1.
+      currentPrices: {
+        where: { variant: "normal", condition: "NM" },
+        select: { priceMarket: true },
+        take: 1,
+      },
       set: { select: { name: true } },
     },
   });
@@ -248,7 +258,11 @@ export async function GET(request: Request): Promise<NextResponse> {
       r.imageUrl ??
       r.imageUrlHi ??
       "",
-    marketPrice: r.marketPrice,
+    // List price prefers the NM CurrentPrice (same source the detail route
+    // reads), falls back to the cached Card.marketPrice, else null → '—'.
+    // Stays number|null (never a fabricated 0) so NormalizedCardSchema — and
+    // this route's cached-payload re-parse — still validate.
+    marketPrice: r.currentPrices?.[0]?.priceMarket ?? r.marketPrice ?? null,
   }));
 
   // Best-effort cache fill. Only non-empty 200s reach here (zero rows returned
