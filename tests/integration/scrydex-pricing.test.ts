@@ -352,6 +352,62 @@ describe("pullAndStoreScrydexPrice — C1 full current-price capture", () => {
     // Each pull deletes then writes the SAME full set — the row count is stable.
     expect(secondRows).toBe(firstRows);
   });
+
+  // Regression: Scrydex returns TWO entries that collapse to the SAME
+  // (variant, condition, company, grade, type) identity — e.g. two "CGC 10"
+  // graded entries (standard vs perfect at different market prices) under one
+  // variant. The schema has no column to distinguish them. Before the dedupe
+  // fix createMany threw a unique-constraint violation, the $transaction rolled
+  // back, and ZERO prices were stored (the real "price FAIL" on me1-134 etc.).
+  const COLLISION_CARD = {
+    id: "me1-134",
+    name: "Ivysaur",
+    number: "134",
+    variants: [
+      {
+        name: "holofoil",
+        prices: [
+          { type: "raw", condition: "NM", company: null, grade: null, market: 12, low: 10, currency: "USD" },
+          // Two CGC 10 under the SAME variant → collide on the 8-column key.
+          { type: "graded", condition: null, company: "CGC", grade: "10", market: 1500, low: 1400, currency: "USD" },
+          { type: "graded", condition: null, company: "CGC", grade: "10", market: 1800, low: 1700, currency: "USD" },
+          // A distinct other graded grade so the "all OTHER rows kept" check bites.
+          { type: "graded", condition: null, company: "PSA", grade: "9", market: 400, low: 380, currency: "USD" },
+        ],
+      },
+    ],
+  };
+
+  it("dedupes a colliding 8-column key — keeps the higher-market row, stores all other distinct rows, never throws", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me1-134", card: COLLISION_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    // Does NOT throw (pre-fix this rejected with a unique-constraint violation).
+    await expect(pullAndStoreScrydexPrice(CARD, { force: true })).resolves.toBeDefined();
+
+    const call = prismaMock.currentPrice.createMany.mock.calls[0][0];
+    const rows = call.data;
+
+    // Exactly ONE row for the colliding CGC-10/holofoil identity...
+    const cgc10 = rows.filter(
+      (r: { type: string; company: string | null; grade: string | null; variant: string }) =>
+        r.type === "graded" && r.company === "CGC" && r.grade === "10" && r.variant === "holofoil"
+    );
+    expect(cgc10).toHaveLength(1);
+    // ...and it is the HIGHER-market one (1800 beats 1500).
+    expect(cgc10[0].priceMarket).toBe(1800);
+
+    // All the OTHER distinct rows are still present.
+    expect(rows).toContainEqual(
+      expect.objectContaining({ type: "raw", condition: "NM", company: null, grade: null, variant: "holofoil" })
+    );
+    expect(rows).toContainEqual(
+      expect.objectContaining({ type: "graded", condition: "GRADED", company: "PSA", grade: "9", variant: "holofoil" })
+    );
+
+    // Belt-and-suspenders guard shipped on the createMany.
+    expect(call).toEqual(expect.objectContaining({ skipDuplicates: true }));
+  });
 });
 
 describe("pullAndStoreScrydexPrice — NO fabricated history (Req 7.2/7.3)", () => {

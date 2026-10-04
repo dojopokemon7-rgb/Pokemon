@@ -254,7 +254,7 @@ export async function pullAndStoreScrydexPrice(
   // freshness gate guarantees one COMPLETE fresh set per pull. The two writes
   // run in a $transaction so a mid-way crash can never leave the card with zero
   // prices. Keeps company/grade NULL for raw (RULE 2 — no fabricated sentinel).
-  const priceRows: {
+  type PriceRow = {
     cardId: string;
     source: DataSource;
     currency: string;
@@ -265,7 +265,22 @@ export async function pullAndStoreScrydexPrice(
     type: string;
     priceMarket: number | null;
     priceLow: number | null;
-  }[] = [];
+  };
+  // DEDUPE by the 8-column CurrentPrice unique identity BEFORE createMany.
+  // WHY: Scrydex can return >1 price entry that collapses to the SAME
+  // (variant, condition, company, grade, type) identity — e.g. two "CGC 10"
+  // graded entries (standard vs perfect/pristine at different market prices),
+  // which the CurrentPrice schema has no column to distinguish. Feeding both
+  // into createMany throws a unique-constraint violation; the whole
+  // $transaction then rolls back and ZERO prices are stored (the real "price
+  // FAIL" seen on me1-134 / me2pt5-276 / sv3-223 / me1-179). Rather than crash
+  // and store nothing, we keep ONE row per identity.
+  // TIE-BREAK: keep the row with the HIGHER priceMarket; a numeric market
+  // always beats null, and between two nulls we keep the first seen. This
+  // retains the more meaningful graded value rather than an arbitrary one.
+  // ponytail: a future enhancement could add a grade-label / is_perfect column
+  // so both CGC 10 variants could be stored distinctly — out of scope here.
+  const dedupeMap = new Map<string, PriceRow>();
   for (const v of scrydexCard.variants) {
     for (const p of v.prices) {
       const market = typeof p.market === "number" ? p.market : null;
@@ -277,20 +292,43 @@ export async function pullAndStoreScrydexPrice(
       // condition:null for graded entries. Coerce to a SINGLE STABLE sentinel
       // "GRADED". Raw rows keep their real condition (null → "NM"), which IS
       // part of their identity (NM vs LP vs MP vs HP distinct rows).
-      priceRows.push({
+      const currency = p.currency || "USD";
+      const variant = v.name || "normal";
+      const condition = isGraded ? "GRADED" : (p.condition || "NM");
+      const company = isGraded ? (p.company ?? "").toUpperCase() || null : null;
+      const grade = isGraded ? (p.grade ?? null) : null; // verbatim (incl "8.5","9Q")
+      const type = isGraded ? "graded" : "raw";
+      // cardId + source are constant for this card/writer, so they are omitted
+      // from the key — the remaining 6 fields are the full discriminating set.
+      const key = `${currency}|${variant}|${condition}|${company ?? ""}|${grade ?? ""}|${type}`;
+      const row: PriceRow = {
         cardId: card.id,
         source: DataSource.SCRYDEX,
-        currency: p.currency || "USD",
-        variant: v.name || "normal",
-        condition: isGraded ? "GRADED" : (p.condition || "NM"),
-        company: isGraded ? (p.company ?? "").toUpperCase() || null : null,
-        grade: isGraded ? (p.grade ?? null) : null, // verbatim (incl "8.5","9Q")
-        type: isGraded ? "graded" : "raw",
+        currency,
+        variant,
+        condition,
+        company,
+        grade,
+        type,
         priceMarket: market,
         priceLow: low,
-      });
+      };
+      const existing = dedupeMap.get(key);
+      if (existing) {
+        // Collision on the 8-column identity: keep the higher-market row.
+        // null market is treated as lower than any number (numeric wins); two
+        // nulls keep the first seen (existing).
+        const existingM = existing.priceMarket;
+        const newM = row.priceMarket;
+        if (newM != null && (existingM == null || newM > existingM)) {
+          dedupeMap.set(key, row);
+        }
+      } else {
+        dedupeMap.set(key, row);
+      }
     }
   }
+  const priceRows = [...dedupeMap.values()];
   // Atomic replace of the SCRYDEX price set — only when there is at least one
   // real row (never wipe the stored set to nothing on an all-null payload).
   if (priceRows.length > 0) {
@@ -298,7 +336,9 @@ export async function pullAndStoreScrydexPrice(
       prisma.currentPrice.deleteMany({
         where: { cardId: card.id, source: DataSource.SCRYDEX },
       }),
-      prisma.currentPrice.createMany({ data: priceRows }),
+      // skipDuplicates: belt-and-suspenders — the dedupeMap already guarantees
+      // no collision, but this also guards the delete→create race.
+      prisma.currentPrice.createMany({ data: priceRows, skipDuplicates: true }),
     ]);
   }
 
