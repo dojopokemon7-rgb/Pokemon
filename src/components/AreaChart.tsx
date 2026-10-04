@@ -116,6 +116,29 @@ export function AreaChart({
 
   const gidBase = useMemo(() => "ac-" + Math.random().toString(36).slice(2, 9), []);
 
+  // X-axis ticks: one label per data point is unreadable at scale (120 history
+  // points → a smear of overlapping "Jul Jul Aug…" that doesn't line up with the
+  // data). Subsample to at most MAX_TICKS evenly-spaced labels (first + last
+  // always shown) so the axis is legible and the labels actually sit under the
+  // points they name. Collapse consecutive duplicate labels to blank so a run of
+  // same-month points doesn't repeat the month.
+  const MAX_TICKS = 6;
+  const tickIdx = useMemo(() => {
+    const n = data.length;
+    if (n <= MAX_TICKS) return data.map((_, i) => i);
+    const step = (n - 1) / (MAX_TICKS - 1);
+    return Array.from({ length: MAX_TICKS }, (_, k) => Math.round(k * step));
+  }, [data]);
+  const axisTicks = useMemo(() => {
+    let prev = "";
+    return tickIdx.map((i) => {
+      const raw = String(data[i]?.[labelKey] ?? "");
+      const label = raw === prev ? "" : raw;
+      prev = raw;
+      return { pct: data.length > 1 ? (i / (data.length - 1)) * 100 : 0, label };
+    });
+  }, [tickIdx, data, labelKey]);
+
   if (multi) {
     const seriesData = (series as AreaChartSeries[]).map((s, si) => ({
       ...s,
@@ -237,10 +260,21 @@ export function AreaChart({
             </div>
           )}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-          {data.map((d, i) => (
-            <span key={i} style={{ fontSize: 11, color: TEXT_FAINT }}>
-              {d[labelKey]}
+        <div style={{ position: "relative", height: 14, marginTop: 8 }}>
+          {axisTicks.map((t, i) => (
+            <span
+              key={i}
+              style={{
+                position: "absolute",
+                left: `${t.pct}%`,
+                transform:
+                  i === 0 ? "translateX(0)" : i === axisTicks.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+                fontSize: 11,
+                color: TEXT_FAINT,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t.label}
             </span>
           ))}
         </div>
@@ -348,10 +382,21 @@ export function AreaChart({
           </div>
         )}
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-        {data.map((d, i) => (
-          <span key={i} style={{ fontSize: 11, color: TEXT_FAINT }}>
-            {d[labelKey]}
+      <div style={{ position: "relative", height: 14, marginTop: 8 }}>
+        {axisTicks.map((t, i) => (
+          <span
+            key={i}
+            style={{
+              position: "absolute",
+              left: `${t.pct}%`,
+              transform:
+                i === 0 ? "translateX(0)" : i === axisTicks.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+              fontSize: 11,
+              color: TEXT_FAINT,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {t.label}
           </span>
         ))}
       </div>
