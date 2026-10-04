@@ -40,6 +40,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect, useCallback, Suspense } from "react";
 import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
 import { DojoSelect } from "@/components/DojoSelect";
+import { AddCardSheet } from "@/components/AddCardSheet";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import { Toast } from "@/components/Toast";
 import { Skeleton } from "@/components/Skeleton";
@@ -1691,7 +1692,20 @@ function SearchPageInner() {
           Ungraded / Graded before adding. */}
       {addSheetCard && (
         <AddCardSheet
-          card={addSheetCard}
+          card={{
+            // search results return the externalId as `id`; trending carries
+            // an explicit `externalId` — prefer it when present.
+            externalId: "externalId" in addSheetCard ? addSheetCard.externalId : addSheetCard.id,
+            name: addSheetCard.name,
+            setName:
+              ("setName" in addSheetCard ? addSheetCard.setName : undefined) ??
+              ("setImage" in addSheetCard ? (addSheetCard as { setImage?: string }).setImage : undefined) ??
+              null,
+            imageUrl: (addSheetCard as { imageUrl?: string | null }).imageUrl ?? null,
+            marketPrice:
+              ("marketPrice" in addSheetCard ? (addSheetCard as { marketPrice?: number | null }).marketPrice : undefined) ??
+              ((addSheetCard as { price?: number | null }).price ?? null),
+          }}
           initialCondition={addSheetCard.rarity ?? undefined}
           onClose={() => setAddSheetCard(null)}
           onAdded={(msg) => {
@@ -1734,330 +1748,7 @@ function SearchPageInner() {
 // UserCollection + grader-specific fee/turnaround data).
 // Grading companies parseGraded() recognises in an incoming condition
 // string (the Add sheet UI itself only offers RAW / PSA per the design).
-const GRADERS = ["PSA", "BGS", "CGC", "SGC"] as const;
-// Raw (ungraded) condition options: value persisted on the row (short code),
-// label shown to the user (full name per the design).
-const RAW_CONDITIONS: { label: string; value: string }[] = [
-  { label: "Near mint", value: "NM" },
-  { label: "Lightly played", value: "LP" },
-  { label: "Moderately played", value: "MP" },
-  { label: "Heavily played", value: "HP" },
-  { label: "Damaged", value: "DMG" },
-];
-// PSA numeric-grade options: label shown, value carries the numeric grade
-// so `resolveCondition()` persists "PSA <grade>".
-const PSA_CONDITIONS: { label: string; value: string }[] = [
-  { label: "Gem Mint 10", value: "Grade 10" },
-  { label: "Mint 9", value: "Grade 9" },
-  { label: "NM-MT 8", value: "Grade 8" },
-  { label: "EX-MT 6", value: "Grade 6" },
-  { label: "EX 5", value: "Grade 5" },
-  { label: "VG-EX 4", value: "Grade 4" },
-  { label: "VG 3", value: "Grade 3" },
-  { label: "Good 2", value: "Grade 2" },
-  { label: "Fair 1.5", value: "Grade 1.5" },
-  { label: "Poor 1", value: "Grade 1" },
-];
-
-/** Parse a graded condition string like "PSA 10" / "BGS 9.5" into its
- *  grading company + grade. Returns null when the string names no known
- *  company (i.e. the card is raw/ungraded), which is how the Add sheet
- *  decides whether to open the graded form. */
-function parseGraded(
-  condition: string | undefined | null
-): { grader: (typeof GRADERS)[number]; grade: string } | null {
-  if (!condition) return null;
-  const grader = GRADERS.find((g) => new RegExp(`\\b${g}\\b`, "i").test(condition));
-  if (!grader) return null;
-  const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "";
-  return { grader, grade };
-}
-
-function AddCardSheet({
-  card,
-  onClose,
-  onAdded,
-  initialCondition,
-}: {
-  card: TrendingCard | CardResult;
-  onClose: () => void;
-  onAdded: (message: string) => void;
-  /** Card's grade/condition string (e.g. "PSA 10"). When it names a
-   *  grading company the sheet opens straight into the graded form,
-   *  pre-filled — this is the F-19 Graded Add Flow entry point. */
-  initialCondition?: string;
-}) {
-  const queryClient = useQueryClient();
-  const [adding, setAdding] = useState(false);
-  const [errMsg, setErrMsg] = useState<string | null>(null);
-
-  // Parse "PSA 10" → { grader: "PSA", grade: "10" } so a graded card
-  // pre-fills its grader + condition.
-  const parsed = parseGraded(initialCondition);
-
-  // GRADER: only RAW and PSA per the design. A graded card (initialCondition
-  // names a company) opens on PSA; everything else defaults to RAW.
-  const [grader, setGrader] = useState<"RAW" | "PSA">(parsed ? "PSA" : "RAW");
-  // CONDITION: the select value. For RAW it's a raw grade (NM…DMG); for PSA
-  // it's a "Gem Mint 10"-style option whose numeric grade we persist.
-  const [condition, setCondition] = useState<string>(
-    parsed ? `Grade ${parsed.grade}` : RAW_CONDITIONS[0].value
-  );
-  const [collectionId, setCollectionId] = useState<string>("");
-  const [qty, setQty] = useState(1);
-  const [showPayment, setShowPayment] = useState(false);
-  const [pricePaid, setPricePaid] = useState("");
-
-  // The user's named collections for the COLLECTION dropdown.
-  const { data: collections = [] } = useQuery<{ id: string; name: string }[]>({
-    queryKey: ["collections"],
-    queryFn: async () => {
-      const res = await fetch("/api/collections", { credentials: "include" });
-      if (!res.ok) return [];
-      return (await res.json()).data ?? [];
-    },
-  });
-
-  // `id` is the internal DB id for TrendingCard, but the *search* API
-  // returns `id` as the externalId. Use externalId when available.
-  const externalId = "externalId" in card ? card.externalId : card.id;
-  const marketPrice = "marketPrice" in card ? (card.marketPrice ?? card.price ?? null) : (card.price ?? null);
-  const imgSrc = (card as { imageUrl?: string }).imageUrl;
-  const setLabel = (card as { setImage?: string; setName?: string }).setImage
-    ?? (card as { setName?: string }).setName ?? "";
-  const showSet = setLabel && setLabel.toLowerCase() !== "unknown set";
-
-  // Condition options depend on the grader (Task 2 §5).
-  const conditionOptions = grader === "PSA" ? PSA_CONDITIONS : RAW_CONDITIONS;
-
-  // Keep the selected condition valid when the grader flips.
-  const onGraderChange = (g: "RAW" | "PSA") => {
-    setGrader(g);
-    setCondition(g === "PSA" ? PSA_CONDITIONS[0].value : RAW_CONDITIONS[0].value);
-  };
-
-  /** The `condition` string persisted on the collection row:
-   *  PSA → "PSA <grade>" (e.g. "PSA 10"); RAW → the raw grade (e.g. "NM"). */
-  function resolveCondition(): string {
-    if (grader === "PSA") {
-      const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "10";
-      return `PSA ${grade}`;
-    }
-    return condition;
-  }
-
-  async function handleAdd() {
-    setAdding(true);
-    setErrMsg(null);
-    try {
-      const cardPayload: Record<string, unknown> = {
-        externalId,
-        name: card.name,
-        setName: (card as { setName?: string; setImage?: string }).setName
-          ?? (card as { setImage?: string }).setImage ?? undefined,
-        marketPrice,
-        quantity: qty,
-        isFoil: false,
-        condition: resolveCondition(),
-      };
-      if (collectionId) cardPayload.collectionId = collectionId;
-      const paid = Number.parseFloat(pricePaid);
-      if (showPayment && Number.isFinite(paid) && paid > 0) cardPayload.purchasePrice = paid;
-      if (imgSrc && typeof imgSrc === "string" && imgSrc.trim().length > 0) {
-        cardPayload.imageUrl = imgSrc;
-      }
-
-      const res = await fetch("/api/users/me/collection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cards: [cardPayload] }),
-      });
-      const json = await res.json();
-      if (!res.ok || json.added === 0) {
-        throw new Error(json?.message ?? "Could not add this card.");
-      }
-      queryClient.invalidateQueries({ queryKey: ["collection"] });
-      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
-      onAdded(`Added ${card.name} to your portfolio`);
-    } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : "Something went wrong.");
-      setAdding(false);
-    }
-  }
-
-  const label: React.CSSProperties = { fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-faint)" };
-
-  return (
-    <>
-      {/* Backdrop */}
-      <div
-        onClick={adding ? undefined : onClose}
-        style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,0.6)", animation: "dojo-fade-in 180ms ease-out both" }}
-      />
-      {/* Bottom sheet */}
-      <div
-        role="dialog"
-        aria-label="Add card to portfolio"
-        data-testid="graded-add-modal"
-        style={{
-          position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 91,
-          background: "var(--color-dojo-card)",
-          borderTop: "1px solid var(--color-dojo-stroke)",
-          padding: "10px 22px 26px",
-          paddingBottom: "calc(26px + env(safe-area-inset-bottom, 0px))",
-          maxHeight: "90vh", overflowY: "auto",
-          animation: "dojo-slide-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both",
-        }}
-      >
-        {/* Drag handle */}
-        <div aria-hidden="true" style={{ width: "40px", height: "4px", borderRadius: "2px", background: "var(--color-dojo-stroke)", margin: "0 auto 14px" }} />
-
-        {/* Header row */}
-        <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
-          <span style={label}>Add Card</span>
-          <button
-            onClick={onClose}
-            disabled={adding}
-            aria-label="Close"
-            style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--color-dojo-body)", cursor: "pointer", display: "flex", padding: 0, opacity: adding ? 0.4 : 1 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-              <line x1="3" y1="3" x2="15" y2="15" />
-              <line x1="15" y1="3" x2="3" y2="15" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Card summary row */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "18px" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="dojo-heading" style={{ fontSize: "18px", lineHeight: 1.2 }}>{card.name}</div>
-            {showSet && (
-              <div style={{ marginTop: "4px", fontSize: "11.5px", color: "var(--color-dojo-body)" }}>
-                {setLabel}{grader === "PSA" ? ` · ${resolveCondition()}` : " · Raw"}
-              </div>
-            )}
-            <div style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "22px", fontVariantNumeric: "tabular-nums", color: marketPrice != null ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)" }}>
-              {marketPrice != null ? fmtUSD(marketPrice) : "—"}
-            </div>
-          </div>
-          {imgSrc && (
-            <div style={{ flex: "none", width: "62px" }}>
-              <CardImage src={imgSrc} alt={card.name} initials={cardInitials(card.name)} initialsSize="14px" style={{ background: "var(--color-dojo-raised)", border: "none" }} />
-            </div>
-          )}
-        </div>
-
-        {errMsg && (
-          <div style={{ background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", padding: "10px 12px", marginBottom: "16px" }}>
-            <p className="dojo-error" style={{ margin: 0, fontSize: "12px" }}>{errMsg}</p>
-          </div>
-        )}
-
-        {/* GRADER — RAW / PSA segmented pills */}
-        <div style={{ ...label, marginBottom: "8px" }}>Grader</div>
-        <div role="radiogroup" aria-label="Grading Company" style={{ display: "flex", border: "1px solid var(--color-dojo-stroke)", marginBottom: "18px" }}>
-          {(["RAW", "PSA"] as const).map((g) => {
-            const on = grader === g;
-            return (
-              <button
-                key={g}
-                type="button"
-                role="radio"
-                aria-checked={on}
-                onClick={() => onGraderChange(g)}
-                style={{
-                  flex: 1, padding: "11px 0", cursor: "pointer", border: "none",
-                  background: on ? "var(--color-dojo-gold)" : "var(--color-dojo-card)",
-                  color: on ? "var(--color-dojo-app)" : "var(--color-dojo-faint)",
-                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.14em",
-                }}
-              >
-                {g}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* CONDITION — custom listbox (no native <select>). Options depend
-            on the grader. */}
-        <div style={{ ...label, marginBottom: "8px" }}>Condition</div>
-        <div style={{ marginBottom: "18px" }}>
-          <DojoSelect
-            ariaLabel="Condition"
-            testId="condition-select"
-            placeholder="Select condition"
-            value={condition}
-            options={conditionOptions}
-            onChange={setCondition}
-          />
-        </div>
-
-        {/* COLLECTION + QTY row */}
-        <div style={{ display: "flex", gap: "12px", marginBottom: "18px" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ ...label, marginBottom: "8px" }}>Collection</div>
-            <DojoSelect
-              ariaLabel="Collection"
-              testId="collection-select"
-              value={collectionId}
-              options={[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))]}
-              onChange={setCollectionId}
-            />
-          </div>
-          <div style={{ flex: "none" }}>
-            <div style={{ ...label, marginBottom: "8px" }}>Qty</div>
-            <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--color-dojo-stroke)" }}>
-              <button type="button" aria-label="Decrease quantity" onClick={() => setQty((q) => Math.max(1, q - 1))}
-                style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>−</button>
-              <div style={{ width: "34px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "14px", color: "var(--color-dojo-ink)" }}>{qty}</div>
-              <button type="button" aria-label="Increase quantity" onClick={() => setQty((q) => q + 1)}
-                style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>+</button>
-            </div>
-          </div>
-        </div>
-
-        {/* RECORD PAYMENT (optional) */}
-        <div style={{ display: "flex", alignItems: "center", marginBottom: showPayment ? "8px" : "20px" }}>
-          <span style={label}>Record Payment</span>
-          <span style={{ marginLeft: "6px", fontSize: "9px", color: "var(--color-dojo-faint)", textTransform: "lowercase", letterSpacing: 0 }}>optional</span>
-          {!showPayment && (
-            <button type="button" onClick={() => setShowPayment(true)}
-              style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}>
-              + Add
-            </button>
-          )}
-        </div>
-        {showPayment && (
-          <input
-            type="number"
-            inputMode="decimal"
-            min="0"
-            step="0.01"
-            placeholder="Price paid (USD)"
-            aria-label="Price paid"
-            value={pricePaid}
-            onChange={(e) => setPricePaid(e.target.value)}
-            className="dojo-input"
-            style={{ width: "100%", marginBottom: "20px" }}
-          />
-        )}
-
-        {/* ADD TO PORTFOLIO */}
-        <button
-          type="button"
-          onClick={handleAdd}
-          disabled={adding}
-          className="dojo-btn dojo-btn-primary"
-          style={{ width: "100%" }}
-        >
-          {adding ? "ADDING…" : "ADD TO PORTFOLIO"}
-        </button>
-      </div>
-    </>
-  );
-}
-
+// AddCardSheet + its condition tables + parseGraded moved to the shared
 // Toast is now sourced from src/components/Toast.tsx (shared with auth
 // pages) so the styling and behaviour stay in sync everywhere.
 

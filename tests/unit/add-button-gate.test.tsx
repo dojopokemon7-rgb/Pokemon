@@ -65,11 +65,12 @@ it("shows ADD TO COLLECTION when a quantity > 0 even though every price is null 
   );
 });
 
-it("keeps ADD TO COLLECTION visible even when every selected quantity is 0", async () => {
-  // The button is ALWAYS rendered now (the old addQtyTotal>0 guard hid it on a
-  // fresh page, which read as "add to collection not coming"). Clicking it opens
-  // the collection-picker modal; a zero-quantity confirm defaults to one raw
-  // copy. So after zeroing every stepper the button must STILL be present.
+it("ADD TO COLLECTION opens the shared AddCardSheet (RAW/PSA grader + condition)", async () => {
+  // The detail page no longer has inline quantity steppers / graded rows. The
+  // always-visible ADD TO COLLECTION button opens the SAME AddCardSheet the
+  // Explore grid uses: a RAW/PSA grader toggle and a condition dropdown
+  // (Near mint / Lightly played / …). This pins the "reuse explore add flow"
+  // change (requests 1 + 2).
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
@@ -84,19 +85,14 @@ it("keeps ADD TO COLLECTION visible even when every selected quantity is 0", asy
 
   render(createElement(CardDetailPage), { wrapper: wrapper(makeClient()) });
 
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: /ADD TO COLLECTION/i })).toBeTruthy()
-  );
-  // Zero every stepper (U+2212 minus, clamped at 0).
-  const decs = screen.getAllByText("\u2212").filter((el) => el.tagName === "BUTTON");
-  expect(decs.length).toBeGreaterThan(0);
-  for (const d of decs) {
-    fireEvent.click(d);
-    fireEvent.click(d);
-  }
+  const addBtn = await screen.findByRole("button", { name: /ADD TO COLLECTION/i });
+  fireEvent.click(addBtn);
 
-  // Button stays visible regardless of quantity (always-on CTA).
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: /ADD TO COLLECTION/i })).toBeTruthy()
-  );
+  // The shared sheet opens with the grader radiogroup + condition select.
+  const dialog = await screen.findByRole("dialog", { name: /add card to portfolio/i });
+  expect(dialog).toBeTruthy();
+  expect(screen.getByRole("radio", { name: /RAW/i })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: /PSA/i })).toBeTruthy();
+  // Condition select present (RAW conditions: Near mint / Lightly played / …).
+  expect(screen.getByTestId("condition-select")).toBeTruthy();
 });

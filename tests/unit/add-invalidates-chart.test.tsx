@@ -63,15 +63,15 @@ it("add onSuccess invalidates ['portfolio-history'] plus the three existing keys
 
   render(createElement(CardDetailPage), { wrapper: wrapper(client) });
 
-  // ADD TO COLLECTION now opens the collection-picker MODAL first; the add
-  // (and its invalidations) fires from the modal's Confirm. Click the page CTA
-  // to open the modal, then confirm inside the dialog.
+  // ADD TO COLLECTION now opens the shared AddCardSheet ("Add card to
+  // portfolio"); the add + its invalidations fire from the sheet's
+  // "ADD TO PORTFOLIO" button. Open the sheet, then confirm inside it.
   const addBtn = await screen.findByRole("button", { name: /ADD TO COLLECTION/i });
   fireEvent.click(addBtn);
 
-  const dialog = await screen.findByRole("dialog", { name: /choose a collection/i });
+  const dialog = await screen.findByRole("dialog", { name: /add card to portfolio/i });
   const confirmBtn = screen
-    .getAllByRole("button", { name: /ADD TO COLLECTION/i })
+    .getAllByRole("button", { name: /ADD TO PORTFOLIO/i })
     .find((b) => dialog.contains(b));
   expect(confirmBtn).toBeTruthy();
   fireEvent.click(confirmBtn as HTMLElement);

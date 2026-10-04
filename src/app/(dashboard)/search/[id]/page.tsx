@@ -28,13 +28,13 @@
  * curve. Population data + add-rows still follow the reference shape.
  */
 
-import { useState, useMemo, Suspense, useEffect, useRef } from "react";
+import { useState, useMemo, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
-import { DojoSelect } from "@/components/DojoSelect";
 import { RecentSales } from "@/components/RecentSales";
 import { AreaChart } from "@/components/AreaChart";
+import { AddCardSheet } from "@/components/AddCardSheet";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import {
@@ -81,13 +81,6 @@ function ShareIcon() {
 // fabricated/reused shape. Chip PRICE labels come from live data per-card
 // (null → "—"). The pure helpers + CurrentPriceRow/Chip/HistoryResponse types
 // live in the sibling module (a page.tsx may only export framework symbols). ──
-
-// ADD_ROWS structure template — prices are populated dynamically per card
-// in CardDetailInner based on the card's actual marketPrice, not hardcoded.
-const ADD_ROWS_TEMPLATE = [
-  { id: "raw", section: "raw" as const, label: "Foil" },
-  { id: "psa10", section: "graded" as const, label: "PSA 10", variant: "Foil" },
-];
 
 // Range tabs filter the REAL history points by a trailing date window
 // (RANGE_DAYS = days back from the newest point; MAX = all points).
@@ -232,7 +225,6 @@ function CardDetailInner() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const queryClient = useQueryClient();
   const id = params?.id as string;
 
   const name = searchParams.get("name") ?? "Card";
@@ -311,25 +303,11 @@ function CardDetailInner() {
   const starred = isWanted(id);
   const [activeSeries, setActiveSeries] = useState<Set<string>>(new Set(["raw"]));
   const [range, setRange] = useState<string>("1M");
-  const [addQty, setAddQty] = useState<Record<string, number>>({ raw: 0, psa10: 1 });
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
-  // The collection the "Add to collection" flow targets. '' = loose/Main
-  // (no collectionId sent → server files it unbucketed). Picked in the modal.
-  const [collectionId, setCollectionId] = useState<string>("");
-  // Collection-picker modal: clicking ADD TO COLLECTION opens this so the user
-  // chooses a destination collection (default Main) before the add runs.
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // ADD TO COLLECTION opens the shared AddCardSheet (same flow as Explore).
+  const [sheetOpen, setSheetOpen] = useState(false);
   // Single toast channel for this page: add confirmations, favorites
   // feedback, and Report submissions all route through here (Phase 3).
   const [toast, setToast] = useState<string | null>(null);
-
-  // Reset add quantities when card ID changes (prevents stale state when
-  // navigating between cards).
-  useEffect(() => {
-    setAddQty({ raw: 0, psa10: 1 });
-    setAddError(null);
-  }, [id]);
 
   // Real PSA 10 price from the server graded route (routes through Scrydex +
   // the curated/multiplier fallback). Public route — no credentials needed.
@@ -375,63 +353,6 @@ function CardDetailInner() {
   // Build ADD_ROWS dynamically using the actual card's market price.
   // Ungraded (raw) = actual market price. PSA 10 uses the real server graded
   // price when available, falling back to the local heuristic below.
-  const ADD_ROWS = useMemo(() => {
-    const rawPrice = price; // number | null — null stays null, never faked to 0
-    // Heuristic fallback (used only when the graded route returns no price):
-    // graded always trades above raw; cheap cards carry the biggest relative
-    // premium (grading fee dominates), so start at ~4.5x and ease toward ~2x
-    // for high-value cards. Continuous curve (no step at $10). When raw is
-    // null we have no base, so the PSA 10 price is null too (never computed
-    // off a fabricated number — AGENTS.md rule 2).
-    const psa10Multiplier = 2 + 50 / ((rawPrice ?? 0) + 10);
-    const psa10Price =
-      gradedData?.price ?? (rawPrice != null ? rawPrice * psa10Multiplier : null);
-
-    return [
-      { id: "raw", section: "raw" as const, label: "Foil", price: rawPrice },
-      { 
-        id: "psa10", 
-        section: "graded" as const, 
-        label: "PSA 10", 
-        variant: "Foil", 
-        price: psa10Price,
-        isFallback: gradedData?.price == null ? true : gradedData.isFallback,
-      },
-    ];
-  }, [price, gradedData]);
-
-  // Mutation for adding cards to collection
-  const addMutation = useMutation({
-    mutationFn: async (payload: { cards: any[] }) => {
-      const res = await fetch("/api/users/me/collection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const json = await res.json();
-      if (!res.ok || json.added === 0) {
-        throw new Error(json?.message ?? "Could not add cards.");
-      }
-      return json;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["collection"] });
-      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
-      queryClient.invalidateQueries({ queryKey: ["collections"] });
-      // B / HIGH-1: refetch the dashboard chart family so the chosen
-      // collection's series (made drawable by A1) updates immediately after
-      // an add (AC-16). The TanStack prefix match on ["portfolio-history"]
-      // covers every collectionIdsQuery/range combo keyed under it.
-      queryClient.invalidateQueries({ queryKey: ["portfolio-history"] });
-      // Reset quantities after successful add
-      setAddQty({ raw: 0, psa10: 0 });
-      setToast(`Added ${name} to your portfolio`);
-    },
-    onError: (err: Error) => {
-      setAddError(err.message);
-    },
-  });
-
   const toggleSeries = (seriesId: string) => {
     setActiveSeries((prev) => {
       const next = new Set(prev);
@@ -458,12 +379,6 @@ function CardDetailInner() {
     },
     staleTime: 60_000,
   });
-
-  const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * (d.price ?? 0), 0);
-  // Gate the ADD button on selected QUANTITY, not dollar total: an unpriced
-  // card (common via Explore → every row price null → addTotal 0) must still
-  // be addable. Total is a display label; quantity is the real intent signal.
-  const addQtyTotal = Object.values(addQty).reduce((a, q) => a + (q || 0), 0);
 
   // Live price for each price-history chip (null → "—"), keyed on the new chip
   // id scheme. Raw = the card's market price; each graded chip's price comes
@@ -504,33 +419,6 @@ function CardDetailInner() {
       }),
     [allChips, activeSeries, historyData, chipPrice, range]
   );
-
-  // Build the add payload from the current quantity selections and fire the
-  // mutation against the chosen collection. Shared by the modal's Confirm. A
-  // zero-quantity selection defaults to one raw copy (the common intent) so a
-  // confirm is never a no-op. `destId` is the picked collectionId ('' = Main).
-  function runAdd(destId: string) {
-    setAddError(null);
-    const base = {
-      externalId: id,
-      name,
-      setName: setName || undefined,
-      imageUrl: img && img.startsWith("http") ? img : undefined,
-      marketPrice: price || null,
-      ...(destId ? { collectionId: destId } : {}),
-    };
-    const cardsToAdd: Array<Record<string, unknown>> = [];
-    for (const [rowId, qty] of Object.entries(addQty)) {
-      if (qty <= 0) continue;
-      const row = ADD_ROWS.find((r) => r.id === rowId);
-      if (!row) continue;
-      cardsToAdd.push({ ...base, quantity: qty, isFoil: row.label.toLowerCase().includes("foil") });
-    }
-    if (cardsToAdd.length === 0) {
-      cardsToAdd.push({ ...base, quantity: 1, isFoil: false });
-    }
-    addMutation.mutate({ cards: cardsToAdd });
-  }
 
   return (
     <div style={{ paddingBottom: "24px" }}>
@@ -813,151 +701,25 @@ function CardDetailInner() {
       </div>
 
       <div style={{ padding: "0 22px" }}>
-        {/* ── Adding to: Main ── */}
-        <div style={{ marginTop: "22px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "15px" }}>
-          <div style={{ display: "flex", alignItems: "baseline" }}>
-            <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "14px", color: "var(--color-dojo-ink)" }}>
-              Adding to
-            </div>
-            <div style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
-              <span style={{ fontWeight: 400, color: "var(--color-dojo-faint)" }}>Total: </span>{fmtUSD(addTotal)}
-            </div>
-          </div>
-          {/* Collection picker — reuses the shared DojoSelect. 'Main' (value
-              '') is loose/unbucketed; the rest are the user's named
-              collections. Default '' so the add still works with no
-              collections or while the ['collections'] query loads. */}
-          <div style={{ marginTop: "12px" }}>
-            <DojoSelect
-              ariaLabel="Collection"
-              testId="collection-select"
-              value={collectionId}
-              options={[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))]}
-              onChange={setCollectionId}
-            />
-          </div>
+        {/* ── Add to collection ── A single CTA that opens the SHARED
+            AddCardSheet (same flow as the Explore grid): RAW/PSA grader
+            toggle, condition dropdown (Near mint / Lightly played / …),
+            collection picker, qty, optional price. */}
+        <button
+          className="dojo-btn dojo-btn-primary"
+          style={{ width: "100%", marginTop: "22px", height: "44px" }}
+          onClick={() => setSheetOpen(true)}
+        >
+          ADD TO COLLECTION →
+        </button>
 
-          <div style={{ marginTop: "15px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Ungraded</div>
-          {ADD_ROWS.filter((d) => d.section === "raw").map((d) => (
-            <AddQtyRow key={d.id} label={d.label} price={d.price} qty={addQty[d.id] || 0} onChange={(q) => setAddQty((s) => ({ ...s, [d.id]: q }))} />
-          ))}
-
-          <div style={{ marginTop: "13px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Graded</div>
-          {ADD_ROWS.filter((d) => d.section === "graded").map((d) => (
-            <AddQtyRow key={d.id} label={d.label} sub={d.variant} price={d.price} qty={addQty[d.id] || 0} onChange={(q) => setAddQty((s) => ({ ...s, [d.id]: q }))} />
-          ))}
-          {/* "+ Add a graded card" now works: bumps the graded row's qty
-              by one so it's ready to submit (Phase 3 QA: graded flow must
-              not bug out). Full multi-grade support is a Week 3 backend
-              feature (grader/grade columns on UserCollection). */}
-          <button
-            type="button"
-            onClick={() => setAddQty((s) => ({ ...s, psa10: (s.psa10 || 0) + 1 }))}
-            style={{
-              marginTop: "14px", marginLeft: "auto", display: "block",
-              background: "none", border: "none", cursor: "pointer",
-              fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px",
-              letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)",
-            }}
-          >
-            + Add a graded card
-          </button>
-
-          {/* ADD TO COLLECTION — opens the collection-picker modal so the user
-              explicitly chooses a destination (default Main) before the add
-              runs. Always visible (the old addQtyTotal>0 guard hid it on a fresh
-              page). The actual add fires from the modal's Confirm → runAdd. */}
-          <button
-            className="dojo-btn dojo-btn-primary"
-            style={{ width: "100%", marginTop: "16px", height: "44px" }}
-            disabled={addMutation.isPending}
-            onClick={() => { setAddError(null); setPickerOpen(true); }}
-          >
-            {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
-          </button>
-
-          {addError && (
-            <div style={{ marginTop: "12px", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>
-              {addError}
-            </div>
-          )}
-        </div>
-
-        {/* ── Collection-picker modal ── Choose which collection to add into
-            (default Main / loose bucket). Confirm runs runAdd(collectionId). */}
-        {pickerOpen && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Choose a collection"
-            onClick={() => setPickerOpen(false)}
-            style={{
-              position: "fixed", inset: 0, zIndex: 50, display: "flex",
-              alignItems: "center", justifyContent: "center",
-              background: "rgba(0,0,0,0.6)", padding: "20px",
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                width: "100%", maxWidth: "360px", background: "var(--color-dojo-card)",
-                border: "1px solid var(--color-dojo-stroke)", padding: "18px",
-              }}
-            >
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "15px", color: "var(--color-dojo-ink)", marginBottom: "4px" }}>
-                Add to collection
-              </div>
-              <div style={{ fontSize: "12px", color: "var(--color-dojo-faint)", marginBottom: "14px" }}>
-                Choose where to file {name}.
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "2px", maxHeight: "260px", overflowY: "auto" }}>
-                {[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))].map((opt) => {
-                  const selected = collectionId === opt.value;
-                  return (
-                    <button
-                      key={opt.value || "__main__"}
-                      type="button"
-                      onClick={() => setCollectionId(opt.value)}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between",
-                        width: "100%", padding: "12px 14px", cursor: "pointer", textAlign: "left",
-                        background: selected ? "var(--color-dojo-raised)" : "transparent",
-                        border: `1px solid ${selected ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"}`,
-                        color: "var(--color-dojo-ink)",
-                        fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px",
-                      }}
-                    >
-                      {opt.label}
-                      {selected && <span style={{ color: "var(--color-dojo-gold)" }}>✓</span>}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div style={{ display: "flex", gap: "10px", marginTop: "18px" }}>
-                <button
-                  type="button"
-                  className="dojo-btn"
-                  style={{ flex: 1, height: "42px", background: "transparent", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-ink)" }}
-                  onClick={() => setPickerOpen(false)}
-                >
-                  CANCEL
-                </button>
-                <button
-                  type="button"
-                  className="dojo-btn dojo-btn-primary"
-                  style={{ flex: 2, height: "42px" }}
-                  disabled={addMutation.isPending}
-                  onClick={() => { setPickerOpen(false); runAdd(collectionId); }}
-                >
-                  {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
-                </button>
-              </div>
-            </div>
-          </div>
+        {sheetOpen && (
+          <AddCardSheet
+            card={{ externalId: id, name, setName: setName || null, imageUrl: img || null, marketPrice: fetchedPrice ?? (priceParam > 0 ? priceParam : null) }}
+            onClose={() => setSheetOpen(false)}
+            onAdded={(msg) => { setSheetOpen(false); setToast(msg); }}
+          />
         )}
-
         {/* ── Population report — PSA English only; BGS unavailable ── */}
         <PopulationReport id={id} />
 
@@ -980,36 +742,6 @@ function CardDetailInner() {
   );
 }
 
-
-// ── Quantity stepper row — ported from app.js addQtyRow() ──────────
-function AddQtyRow({ label, sub, price, qty, onChange }: { label: string; sub?: string; price: number | null; qty: number; onChange: (q: number) => void }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: "10px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-ink)" }}>{label}</div>
-        {sub && <div style={{ marginTop: "2px", fontSize: "10.5px", color: "var(--color-dojo-body)" }}>{sub}</div>}
-        <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-gold)" }}>{price != null ? fmtUSD(price) : "—"}</div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", flex: "none" }}>
-        <button
-          onClick={() => onChange(Math.max(0, qty - 1))}
-          style={{ width: "30px", height: "30px", border: "1px solid var(--color-dojo-stroke)", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "14px" }}
-        >
-          −
-        </button>
-        <div style={{ width: "36px", height: "30px", margin: "0 -1px", background: "var(--color-dojo-raised)", border: "1px solid var(--color-dojo-stroke)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "13px", color: "var(--color-dojo-ink)" }}>
-          {qty}
-        </div>
-        <button
-          onClick={() => onChange(qty + 1)}
-          style={{ width: "30px", height: "30px", border: "1px solid var(--color-dojo-stroke)", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "14px" }}
-        >
-          +
-        </button>
-      </div>
-    </div>
-  );
-}
 
 export default function CardDetailPage() {
   return (
