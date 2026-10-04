@@ -40,6 +40,7 @@ vi.mock("@/lib/utils/cache", () => ({
 }));
 
 import { POST as collectionAddPOST } from "@/app/api/users/me/collection/route";
+import { invalidateUserCaches } from "@/lib/utils/cache";
 
 const CARD = { id: "card_1", externalId: "base1-4", marketPrice: 10 };
 
@@ -118,5 +119,40 @@ describe("POST /api/users/me/collection — ownership coercion", () => {
     expect(prismaMock.collection.findMany).not.toHaveBeenCalled();
     // And the loose lot is filed with null.
     expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBeNull();
+  });
+
+  // The four TanStack query families the client invalidates on a successful add
+  // (["collection"], ["portfolio-collection"], ["collections"], ["collection", id])
+  // are driven server-side by the per-user cache invalidation this route fires.
+  // Pin that a successful add invalidates the server-cache families that back
+  // them — collection + dashboard + collections — so the chosen collection and
+  // the dashboard chart both refetch (HIGH-1). A no-op add must NOT invalidate.
+  it("a successful add invalidates the collection/dashboard/collections cache families", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
+    prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
+
+    const res = await collectionAddPOST(
+      addBody([{ externalId: "base1-4", name: "Alakazam", quantity: 1 }])
+    );
+    expect((await res.json()).added).toBe(1);
+
+    expect(invalidateUserCaches).toHaveBeenCalledTimes(1);
+    expect(invalidateUserCaches).toHaveBeenCalledWith(
+      USER_ID,
+      expect.arrayContaining(["collection", "dashboard", "collections"])
+    );
+  });
+
+  it("an add that files NOTHING does not invalidate any cache family", async () => {
+    // Card lookup/create throws → the single item fails → addedCount 0 → the
+    // route must skip invalidation entirely (no needless refetch storm).
+    prismaMock.card.findFirst.mockResolvedValueOnce(null);
+    prismaMock.card.create.mockRejectedValueOnce(new Error("boom"));
+
+    const res = await collectionAddPOST(
+      addBody([{ externalId: "base1-4", name: "Alakazam", quantity: 1 }])
+    );
+    expect(res.status).toBe(500);
+    expect(invalidateUserCaches).not.toHaveBeenCalled();
   });
 });

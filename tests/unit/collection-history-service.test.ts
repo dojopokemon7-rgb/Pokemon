@@ -23,6 +23,9 @@ const prismaMock = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { buildCollectionHistories } from "@/lib/services/collection-history.service";
 import { toHistoryToken } from "@/lib/utils/collection-ids";
 
@@ -181,6 +184,32 @@ describe("buildCollectionHistories — addedAt timeline anchor (A1)", () => {
     prismaMock.userCollection.findMany.mockResolvedValue([]);
     const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
     expect(histories["null"]).toEqual([]);
+  });
+});
+
+// AC-21/AC-22 — the chart's ONLY data source is real stored PricingHistory.
+// Source-level pin: the extracted service must carry NO synthetic chart
+// generator (the removed mulberry32 / RANGE_SHAPES / generateMockChartData
+// path). A grep over the service file keeps that regression from sneaking back.
+describe("no synthetic/mock chart generator in the chart data source (grep pin)", () => {
+  // Vitest runs with cwd at the worktree root, so resolve the service relative
+  // to it (import.meta.url is not a file URL under this jsdom config).
+  const serviceSrc = readFileSync(
+    resolve(process.cwd(), "src/lib/services/collection-history.service.ts"),
+    "utf8"
+  );
+
+  it("the collection-history service contains no mock-generator identifiers", () => {
+    for (const banned of ["generateMockChartData", "mulberry32", "RANGE_SHAPES"]) {
+      expect(serviceSrc).not.toContain(banned);
+    }
+  });
+
+  it("the service never fabricates a $0 — gaps stay null (code comments it, no `|| 0` coercion)", () => {
+    // Guard against a future "safe default" that would replace a null gap with
+    // a drawn 0 (fabricated value). The honest path returns `value: p.value`.
+    expect(serviceSrc).toContain("never a fabricated 0");
+    expect(serviceSrc).not.toMatch(/value:\s*[^;]*\|\|\s*0/);
   });
 });
 
