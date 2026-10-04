@@ -112,7 +112,27 @@ export async function buildCollectionHistories(
     for (let t = startDate.getTime(); t <= now.getTime(); t += DAY_MS) timeline.push(t);
     if (timeline[timeline.length - 1] !== now.getTime()) timeline.push(now.getTime());
 
-    const [series] = buildCollectionSeries(holdings, prices, timeline);
+    // Inject each lot's acquisition instant as a timeline anchor. Without this
+    // a freshly-added lot (addedAt ≈ now) fails the `t >= addedAt` ownership
+    // gate at every earlier daily point, leaving only the final `now` point —
+    // < 2 drawable points, so the chart renders empty. Clamp each addedAt into
+    // the window [startMs, nowMs] so no point lands left of the window, skip a
+    // lot already sold before the window opened, then sort + dedupe exact-equal
+    // timestamps before handing the timeline to the (unchanged) series math.
+    // ponytail: O(lots) extra anchor points — fine at per-user lot counts; if a
+    // user ever holds thousands of lots, bucket anchors by day before merging.
+    const startMs = startDate.getTime();
+    const nowMs = now.getTime();
+    for (const l of lots) {
+      if (l.isSold && l.soldAt && l.soldAt.getTime() < startMs) continue;
+      const added = l.addedAt.getTime();
+      if (!Number.isFinite(added)) continue;
+      timeline.push(Math.min(Math.max(added, startMs), nowMs));
+    }
+    timeline.sort((a, b) => a - b);
+    const deduped = timeline.filter((t, i) => i === 0 || t !== timeline[i - 1]);
+
+    const [series] = buildCollectionSeries(holdings, prices, deduped);
     histories[collId] = (series?.points ?? []).map((p) => ({
       date: new Date(p.t).toISOString().slice(0, 10),
       value: p.value, // null = honest gap (chart skips it)

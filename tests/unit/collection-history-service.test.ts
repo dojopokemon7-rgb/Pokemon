@@ -107,6 +107,83 @@ describe("buildCollectionHistories — shape parity with the GET route (a)", () 
   });
 });
 
+describe("buildCollectionHistories — addedAt timeline anchor (A1)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("(1) a freshly-added lot (addedAt ~now) yields >=2 non-null points (anchor + now)", async () => {
+    // Lot added effectively now — before the fix, every daily timeline point
+    // sits BEFORE addedAt and fails the ownership gate, leaving <2 drawable
+    // points. The injected addedAt anchor + the now point must both value it.
+    const addedAt = new Date(Date.now() - 60 * 1000); // ~1 min ago
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false },
+    ]);
+    // A real price recorded at/just-before addedAt so carry-forward values it.
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: new Date(addedAt.getTime() - 30 * 1000), priceMarket: 42 },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
+
+    const series = histories["null"];
+    const numeric = series.filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    expect(numeric.every((p) => p.value === 42)).toBe(true); // never fabricated
+  });
+
+  it("(2) a lot added before startDate clamps to the window (no point left of startDate)", async () => {
+    // addedAt a full year ago; a 1M window must not emit any point earlier
+    // than startDate — the anchor is clamped INTO [startMs, nowMs].
+    const addedAt = new Date(Date.now() - 365 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false },
+    ]);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
+
+    const start = new Date();
+    start.setMonth(start.getMonth() - 1);
+    const startDay = start.toISOString().slice(0, 10);
+    expect(histories["null"].every((p) => p.date >= startDay)).toBe(true);
+  });
+
+  it("(3) two lots sharing the same addedAt dedupe to one timeline point", async () => {
+    const addedAt = new Date(Date.now() - 2 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false },
+      { cardId: "card_2", quantity: 1, addedAt, soldAt: null, isSold: false },
+    ]);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
+
+    // The exact-equal anchor timestamps must collapse: the date (and its
+    // underlying ms) appears at most once in the emitted series.
+    const dates = histories["null"].map((p) => p.date);
+    expect(new Set(dates).size).toBe(dates.length);
+  });
+
+  it("(4) a lot with no priced history still emits only null anchors (no fabricated $0)", async () => {
+    const addedAt = new Date(Date.now() - 2 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 3, addedAt, soldAt: null, isSold: false },
+    ]);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([]); // no real price
+
+    const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
+
+    expect(histories["null"].every((p) => p.value === null)).toBe(true);
+    expect(histories["null"].some((p) => p.value === 0)).toBe(false);
+  });
+
+  it("(5) an empty bucket returns []", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValue([]);
+    const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
+    expect(histories["null"]).toEqual([]);
+  });
+});
+
 describe("SSR-key parity with the client's first-render query key (b)", () => {
   it("page SSR collectionIdsQuery === client default collectionIdsQuery", () => {
     const collections = [{ id: "c1" }, { id: "c2" }];

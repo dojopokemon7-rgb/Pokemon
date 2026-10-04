@@ -482,6 +482,10 @@ function CardDetailInner() {
   }, [activeSeries]);
 
   const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * (d.price ?? 0), 0);
+  // Gate the ADD button on selected QUANTITY, not dollar total: an unpriced
+  // card (common via Explore → every row price null → addTotal 0) must still
+  // be addable. Total is a display label; quantity is the real intent signal.
+  const addQtyTotal = Object.values(addQty).reduce((a, q) => a + (q || 0), 0);
 
   // Live price for each price-history chip (null → "—"). Raw = the card's
   // market price; PSA 10 / PSA 9 come from the /graded route. Never fabricated.
@@ -822,7 +826,7 @@ function CardDetailInner() {
           </button>
 
           {/* ADD TO COLLECTION button (Phase 1 fix) - submits addQty selections */}
-          {addTotal > 0 && (
+          {addQtyTotal > 0 && (
             <button
               className="dojo-btn dojo-btn-primary"
               style={{ width: "100%", marginTop: "16px", height: "44px" }}
