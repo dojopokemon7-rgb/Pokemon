@@ -136,10 +136,11 @@ function PopulationReport({ id }: { id: string }) {
       if (!res.ok) return { report: null };
       return res.json();
     },
-    // Short staleTime + refetch-on-mount so a just-enriched population shows up
-    // without a hard refresh (the 24h cache used to pin an early empty result).
-    // The GET is a cheap DB read (Redis-cached server-side), so this is fine.
-    staleTime: 30_000,
+    // Always revalidate (staleTime 0) so a just-enriched population shows up
+    // without a hard refresh — the 24h cache used to pin an early empty result,
+    // and even a short staleTime could serve a null cached before enrich stored
+    // the data. The GET is a cheap DB read (Redis-cached server-side).
+    staleTime: 0,
     refetchOnMount: "always",
   });
 
@@ -404,10 +405,13 @@ function CardDetailInner() {
         credentials: "include",
       });
       const body = await res.json().catch(() => ({ enriched: false }));
-      if (body?.enriched === true) {
-        queryClient.invalidateQueries({ queryKey: ["card-history", id] });
-        queryClient.invalidateQueries({ queryKey: ["population", id] });
-      }
+      // Always re-read history + population after the enrich settles — not only
+      // on enriched:true. A card already enriched returns {reason:"fresh"} but
+      // the first on-mount population/history fetch may have raced AHEAD of the
+      // stored data (or cached an early null), so invalidate regardless so the
+      // panels repaint from the DB. Cheap DB reads (Redis-cached server-side).
+      queryClient.invalidateQueries({ queryKey: ["card-history", id] });
+      queryClient.invalidateQueries({ queryKey: ["population", id] });
       return body;
     },
     staleTime: Infinity,
