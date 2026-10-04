@@ -164,7 +164,11 @@ export function AreaChart({
             <defs>
               {seriesData.map((s, si) => (
                 <linearGradient key={si} id={`${gidBase}-${si}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={s.color} stopOpacity="0.3" />
+                  {/* Multi-series: a faint fill so OVERLAPPING collection areas
+                      don't stack into one solid blob — the distinct colored
+                      LINES stay readable. Single-series keeps the fuller 0.3
+                      fill (its own gradient below). */}
+                  <stop offset="0%" stopColor={s.color} stopOpacity="0.12" />
                   <stop offset="100%" stopColor={s.color} stopOpacity="0" />
                 </linearGradient>
               ))}

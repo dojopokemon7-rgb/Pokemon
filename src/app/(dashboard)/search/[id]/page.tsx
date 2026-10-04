@@ -315,8 +315,11 @@ function CardDetailInner() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   // The collection the "Add to collection" flow targets. '' = loose/Main
-  // (no collectionId sent → server files it unbucketed). Picked via DojoSelect.
+  // (no collectionId sent → server files it unbucketed). Picked in the modal.
   const [collectionId, setCollectionId] = useState<string>("");
+  // Collection-picker modal: clicking ADD TO COLLECTION opens this so the user
+  // chooses a destination collection (default Main) before the add runs.
+  const [pickerOpen, setPickerOpen] = useState(false);
   // Single toast channel for this page: add confirmations, favorites
   // feedback, and Report submissions all route through here (Phase 3).
   const [toast, setToast] = useState<string | null>(null);
@@ -501,6 +504,33 @@ function CardDetailInner() {
       }),
     [allChips, activeSeries, historyData, chipPrice, range]
   );
+
+  // Build the add payload from the current quantity selections and fire the
+  // mutation against the chosen collection. Shared by the modal's Confirm. A
+  // zero-quantity selection defaults to one raw copy (the common intent) so a
+  // confirm is never a no-op. `destId` is the picked collectionId ('' = Main).
+  function runAdd(destId: string) {
+    setAddError(null);
+    const base = {
+      externalId: id,
+      name,
+      setName: setName || undefined,
+      imageUrl: img && img.startsWith("http") ? img : undefined,
+      marketPrice: price || null,
+      ...(destId ? { collectionId: destId } : {}),
+    };
+    const cardsToAdd: Array<Record<string, unknown>> = [];
+    for (const [rowId, qty] of Object.entries(addQty)) {
+      if (qty <= 0) continue;
+      const row = ADD_ROWS.find((r) => r.id === rowId);
+      if (!row) continue;
+      cardsToAdd.push({ ...base, quantity: qty, isFoil: row.label.toLowerCase().includes("foil") });
+    }
+    if (cardsToAdd.length === 0) {
+      cardsToAdd.push({ ...base, quantity: 1, isFoil: false });
+    }
+    addMutation.mutate({ cards: cardsToAdd });
+  }
 
   return (
     <div style={{ paddingBottom: "24px" }}>
@@ -833,72 +863,100 @@ function CardDetailInner() {
             + Add a graded card
           </button>
 
-          {/* ADD TO COLLECTION button (Phase 1 fix) - submits addQty selections */}
-          {/* ALWAYS render the CTA (prototype shows it unconditionally). The old
-              `addQtyTotal > 0` guard HID the button until the user tapped a +
-              stepper, so a fresh page (both quantities default to 0) showed no
-              Add button at all — the "add to collection is not coming" report.
-              With nothing selected we default to adding ONE raw copy (the common
-              "I own this card" intent) instead of doing nothing. */}
+          {/* ADD TO COLLECTION — opens the collection-picker modal so the user
+              explicitly chooses a destination (default Main) before the add
+              runs. Always visible (the old addQtyTotal>0 guard hid it on a fresh
+              page). The actual add fires from the modal's Confirm → runAdd. */}
           <button
             className="dojo-btn dojo-btn-primary"
             style={{ width: "100%", marginTop: "16px", height: "44px" }}
             disabled={addMutation.isPending}
-            onClick={async () => {
-              setAddError(null);
-              const cardsToAdd = [];
-
-              // Map quantity selections to API payload format.
-              for (const [rowId, qty] of Object.entries(addQty)) {
-                if (qty <= 0) continue;
-
-                const row = ADD_ROWS.find(r => r.id === rowId);
-                if (!row) continue;
-
-                const isFoil = row.label.toLowerCase().includes("foil");
-
-                cardsToAdd.push({
-                  externalId: id,
-                  name: name,
-                  setName: setName || undefined,
-                  imageUrl: img && img.startsWith("http") ? img : undefined,
-                  marketPrice: price || null,
-                  quantity: qty,
-                  isFoil,
-                  // '' = loose/Main → omit so the server files it unbucketed;
-                  // otherwise carry the chosen collectionId (ownership is
-                  // re-verified server-side, foreign ids coerced to null).
-                  ...(collectionId ? { collectionId } : {}),
-                });
-              }
-
-              // Nothing selected → default to one raw copy so the click always
-              // does the obvious thing (never a silent no-op).
-              if (cardsToAdd.length === 0) {
-                cardsToAdd.push({
-                  externalId: id,
-                  name: name,
-                  setName: setName || undefined,
-                  imageUrl: img && img.startsWith("http") ? img : undefined,
-                  marketPrice: price || null,
-                  quantity: 1,
-                  isFoil: false,
-                  ...(collectionId ? { collectionId } : {}),
-                });
-              }
-
-              addMutation.mutate({ cards: cardsToAdd });
-            }}
+            onClick={() => { setAddError(null); setPickerOpen(true); }}
           >
             {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
           </button>
-          
+
           {addError && (
             <div style={{ marginTop: "12px", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>
               {addError}
             </div>
           )}
         </div>
+
+        {/* ── Collection-picker modal ── Choose which collection to add into
+            (default Main / loose bucket). Confirm runs runAdd(collectionId). */}
+        {pickerOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose a collection"
+            onClick={() => setPickerOpen(false)}
+            style={{
+              position: "fixed", inset: 0, zIndex: 50, display: "flex",
+              alignItems: "center", justifyContent: "center",
+              background: "rgba(0,0,0,0.6)", padding: "20px",
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: "100%", maxWidth: "360px", background: "var(--color-dojo-card)",
+                border: "1px solid var(--color-dojo-stroke)", padding: "18px",
+              }}
+            >
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "15px", color: "var(--color-dojo-ink)", marginBottom: "4px" }}>
+                Add to collection
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--color-dojo-faint)", marginBottom: "14px" }}>
+                Choose where to file {name}.
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "2px", maxHeight: "260px", overflowY: "auto" }}>
+                {[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))].map((opt) => {
+                  const selected = collectionId === opt.value;
+                  return (
+                    <button
+                      key={opt.value || "__main__"}
+                      type="button"
+                      onClick={() => setCollectionId(opt.value)}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        width: "100%", padding: "12px 14px", cursor: "pointer", textAlign: "left",
+                        background: selected ? "var(--color-dojo-raised)" : "transparent",
+                        border: `1px solid ${selected ? "var(--color-dojo-gold)" : "var(--color-dojo-stroke)"}`,
+                        color: "var(--color-dojo-ink)",
+                        fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px",
+                      }}
+                    >
+                      {opt.label}
+                      {selected && <span style={{ color: "var(--color-dojo-gold)" }}>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", marginTop: "18px" }}>
+                <button
+                  type="button"
+                  className="dojo-btn"
+                  style={{ flex: 1, height: "42px", background: "transparent", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-ink)" }}
+                  onClick={() => setPickerOpen(false)}
+                >
+                  CANCEL
+                </button>
+                <button
+                  type="button"
+                  className="dojo-btn dojo-btn-primary"
+                  style={{ flex: 2, height: "42px" }}
+                  disabled={addMutation.isPending}
+                  onClick={() => { setPickerOpen(false); runAdd(collectionId); }}
+                >
+                  {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Population report — PSA English only; BGS unavailable ── */}
         <PopulationReport id={id} />
