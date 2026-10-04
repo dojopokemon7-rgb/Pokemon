@@ -24,6 +24,7 @@ import { DataSource, Game } from "@prisma/client";
 import {
   fetchScrydexCardById,
   fetchScrydexPriceHistory,
+  fetchScrydexPopulation,
   resolveScrydexCard,
   pickRawPrice,
   type ScrydexCard,
@@ -44,6 +45,9 @@ export const SCRYDEX_STALE_MS = 24 * 60 * 60 * 1000;
 export const SCRYDEX_CREDITS_PER_CALL = 1;
 
 const SCRYDEX_HISTORY_JOB = "scrydex_history";
+// Distinct job label so population pulls are separable in credit metering and
+// do NOT touch the history freshness gate (keyed on job="scrydex_history").
+const SCRYDEX_POPULATION_JOB = "scrydex_population";
 
 export interface ScrydexPullCard {
   id: string;
@@ -355,4 +359,123 @@ export async function pullAndStoreScrydexHistory(
   });
 
   return { stored: rows.length, credits };
+}
+
+/**
+ * Pull a card's PSA-English population report and store it as the one CURRENT
+ * PopulationReport row (upsert, store-once / overwrite-in-place).
+ *
+ * CREDIT-GATED-AT-TOP: a population request costs 1 credit (docs/SCRYDEX_AUDIT.md),
+ * so this REFUSES unless live-credit spend is owner-approved — the gate runs
+ * FIRST so a denied call performs NO HTTP at all. Throws
+ * `ScrydexCreditsNotApproved` when denied; callers surface "pending approval".
+ *
+ * NOT invoked anywhere this phase: no route/sync/render imports it. It exists
+ * and is tested only; a later owner-approved step adds the manual-refresh
+ * trigger. WHY `scrydexId` (not `externalId`): the Scrydex id namespace differs
+ * from the TCGdex/Bandai externalId, so we resolve + cache the native id.
+ * WHY a null fetch stores nothing: we NEVER clobber a prior good report with a
+ * transient null — the honest-gap rule.
+ *
+ * REFRESH-MUST-INVALIDATE-CACHE (follow-up, out of scope this phase): the later
+ * manual-refresh trigger MUST, after a successful upsert, invalidate
+ * RedisKeys.cardPopulation(externalId) (best-effort, fail-open) so the fresh
+ * report is served before the 24h TTL expires.
+ */
+export async function pullAndStorePopulation(card: {
+  id: string;
+  game: Game;
+  scrydexId?: string | null;
+  name: string;
+  number: string;
+  setName?: string | null;
+  setCode?: string | null;
+}): Promise<{ stored: boolean; credits: number }> {
+  // 1. Credit gate FIRST — throws ScrydexCreditsNotApproved, no HTTP when denied.
+  await assertScrydexCreditsApproved("population", 1);
+
+  const credits = SCRYDEX_CREDIT_COST.population;
+
+  // 2. Resolve scrydexId (reuse cached, else search by name+number+set).
+  let scrydexId: string | null = card.scrydexId ?? null;
+  if (!scrydexId) {
+    const resolved = await resolveScrydexCard({
+      name: card.name,
+      number: card.number,
+      setName: card.setName ?? undefined,
+      setCode: card.setCode ?? undefined,
+      game: card.game,
+    });
+    if (resolved) {
+      scrydexId = resolved.scrydexId;
+      // Best-effort cache the resolved id — a unique-collision / missing row
+      // must not fail the pull (it is only a cache; a re-resolve is harmless).
+      try {
+        await prisma.card.update({
+          where: { id: card.id },
+          data: { scrydexId },
+        });
+      } catch {
+        // swallow — cache-only.
+      }
+    }
+  }
+
+  if (!scrydexId) {
+    await prisma.syncLog.create({
+      data: {
+        job: SCRYDEX_POPULATION_JOB,
+        cardId: card.id,
+        status: "failed",
+        credits,
+        error: `No Scrydex match for ${card.id} (${card.name})`,
+      },
+    });
+    return { stored: false, credits };
+  }
+
+  // 3. Fetch — null → failed SyncLog, meter the credit, DO NOT clobber a prior
+  //    stored report (never overwrite good data with a transient null).
+  const population = await fetchScrydexPopulation(scrydexId, card.game);
+  if (!population) {
+    await prisma.syncLog.create({
+      data: {
+        job: SCRYDEX_POPULATION_JOB,
+        cardId: card.id,
+        status: "failed",
+        credits,
+        error: "population fetch returned null",
+      },
+    });
+    return { stored: false, credits };
+  }
+
+  // 4. Upsert the one CURRENT PSA-English report in place.
+  await prisma.populationReport.upsert({
+    where: {
+      cardId_source_company_language: {
+        cardId: card.id,
+        source: "scrydex",
+        company: "PSA",
+        language: "English",
+      },
+    },
+    update: { grades: population.grades, total: population.total, refreshedAt: new Date() },
+    create: {
+      cardId: card.id,
+      source: "scrydex",
+      company: "PSA",
+      language: "English",
+      grades: population.grades,
+      total: population.total,
+      refreshedAt: new Date(),
+    },
+  });
+
+  // 5. Meter — distinct job label so the history freshness gate is unaffected.
+  await prisma.syncLog.create({
+    data: { job: SCRYDEX_POPULATION_JOB, cardId: card.id, status: "ok", credits },
+  });
+
+  return { stored: true, credits };
 }

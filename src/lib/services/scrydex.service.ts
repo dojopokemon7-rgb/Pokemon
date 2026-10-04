@@ -422,6 +422,123 @@ export async function fetchScrydexSoldListings(
   }
 }
 
+// --- Population report (include=pop_reports) --------------------------------
+
+// Scrydex pop_reports (docs/SCRYDEX_AUDIT.md Area 4b). Public coverage is PSA
+// English only; BGS is UNSUPPORTED and never read as data.
+// SHAPE UNVERIFIED (Audit L0): the Audit documents coverage + the include +
+// the credit cost, but gives NO pop_reports payload sample. The per-entry
+// keys below (company/language/total/grades[{grade,count}]) are a DEFENSIVE
+// GUESS — confirm against ONE real response before/at the first gated pull.
+// Zod drops unknown keys; a wrong shape yields zero PSA-English grades → the
+// fetcher warn-logs the raw keys (see mapping step 2b) so it fails LOUD, not
+// silent. Grade label + count are read verbatim; a non-finite/absent count
+// drops that grade (never a fabricated 0).
+const PopReportEntrySchema = z.object({
+  company: z.string().nullish(), // expected "PSA" | "BGS" | ...
+  language: z.string().nullish(), // expected "English" | ...
+  total: z.number().nullish(),
+  grades: z
+    .array(z.object({ grade: z.union([z.string(), z.number()]).nullish(), count: z.number().nullish() }))
+    .nullish(),
+});
+const PopReportCardSchema = z.object({
+  pop_reports: z.array(PopReportEntrySchema).default([]),
+});
+// Response wrapper mirrors fetchScrydexCardById: card object at `.data`.
+const PopReportResponseSchema = z.object({ data: PopReportCardSchema });
+
+export interface ScrydexPopulation {
+  company: "PSA";
+  language: "English";
+  total: number;
+  grades: { grade: string; count: number }[];
+}
+
+/**
+ * Fetch a card's PSA-English population report via the DOCUMENTED include
+ * `GET /{slug}/v1/cards/{scrydexId}?include=pop_reports` (1 credit — Audit).
+ *
+ * `scrydexId` MUST be the Scrydex-native card id (NOT Card.externalId — the id
+ * namespaces differ, Audit L0). Server-only (scrydexHeaders). Public coverage
+ * is PSA English ONLY — BGS is never read as data.
+ *
+ * NEVER THROWS to the caller: any !res.ok / network error / missing creds /
+ * parse failure → warn-log + null, so a credit-gated orchestrator degrades to
+ * "no data" and never clobbers a prior stored report.
+ *
+ * FAIL-LOUD (Finding 4): because the pop_reports shape is UNVERIFIED, a 200
+ * that parses to zero PSA-English grades warn-logs the raw top-level keys it
+ * saw, so the first owner-approved real pull can confirm/repair the schema
+ * instead of silently returning null for every card.
+ */
+export async function fetchScrydexPopulation(
+  scrydexId: string,
+  game: Game
+): Promise<ScrydexPopulation | null> {
+  const slug = gameSlug(game);
+  try {
+    const res = await fetch(
+      `${SCRYDEX_BASE_URL}/${slug}/v1/cards/${encodeURIComponent(scrydexId)}?include=pop_reports`,
+      { headers: scrydexHeaders() }
+    );
+    if (!res.ok) {
+      console.warn(`[scrydex] population ${scrydexId} HTTP ${res.status}`);
+      return null;
+    }
+    const body = await res.json();
+    const parsed = PopReportResponseSchema.safeParse(body);
+    if (!parsed.success) {
+      console.warn(`[scrydex] population ${scrydexId} parse failed: ${parsed.error.issues[0]?.message}`);
+      return null;
+    }
+
+    // Step 3: first entry where company==PSA AND language==English (case-insensitive).
+    const entry = parsed.data.data.pop_reports.find(
+      (e) =>
+        (e.company ?? "").toUpperCase() === "PSA" &&
+        (e.language ?? "").toLowerCase() === "english"
+    );
+
+    // Step 2b fail-loud diagnostic: no PSA-English entry → warn the raw keys.
+    if (!entry) {
+      console.warn(
+        `[scrydex] population ${scrydexId}: no PSA-English pop_reports; raw top-level keys:`,
+        Object.keys((body?.data ?? body ?? {}) as Record<string, unknown>)
+      );
+      return null;
+    }
+
+    // Step 4: coerce grade→string; drop grades whose count is not finite
+    // (never fabricate a 0). total = entry.total when finite else sum kept.
+    const grades: { grade: string; count: number }[] = [];
+    for (const g of entry.grades ?? []) {
+      const count = typeof g.count === "number" && Number.isFinite(g.count) ? g.count : null;
+      if (count === null) continue;
+      if (g.grade == null) continue;
+      grades.push({ grade: String(g.grade), count });
+    }
+    const total =
+      typeof entry.total === "number" && Number.isFinite(entry.total)
+        ? entry.total
+        : grades.reduce((sum, g) => sum + g.count, 0);
+
+    // Step 5: empty grades AND no real total → fail-loud + null (honest gap).
+    if (grades.length === 0 && total === 0) {
+      console.warn(
+        `[scrydex] population ${scrydexId}: no PSA-English pop_reports; raw top-level keys:`,
+        Object.keys((body?.data ?? body ?? {}) as Record<string, unknown>)
+      );
+      return null;
+    }
+
+    return { company: "PSA", language: "English", total, grades };
+  } catch (err) {
+    console.warn(`[scrydex] population ${scrydexId} error:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 // --- Price accessors (pure) ------------------------------------------------
 
 /**

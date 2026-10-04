@@ -206,6 +206,7 @@ model Card {
   pricingHistory  PricingHistory[]
   currentPrices   CurrentPrice[]
   syncLogs        SyncLog[]
+  populationReports PopulationReport[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -403,6 +404,36 @@ model SyncLog {
   // Without it the cardId filter would scan — [job, ranAt] alone can't serve it.
   @@index([job, cardId, ranAt])
   @@map("sync_log")
+}
+
+// PSA English population report per card (Scrydex include=pop_reports).
+// PLAN CONSTRAINT: Scrydex public population coverage is Pokémon PSA English
+// ONLY (docs/SCRYDEX_AUDIT.md Area 4b). BGS is UNSUPPORTED and is NEVER stored
+// here (BGS_POPULATION_SUPPORTED stays false). We NEVER fabricate counts — a
+// card with no refreshed report simply has no row (read returns null → UI
+// honest fallback). Populated ONLY by the manual, owner-approval-gated
+// pullAndStorePopulation; never on page load / search / sync.
+model PopulationReport {
+  id          String   @id @default(cuid())
+  cardId      String
+  source      String   @default("scrydex") // always "scrydex" when present
+  company     String   @default("PSA")     // PSA only (BGS never stored)
+  language    String   @default("English") // Scrydex public = English only
+  // JSON array of { grade, count } across GRADE_LADDER (10..1.5,1,Auth). JSON
+  // (not a child table) because it is read/written as one whole report blob
+  // and re-parsed through Zod on read (RULE 4) — a child table would add joins
+  // for no query we run. Prisma type: Json.
+  grades      Json
+  total       Int
+  refreshedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  // One CURRENT report per card/source/company/language → upsertable key.
+  @@unique([cardId, source, company, language])
+  @@index([cardId])
+  @@map("population_report")
 }
 
 // =============================================================
