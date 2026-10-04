@@ -24,6 +24,7 @@ import { getServerSession } from "@/lib/utils/get-server-session";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { buildCollectionHistories } from "@/lib/services/collection-history.service";
+import { UNCAT_ID, toHistoryToken } from "@/lib/utils/collection-ids";
 import DashboardClient, {
   type CollectionItem,
 } from "./_components/DashboardClient";
@@ -113,27 +114,41 @@ export default async function DashboardPage() {
   // SSR query key matches the client's first ["portfolio-history",
   // collectionIdsQuery, activeRange] key and the data hydrates (else no match
   // → undefined → the normal fetch runs). See collection-history.service.ts
-  // for why the "__uncat__" sentinel (≠ "null") yields an empty series — that
-  // CURRENT behavior is preserved identically on both paths.
-  const defaultCollectionIds = ["__uncat__", ...collections.map((c) => c.id)];
+  // for why the loose bucket needs the service token "null" (not the UI
+  // sentinel "__uncat__"). We translate "__uncat__" → "null" here via the SAME
+  // shared helper the client uses, so `initialCollectionIdsQuery` is
+  // byte-identical to the client's new `collectionIdsQuery` AND the service
+  // actually plots the loose/uncategorized bucket.
+  const defaultCollectionIds = ["__uncat__", ...collections.map((c) => c.id)].map(
+    toHistoryToken
+  );
   const initialCollectionIdsQuery = defaultCollectionIds.join(",");
 
-  // Default chart histories: from the cached payload when present (guarding
-  // legacy 90s-TTL entries written before `histories` existed — recompute so
-  // SSR can't crash on an old entry), else build live alongside the rows.
+  // Default chart histories. Reuse a cached `histories` map ONLY if it is
+  // already keyed by the new tokens — a pre-fix 90s-TTL entry still keyed by
+  // "__uncat__" (the loose-bucket bug) is treated as a miss and rebuilt, else a
+  // stale hit would re-serve an empty loose-cards series after this fix ships.
+  // Also guards legacy entries written before `histories` existed (undefined).
   // Prisma-only, ZERO credits — the Scrydex credit gate is untouched.
+  const cachedHistories =
+    cached?.histories && !(UNCAT_ID in cached.histories)
+      ? cached.histories
+      : undefined;
+  const rebuilt = cachedHistories === undefined;
   const histories: Histories =
-    cached?.histories ??
+    cachedHistories ??
     (await buildCollectionHistories(
       session.user.id,
       defaultCollectionIds,
       DEFAULT_RANGE
     ));
 
-  // Best-effort cache fill on a miss (helper swallows Redis errors). Date
+  // Best-effort cache fill on a miss OR when a stale-shape hit was rebuilt
+  // (helper swallows Redis errors), so the corrected `histories` shape
+  // overwrites the stale entry instead of self-healing only in memory. Date
   // fields serialize to ISO strings over JSON — the client already consumes
   // that same API JSON shape, so the cached form reproduces it exactly.
-  if (!cached) {
+  if (!cached || rebuilt) {
     await cacheSetJson(
       cacheKey,
       { rows, collections, histories },

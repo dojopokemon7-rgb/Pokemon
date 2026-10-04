@@ -26,6 +26,7 @@ import { type CardDetailsData } from "@/components/CardDetailsPopup";
 import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
 import { useDelayedFlag } from "@/components/useDelayedFlag";
+import { toHistoryToken } from "@/lib/utils/collection-ids";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -701,7 +702,11 @@ export default function DashboardClient({
     };
   }, [focusedId, activeSelectedIds, collOptions, activeSelectedOptions, stats.overallPct]);
 
-  const collectionIdsQuery = Array.from(activeSelectedIds).join(",");
+  // Translate each UI bucket id to the history-service token ("__uncat__" →
+  // "null") so the loose/Main bucket actually filters collectionId IS NULL
+  // instead of a literal "__uncat__" that matches zero rows. Named cuids and
+  // "all" pass through unchanged. SSR computes the identical string.
+  const collectionIdsQuery = Array.from(activeSelectedIds).map(toHistoryToken).join(",");
   const { data: realHistoriesData, isLoading: historyLoading } = useQuery({
     queryKey: ["portfolio-history", collectionIdsQuery, activeRange],
     queryFn: async () => {
@@ -762,8 +767,10 @@ export default function DashboardClient({
   // never a made-up curve. Never summed — one series per collection.
   const chartSeriesList = useMemo(() => {
     return activeSelectedOptions.map((opt) => {
+      // Re-key by the translated token so the loose bucket ("__uncat__") reads
+      // histories["null"]; named cuids read their own key unchanged.
       const raw: { date?: string; value: number | null }[] =
-        realHistoriesData?.histories?.[opt.id] ?? [];
+        realHistoriesData?.histories?.[toHistoryToken(opt.id)] ?? [];
       // Drop honest gaps (null values) — a gap is simply absent from the drawn
       // line, never rendered as 0. Real points only.
       const data = raw
