@@ -9,9 +9,10 @@
  *     (.hero / .ovl.tl / .ovl.tr / .ovl.br in the reference).
  *   - Name + star "track this card" toggle, TCG · set, code line.
  *   - Price + delta, and a WANT TO BUY toggle button (.wbtn).
- *   - "Price history" — grade-group chips (Raw / PSA / BGS) that
- *     multi-select up to 3 series, an area chart (same technique as
- *     the dashboard's DojoChart), and range tabs.
+ *   - "Price history" — DYNAMIC grade-group chips (Raw + every grading
+ *     company present in /prices) that multi-select up to 3 series, each
+ *     drawing its OWN stored per-grade history via the shared AreaChart
+ *     (multi-series), plus range tabs.
  *   - "Adding to: Main" quantity card (Ungraded / Graded rows).
  *   - Population report (grader tabs + grade/count grid).
  *   - SOLD LIST button.
@@ -20,10 +21,11 @@
  * Card identity/price/image are carried via query params from the
  * search results grid (see search/page.tsx CardTile) since there is
  * no get-by-id API — only /api/cards/search exists. The Price-history
- * chart is driven by REAL data: the Raw line plots recorded
- * PricingHistory (/api/cards/[id]/history) and the chip prices come
- * from live sources (market price + /api/cards/[id]/graded for PSA);
- * population data + add-rows still follow the reference shape.
+ * chart is driven by REAL data: each selected chip plots its own
+ * recorded PricingHistory (GET /api/cards/[id]/history → { raw, graded });
+ * chip prices come from /prices (+ /graded for PSA). A chip with no
+ * stored history flattens to its current price — never a fabricated
+ * curve. Population data + add-rows still follow the reference shape.
  */
 
 import { useState, useMemo, Suspense, useEffect, useRef } from "react";
@@ -35,6 +37,13 @@ import { RecentSales } from "@/components/RecentSales";
 import { AreaChart } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
+import {
+  buildChips,
+  buildChartMatrix,
+  sortByGradeDesc,
+  type CurrentPriceRow,
+  type HistoryResponse,
+} from "./price-history-chart";
 
 // ── Icons ──────────────────────────────────────────────────────────
 function ChevronLeft() {
@@ -65,20 +74,13 @@ function ShareIcon() {
   );
 }
 
-// ── Price-history series — the Price History selector shows only the
-// grade groups we can price from REAL sources today: Raw (recorded
-// PricingHistory) and PSA 10 / PSA 9 (the /graded route). BGS was
-// removed from this selector — we have no BGS price/line pipeline, so a
-// static BGS chip would be fabricated data. (BGS still lives in the
-// unrelated population-report grader toggle / GRADED_RE / Add sheet.)
-// Chip PRICE labels are populated per-card from live data at render
-// time (no hardcoded priceFmt), so a card with no price renders "—". ──
-const SERIES = [
-  { id: "raw", label: "Raw", grade: "Raw", group: "Raw", color: "#9AA0A6" },
-  { id: "psa10", label: "PSA 10", grade: "10", group: "PSA", color: "var(--color-dojo-gold)" },
-  { id: "psa9", label: "PSA 9", grade: "9", group: "PSA", color: "var(--color-dojo-jade)" },
-];
-const GROUPS = ["Raw", "PSA"];
+// ── Price-history chips — now DYNAMIC. buildChips (./price-history-chart)
+// derives the chip groups from the card's REAL current prices: one Raw chip
+// plus one chip per (company, grade) actually present in /prices. Each selected
+// chip plots its OWN stored per-grade history (buildChartMatrix) — no
+// fabricated/reused shape. Chip PRICE labels come from live data per-card
+// (null → "—"). The pure helpers + CurrentPriceRow/Chip/HistoryResponse types
+// live in the sibling module (a page.tsx may only export framework symbols). ──
 
 // ADD_ROWS structure template — prices are populated dynamically per card
 // in CardDetailInner based on the card's actual marketPrice, not hardcoded.
@@ -103,75 +105,16 @@ function fmtUSDCompact(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(n);
 }
 
-// ── C4 — current-price completeness (raw + graded blocks) ──────────────
-// A single CurrentPrice row as returned by /api/cards/[id]/prices
-// (card.currentPrices verbatim — the new company/grade/type columns flow
-// through automatically).
-interface CurrentPriceRow {
-  condition?: string | null;
-  company?: string | null;
-  grade?: string | null;
-  type?: string | null;
-  priceMarket?: number | null;
-  priceLow?: number | null;
-}
+// NOTE: CurrentPriceRow, HistoryResponse, Chip, buildChips, buildChartMatrix,
+// sortByGradeDesc, gradeSortKey, and fmtChartDate now live in the sibling pure
+// module ./price-history-chart (imported above). A page.tsx may only export the
+// framework's allowed symbols, so the testable pure logic was extracted there.
 
-// Raw condition display order; anything else falls after these in payload order.
-const RAW_CONDITION_ORDER = ["NM", "LP", "MP", "HP"];
-
-// Grade sort: numeric descending with half-grades interleaved (10, 9.5, 9,
-// 8.5 …) and a qualified grade ("9Q") placed immediately AFTER its numeric peer
-// (so 9 then 9Q then 8.5). Non-numeric labels sink to the bottom alphabetically.
-function gradeSortKey(grade: string): [number, number] {
-  const qualified = /q$/i.test(grade);
-  const numeric = parseFloat(grade.replace(/q$/i, ""));
-  if (!Number.isFinite(numeric)) return [-Infinity, 0];
-  // Primary: numeric descending (negate). Secondary: a qualified grade sorts
-  // just after its numeric peer (tiny positive bump so it follows the plain one).
-  return [-numeric, qualified ? 1 : 0];
-}
-function sortByGradeDesc<T extends { grade: string }>(rows: T[]): T[] {
-  return [...rows].sort((a, b) => {
-    const [an, aq] = gradeSortKey(a.grade);
-    const [bn, bq] = gradeSortKey(b.grade);
-    if (an !== bn) return an - bn;
-    if (aq !== bq) return aq - bq;
-    return a.grade.localeCompare(b.grade);
-  });
-}
-
-function fmtPriceCell(market?: number | null, low?: number | null): string {
-  const v = market ?? low;
-  return typeof v === "number" ? fmtUSD(v) : "—";
-}
-
-// Companies always surfaced in the graded block (PSA first + always shown);
-// others render only when the card actually has rows for them.
-const GRADED_COMPANY_ORDER = ["PSA", "CGC", "BGS", "TAG", "SGC"];
-
-// ── Area chart — same port of app.js chart() used on the dashboard:
-// area polygon + polyline(s) + grid lines. Supports multiple series
-// (price-history can show up to 3 grade lines at once).
-//
-// Interaction (Phase 2 QA: chart hover/tooltips must work on mobile):
-// pointer/touch snaps to the nearest x sample and draws a vertical
-// guide plus a marker dot on every visible series. The `pts` are
-// normalized chart-shape units (0..90 band) derived from the card's
-// REAL price history — the exact {date, price} ride on `points` for the
-// tooltip. viewBox uses the default meet aspect, so pointer mapping
-// goes through the rendered rect width. ────────────────────────────
-// F-09: format a point's date for the tooltip, e.g. "2026-06-01" → "Jun 2026".
-function fmtChartDate(iso: string): string {
-  const d = new Date(`${iso}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-}
-
-// Price-history chart now renders via the shared, design-system-faithful
-// AreaChart port (src/components/AreaChart.tsx) — see the call site below. The
-// old hand-rolled DojoChart (custom hover/tooltip/markers/x-axis) was removed
-// in favour of that single canonical component. `fmtChartDate` is kept: it
-// builds the AreaChart x-axis labels from the REAL {date} points.
+// ── Area chart — rendered via the shared design-system AreaChart port
+// (src/components/AreaChart.tsx) in multi-series mode: one line per selected
+// chip, built by buildChartMatrix (./price-history-chart). All
+// hover/tooltip/marker/x-axis behaviour lives in that component; fmtChartDate
+// (from the same sibling module) builds the x-axis labels from the REAL dates.
 
 // ── Population report (PSA English only; BGS unavailable; no fabrication) ──
 // Plan §4: Scrydex public coverage is Pokémon PSA English only. We NEVER show
@@ -498,12 +441,12 @@ function CardDetailInner() {
     });
   };
 
-  // F-18: real price history from the DB (PricingHistory). The chart is
-  // driven entirely by these points — the Raw line plots them and the PSA
-  // lines reuse their shape. Cards with < 2 points in the selected window
-  // show a graceful flat baseline, never a fabricated mock curve. Never
-  // errors — an empty/failed fetch just leaves realPts null.
-  const { data: historyData, isLoading: historyLoading } = useQuery<{ points: { date: string; price: number }[] }>({
+  // F-18: real per-grade price history from the DB (PricingHistory), keyed as
+  // { raw, graded } (FEAT-001). buildChartMatrix plots each selected chip's OWN
+  // series — the Raw chip from `raw`, each graded chip from graded[`CO|grade`].
+  // A chip with < 2 windowed points flattens to its current price; nothing is
+  // fabricated. Never errors — an empty/failed fetch just yields empty series.
+  const { data: historyData, isLoading: historyLoading } = useQuery<HistoryResponse>({
     queryKey: ["card-history", id],
     queryFn: async () => {
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/history`);
@@ -512,53 +455,6 @@ function CardDetailInner() {
     },
     staleTime: 60_000,
   });
-  // Real history points filtered to the selected range tab (trailing window
-  // measured back from the newest recorded point). MAX keeps everything.
-  const windowPts = useMemo(() => {
-    const points = historyData?.points ?? [];
-    const days = RANGE_DAYS[range] ?? Infinity;
-    if (points.length === 0 || days === Infinity) return points;
-    const newest = new Date(`${points[points.length - 1].date}T00:00:00.000Z`).getTime();
-    const cutoff = newest - days * 86_400_000;
-    return points.filter((p) => new Date(`${p.date}T00:00:00.000Z`).getTime() >= cutoff);
-  }, [historyData, range]);
-
-  // Normalize the windowed real prices into the chart's shape band (4..86).
-  // null when we have < 2 points for this window — the chart then shows a
-  // graceful short/flat line, NEVER a fabricated mock shape (no-fabricate
-  // rule now that a real pipeline exists).
-  const realPts = useMemo(() => {
-    if (windowPts.length < 2) return null;
-    const prices = windowPts.map((p) => p.price);
-    const min = Math.min(...prices);
-    const max = Math.max(...prices);
-    const range = max - min || 1;
-    return prices.map((p) => 4 + ((p - min) / range) * (86 - 4));
-  }, [windowPts]);
-
-  // Data for the shared AreaChart (single-series mode). We draw the ONE real
-  // raw-history series (date + price) — there is no real per-grade series, so
-  // the grade chips drive the price LABELS, not separate curves (honest, no
-  // fabrication). < 2 real points in the window → a flat, label-less baseline
-  // so the chart still renders without inventing dates/prices.
-  const detailChartData = useMemo(() => {
-    if (realPts && windowPts.length >= 2) {
-      return windowPts.map((p) => ({ label: fmtChartDate(p.date), value: p.price }));
-    }
-    // Honest flat baseline (no fabricated date labels, no fabricated price).
-    return [
-      { label: "", value: 1 },
-      { label: "", value: 1 },
-    ];
-  }, [realPts, windowPts]);
-
-  // When exactly one grade chip is selected, color the line with that chip's
-  // color; otherwise let the AreaChart's trend coloring (green rising / red
-  // dipping) decide. (Matches the old per-series chip color affordance.)
-  const detailChartColor = useMemo(() => {
-    const active = SERIES.filter((d) => activeSeries.has(d.id));
-    return active.length === 1 ? active[0].color : undefined;
-  }, [activeSeries]);
 
   const addTotal = ADD_ROWS.reduce((a, d) => a + (addQty[d.id] || 0) * (d.price ?? 0), 0);
   // Gate the ADD button on selected QUANTITY, not dollar total: an unpriced
@@ -566,58 +462,45 @@ function CardDetailInner() {
   // be addable. Total is a display label; quantity is the real intent signal.
   const addQtyTotal = Object.values(addQty).reduce((a, q) => a + (q || 0), 0);
 
-  // Live price for each price-history chip (null → "—"). Raw = the card's
-  // market price; PSA 10 / PSA 9 come from the /graded route. Never fabricated.
-  const chipPrice: Record<string, number | null> = {
-    raw: fetchedPrice ?? (priceParam > 0 ? priceParam : null),
-    psa10: gradedData?.price ?? null,
-    psa9: graded9Data?.price ?? null,
-  };
-
-  // C4(a) — RAW conditions block. Filter currentPrices to type==='raw', one row
-  // per condition in RAW_CONDITION_ORDER then any other present. RAW is ALWAYS
-  // shown: when no raw rows exist, render the canonical conditions with "—"
-  // (AC-31). priceMarket ?? priceLow ?? "—" (never fabricated — RULE 2).
-  const rawRows: { condition: string; label: string }[] = useMemo(() => {
-    const rows = (currentPrices as CurrentPriceRow[]).filter((p) => (p.type ?? "raw") === "raw");
-    const byCondition = new Map<string, CurrentPriceRow>();
-    for (const r of rows) byCondition.set((r.condition || "NM").toUpperCase(), r);
-    const present = [...byCondition.keys()];
-    const ordered = [
-      ...RAW_CONDITION_ORDER.filter((c) => byCondition.has(c) || c === "NM"),
-      ...present.filter((c) => !RAW_CONDITION_ORDER.includes(c)),
-    ];
-    // De-dupe while preserving order (NM is always listed even if absent).
-    return [...new Set(ordered)].map((condition) => {
-      const row = byCondition.get(condition);
-      return { condition, label: fmtPriceCell(row?.priceMarket, row?.priceLow) };
-    });
-  }, [currentPrices]);
-
-  // C4(b) — GRADED block. Filter type==='graded', group by company. PSA ALWAYS
-  // shown (even if absent → "—" row); CGC/BGS/TAG/… only when present (AC-32/33).
-  // Grades sorted desc with half interleaved + qualified after its peer.
-  const gradedCompanies: { company: string; grades: { grade: string; label: string }[] }[] = useMemo(() => {
-    const graded = (currentPrices as CurrentPriceRow[]).filter((p) => (p.type ?? "raw") === "graded");
-    const byCompany = new Map<string, { grade: string; label: string }[]>();
-    for (const r of graded) {
-      const company = (r.company || "").toUpperCase();
+  // Live price for each price-history chip (null → "—"), keyed on the new chip
+  // id scheme. Raw = the card's market price; each graded chip's price comes
+  // from its /prices row (numeric). The two live /graded queries OVERRIDE the
+  // PSA|10 / PSA|9 entries where present. Never fabricated.
+  const chipPrice = useMemo(() => {
+    const map: Record<string, number | null> = {
+      raw: fetchedPrice ?? (priceParam > 0 ? priceParam : null),
+    };
+    for (const r of currentPrices as CurrentPriceRow[]) {
+      if ((r.type ?? "raw") !== "graded") continue;
+      const company = (r.company ?? "").toUpperCase();
       const grade = r.grade ?? "";
-      if (!company || !grade) continue; // no fabricated row for a missing company/grade
-      if (!byCompany.has(company)) byCompany.set(company, []);
-      byCompany.get(company)!.push({ grade, label: fmtPriceCell(r.priceMarket, r.priceLow) });
+      if (!company || !grade) continue;
+      map[`${company}|${grade}`] = r.priceMarket ?? r.priceLow ?? null;
     }
-    // Ensure PSA is always present (empty → the view renders a "—" row).
-    if (!byCompany.has("PSA")) byCompany.set("PSA", []);
-    const companies = [
-      ...GRADED_COMPANY_ORDER.filter((c) => byCompany.has(c)),
-      ...[...byCompany.keys()].filter((c) => !GRADED_COMPANY_ORDER.includes(c)).sort(),
-    ];
-    return [...new Set(companies)].map((company) => ({
-      company,
-      grades: sortByGradeDesc(byCompany.get(company) ?? []),
-    }));
-  }, [currentPrices]);
+    if (gradedData?.price != null) map["PSA|10"] = gradedData.price;
+    if (graded9Data?.price != null) map["PSA|9"] = graded9Data.price;
+    return map;
+  }, [currentPrices, fetchedPrice, priceParam, gradedData, graded9Data]);
+
+  // Dynamic chip groups driven by the card's real current prices.
+  const chipGroups = useMemo(
+    () => buildChips(currentPrices as CurrentPriceRow[], chipPrice),
+    [currentPrices, chipPrice]
+  );
+  const allChips = useMemo(() => chipGroups.flatMap((g) => g.chips), [chipGroups]);
+
+  // Multi-series chart matrix for the user's selected chips (each plots its OWN
+  // real stored per-grade history, windowed by the active range tab).
+  const matrix = useMemo(
+    () =>
+      buildChartMatrix({
+        activeChips: allChips.filter((c) => activeSeries.has(c.id)),
+        history: historyData,
+        chipPrice,
+        rangeDays: RANGE_DAYS[range] ?? Infinity,
+      }),
+    [allChips, activeSeries, historyData, chipPrice, range]
+  );
 
   return (
     <div style={{ paddingBottom: "24px" }}>
@@ -823,11 +706,11 @@ function CardDetailInner() {
           </span>
         </div>
         <div style={{ display: "flex", gap: "18px", marginTop: "12px", overflowX: "auto", paddingBottom: "4px", margin: "12px -22px 0", padding: "0 22px 4px" }}>
-          {GROUPS.map((g) => (
-            <div key={g} style={{ flex: "none" }}>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>{g}</div>
+          {chipGroups.map((grp) => (
+            <div key={grp.group} style={{ flex: "none" }}>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>{grp.group}</div>
               <div style={{ display: "flex", marginTop: "7px" }}>
-                {SERIES.filter((d) => d.group === g).map((d) => {
+                {grp.chips.map((d) => {
                   const on = activeSeries.has(d.id);
                   return (
                     <button
@@ -843,7 +726,7 @@ function CardDetailInner() {
                     >
                       <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12.5px" }}>{d.grade}</div>
                       <div style={{ marginTop: "3px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11.5px", color: "var(--color-dojo-body)" }}>
-                        {chipPrice[d.id] != null ? fmtUSDCompact(chipPrice[d.id] as number) : "—"}
+                        {d.price != null ? fmtUSDCompact(d.price) : "—"}
                       </div>
                     </button>
                   );
@@ -865,16 +748,17 @@ function CardDetailInner() {
             </div>
           ) : (
             <div className="dojo-fade-in-fast">
-              {/* Design-system AreaChart port (single-series): the ONE real
-                  raw-history series for the selected range window. It renders
-                  the gradient fill, gridlines, dashed hover guide, markers,
-                  no-shadow tooltip, and the per-point date x-axis itself.
-                  < 2 real points → the flat, label-less baseline above
-                  (never a fabricated curve). */}
+              {/* Design-system AreaChart port (multi-series): each selected
+                  chip plots its OWN real stored per-grade history, windowed by
+                  the active range tab. buildChartMatrix emits a dense matrix
+                  (>=2 rows per drawn series, no NaN/undefined) so the shared
+                  scale is never poisoned. A chip with no history flattens to a
+                  marker at its current price; all-excluded → an honest flat
+                  baseline (never a fabricated curve). */}
               <AreaChart
-                data={detailChartData}
+                data={matrix.data}
+                series={matrix.series}
                 height={170}
-                color={detailChartColor}
               />
             </div>
           )}
@@ -899,42 +783,6 @@ function CardDetailInner() {
       </div>
 
       <div style={{ padding: "0 22px" }}>
-        {/* ── C4(a) Current prices — RAW conditions (always shown) ──
-            Reuses the panel idiom (dark card, 1px stroke, square corners,
-            --font-display). priceMarket ?? priceLow ?? "—" (RULE 2). */}
-        <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-          Current prices
-        </div>
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "4px 15px 10px" }}>
-          <div style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Raw</div>
-          {rawRows.map((r) => (
-            <div key={r.condition} style={{ display: "flex", alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>{r.condition}</span>
-              <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: r.label === "—" ? "var(--color-dojo-faint)" : "var(--color-dojo-ink)" }}>{r.label}</span>
-            </div>
-          ))}
-
-          {/* C4(b) GRADED — PSA always shown; other companies only when present. */}
-          {gradedCompanies.map((c) => (
-            <div key={c.company}>
-              <div style={{ marginTop: "13px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>{c.company}</div>
-              {c.grades.length === 0 ? (
-                <div style={{ display: "flex", alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-                  <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-faint)" }}>—</span>
-                  <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", color: "var(--color-dojo-faint)" }}>—</span>
-                </div>
-              ) : (
-                c.grades.map((g) => (
-                  <div key={g.grade} style={{ display: "flex", alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-                    <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>{c.company} {g.grade}</span>
-                    <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: g.label === "—" ? "var(--color-dojo-faint)" : "var(--color-dojo-ink)" }}>{g.label}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          ))}
-        </div>
-
         {/* ── Adding to: Main ── */}
         <div style={{ marginTop: "22px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "15px" }}>
           <div style={{ display: "flex", alignItems: "baseline" }}>
