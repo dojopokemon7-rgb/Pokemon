@@ -398,6 +398,11 @@ function CardDetailInner() {
       queryClient.invalidateQueries({ queryKey: ["collection"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       queryClient.invalidateQueries({ queryKey: ["collections"] });
+      // B / HIGH-1: refetch the dashboard chart family so the chosen
+      // collection's series (made drawable by A1) updates immediately after
+      // an add (AC-16). The TanStack prefix match on ["portfolio-history"]
+      // covers every collectionIdsQuery/range combo keyed under it.
+      queryClient.invalidateQueries({ queryKey: ["portfolio-history"] });
       // Reset quantities after successful add
       setAddQty({ raw: 0, psa10: 0 });
       setToast(`Added ${name} to your portfolio`);
