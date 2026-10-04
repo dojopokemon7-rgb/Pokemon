@@ -86,7 +86,7 @@ function ShareIcon() {
 // in CardDetailInner based on the card's actual marketPrice, not hardcoded.
 const ADD_ROWS_TEMPLATE = [
   { id: "raw", section: "raw" as const, label: "Foil" },
-  { id: "psa10", section: "graded" as const, label: "PSA 10 (GEM - MT)", variant: "Foil" },
+  { id: "psa10", section: "graded" as const, label: "PSA 10", variant: "Foil" },
 ];
 
 // Range tabs filter the REAL history points by a trailing date window
@@ -389,7 +389,7 @@ function CardDetailInner() {
       { 
         id: "psa10", 
         section: "graded" as const, 
-        label: "PSA 10 (GEM - MT)", 
+        label: "PSA 10", 
         variant: "Foil", 
         price: psa10Price,
         isFallback: gradedData?.price == null ? true : gradedData.isFallback,
@@ -834,51 +834,64 @@ function CardDetailInner() {
           </button>
 
           {/* ADD TO COLLECTION button (Phase 1 fix) - submits addQty selections */}
-          {addQtyTotal > 0 && (
-            <button
-              className="dojo-btn dojo-btn-primary"
-              style={{ width: "100%", marginTop: "16px", height: "44px" }}
-              disabled={addMutation.isPending}
-              onClick={async () => {
-                setAddError(null);
-                const cardsToAdd = [];
-                
-                // Map quantity selections to API payload format
-                for (const [rowId, qty] of Object.entries(addQty)) {
-                  if (qty <= 0) continue;
-                  
-                  const row = ADD_ROWS.find(r => r.id === rowId);
-                  if (!row) continue;
-                  
-                  // Determine if this is a foil, graded, etc.
-                  const isFoil = row.label.toLowerCase().includes("foil");
-                  const isGraded = row.section === "graded";
-                  
-                  cardsToAdd.push({
-                    externalId: id,
-                    name: name,
-                    setName: setName || undefined,
-                    imageUrl: img && img.startsWith("http") ? img : undefined,
-                    marketPrice: price || null,
-                    quantity: qty,
-                    isFoil,
-                    // '' = loose/Main → omit so the server files it unbucketed;
-                    // otherwise carry the chosen collectionId (ownership is
-                    // re-verified server-side, foreign ids coerced to null).
-                    ...(collectionId ? { collectionId } : {}),
-                    // Note: Graded card support needs schema changes (Week 3)
-                    // For now, graded cards are added as regular foil cards
-                  });
-                }
-                
-                if (cardsToAdd.length > 0) {
-                  addMutation.mutate({ cards: cardsToAdd });
-                }
-              }}
-            >
-              {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
-            </button>
-          )}
+          {/* ALWAYS render the CTA (prototype shows it unconditionally). The old
+              `addQtyTotal > 0` guard HID the button until the user tapped a +
+              stepper, so a fresh page (both quantities default to 0) showed no
+              Add button at all — the "add to collection is not coming" report.
+              With nothing selected we default to adding ONE raw copy (the common
+              "I own this card" intent) instead of doing nothing. */}
+          <button
+            className="dojo-btn dojo-btn-primary"
+            style={{ width: "100%", marginTop: "16px", height: "44px" }}
+            disabled={addMutation.isPending}
+            onClick={async () => {
+              setAddError(null);
+              const cardsToAdd = [];
+
+              // Map quantity selections to API payload format.
+              for (const [rowId, qty] of Object.entries(addQty)) {
+                if (qty <= 0) continue;
+
+                const row = ADD_ROWS.find(r => r.id === rowId);
+                if (!row) continue;
+
+                const isFoil = row.label.toLowerCase().includes("foil");
+
+                cardsToAdd.push({
+                  externalId: id,
+                  name: name,
+                  setName: setName || undefined,
+                  imageUrl: img && img.startsWith("http") ? img : undefined,
+                  marketPrice: price || null,
+                  quantity: qty,
+                  isFoil,
+                  // '' = loose/Main → omit so the server files it unbucketed;
+                  // otherwise carry the chosen collectionId (ownership is
+                  // re-verified server-side, foreign ids coerced to null).
+                  ...(collectionId ? { collectionId } : {}),
+                });
+              }
+
+              // Nothing selected → default to one raw copy so the click always
+              // does the obvious thing (never a silent no-op).
+              if (cardsToAdd.length === 0) {
+                cardsToAdd.push({
+                  externalId: id,
+                  name: name,
+                  setName: setName || undefined,
+                  imageUrl: img && img.startsWith("http") ? img : undefined,
+                  marketPrice: price || null,
+                  quantity: 1,
+                  isFoil: false,
+                  ...(collectionId ? { collectionId } : {}),
+                });
+              }
+
+              addMutation.mutate({ cards: cardsToAdd });
+            }}
+          >
+            {addMutation.isPending ? "ADDING..." : "ADD TO COLLECTION →"}
+          </button>
           
           {addError && (
             <div style={{ marginTop: "12px", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-vermilion)", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>

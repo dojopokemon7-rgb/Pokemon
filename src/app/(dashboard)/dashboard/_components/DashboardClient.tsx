@@ -210,17 +210,30 @@ function MultiLineComparisonChart({
   }
 
   // Transpose the per-series arrays into the ported AreaChart's row-per-x-index
-  // shape (one AreaChartSeries per collection). All series share the x-length;
-  // the shortest bounds the row count so we never read past a series.
-  const pointsCount = Math.min(...seriesList.map((s) => s.data.length));
+  // shape (one AreaChartSeries per collection). DROP empty series first: a
+  // selected-but-empty collection (0 real points, e.g. a brand-new bucket) used
+  // to zero out `Math.min(...lengths)` and blank the WHOLE chart — the bug where
+  // the chart vanished whenever one filtered collection had no history. Each
+  // kept series then plots its OWN real points; shorter series are LEFT-padded
+  // by carrying their first real value backward so every series spans the full
+  // x-axis as a dense column (AreaChart's shared scale is poisoned by any
+  // null/NaN, so no holes — mirrors the card-detail buildChartMatrix contract).
+  const drawable = seriesList.filter((s) => s.data.length >= 2);
+  const pointsCount = Math.max(...drawable.map((s) => s.data.length));
   // The real history points carry no per-point date labels here, so we OMIT the
   // x-axis labels (empty strings) rather than fabricate dates (task Item A.2).
   const data: AreaChartDatum[] = Array.from({ length: pointsCount }, (_, i) => {
     const row: AreaChartDatum = { label: "" };
-    for (const s of seriesList) row[s.id] = s.data[i].value;
+    for (const s of drawable) {
+      // Right-align: a series shorter than the longest starts later on the
+      // x-axis, so back-fill the lead with its first real value (never null).
+      const offset = pointsCount - s.data.length;
+      const src = i < offset ? s.data[0] : s.data[i - offset];
+      row[s.id] = src.value;
+    }
     return row;
   });
-  const series: AreaChartSeries[] = seriesList.map((s) => ({
+  const series: AreaChartSeries[] = drawable.map((s) => ({
     valueKey: s.id,
     label: s.name,
     color: s.color,
