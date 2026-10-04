@@ -10,7 +10,7 @@
 | Route | Method(s) | Auth | Zod | Redis | Never-500s? |
 |---|---|---|---|---|---|
 | `/auth/[...all]` | GET, POST | public (is the handler) | Better Auth internal | — | — |
-| `/cards/[id]/ebay-sold` | GET | public | — | sold 1h | Yes |
+| `/cards/[id]/ebay-sold` | GET | public | — | soldRows 120s | Yes (`listings: []`) |
 | `/cards/[id]/history` | GET | public | — | — | Yes (`points: []`) |
 | `/cards/[id]/prices` | GET | public | — | — | Yes (`prices: []`) |
 | `/cards/[id]/graded` | GET | public | — | — | Yes (`price: null`) |
@@ -47,11 +47,11 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ## Cards (public, graceful)
 
-### `GET /api/cards/[id]/ebay-sold` — "Sellers on the Floor"
-- `[id]` = **externalId** (cache key; doubles as Bandai code for OP). Query: `name` (**required**), `set?`, `number?`, `game?` (default `pokemon`).
-- 200 `{ listings: [{ itemId, sellerUsername, price, currency, location, itemWebUrl, title }], source: "cache"|"live" }`.
-- Missing name → `200 { listings: [], error: "Missing card name" }`; eBay failure → `200 { listings: [], error: "eBay unavailable" }`.
-- **ACTIVE listings, not sold history** (Browse API limitation). Redis `ebay:sold:*` 1h.
+### `GET /api/cards/[id]/ebay-sold` — "Recent Sales"
+- `[id]` = **externalId** OR internal **cuid** (resolved to `Card.id` via `findFirst OR`). No query params read.
+- **PART D — pure Postgres read, NO credit gate:** reads the `SoldListing` table (`where { cardId } orderBy soldAt desc nulls-last take 8`) and maps each row to `{ itemId, source, title, price, currency, soldAt (ISO), grade, company, url }`. 200 `{ listings: SoldRecord[], source: "db"|"cache" }`.
+- These are **REAL SOLD records** (`soldAt`), persisted by the owner-approval-gated single writer `pullAndStoreSoldListings` — **never** active listings, never fabricated. Unknown card / no rows → `200 { listings: [] }`.
+- **Cache:** short-TTL (120s) read-through on `RedisKeys.soldRows(cardId)` (fail-open; Postgres is source of truth). The legacy `ebay:sold:*` key is **retired** here (ages out on its own TTL). The old Redis-only + credit-gated live-fetch model is removed — reading never spends a credit.
 
 ### `GET /api/cards/[id]/history`
 - `[id]` = **externalId**. Always `200 { points: [{ date: "YYYY-MM-DD", price: number }] }` oldest→newest, sourced from stored `PricingHistory` (real `scrydex` / `add-snapshot` points — never fabricated; `scrydex-trend` retired). Rows with `priceMarket == null` are **dropped** (NFR-2 — no fabricated `$0` point). Unknown card / DB error → `{ points: [] }`. `Cache-Control: no-store`.

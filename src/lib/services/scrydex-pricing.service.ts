@@ -25,10 +25,12 @@ import {
   fetchScrydexCardById,
   fetchScrydexPriceHistory,
   fetchScrydexPopulation,
+  fetchScrydexSoldListings,
   resolveScrydexCard,
   pickRawPrice,
   type ScrydexCard,
 } from "./scrydex.service";
+import { redis, RedisKeys } from "@/lib/redis";
 import {
   assertScrydexCreditsApproved,
   SCRYDEX_CREDIT_COST,
@@ -48,6 +50,9 @@ const SCRYDEX_HISTORY_JOB = "scrydex_history";
 // Distinct job label so population pulls are separable in credit metering and
 // do NOT touch the history freshness gate (keyed on job="scrydex_history").
 const SCRYDEX_POPULATION_JOB = "scrydex_population";
+// Distinct job label for sold-listings pulls (Part D) — separable in credit
+// metering, independent of the history freshness gate.
+const SCRYDEX_LISTINGS_JOB = "scrydex_listings";
 
 export interface ScrydexPullCard {
   id: string;
@@ -532,4 +537,160 @@ export async function pullAndStorePopulation(card: {
   });
 
   return { stored: true, credits };
+}
+
+/**
+ * Pull a card's REAL eBay SOLD records and PERSIST them (Part D). This is the
+ * SINGLE WRITER of the SoldListing table — mirrors pullAndStorePopulation.
+ *
+ * CREDIT-GATED-AT-TOP: a listings request costs 1 credit (docs/SCRYDEX_AUDIT.md),
+ * so this REFUSES unless live-credit spend is owner-approved — the gate runs
+ * FIRST so a denied call performs NO HTTP at all. Throws
+ * `ScrydexCreditsNotApproved` when denied; callers surface "pending approval".
+ *
+ * NOT invoked anywhere this phase: no route/sync/render imports it (the gate
+ * stays DENY). It exists and is tested only; a later owner-approved step adds
+ * the manual-refresh trigger. The read route (/api/cards/[id]/ebay-sold) is a
+ * pure Postgres read — it NEVER calls this.
+ *
+ * `externalId` is the catalog id (RULE 3). We resolve it to Card.id + the
+ * Scrydex-native scrydexId (the /listings endpoint keys on scrydexId). An
+ * unresolved card writes a failed SyncLog and stores nothing. We NEVER
+ * fabricate sales and NEVER store active listings — only records carrying a
+ * real `sold_at` (the thin client already filters to those). A null fetch
+ * writes `failed` and does NOT clobber a prior good set (honest-gap rule).
+ *
+ * Each record upserts on the [cardId, itemId] unique so a repeat pull is
+ * idempotent (updates in place, never duplicate rows). itemId falls back to a
+ * synthetic `${sold_at}-${price}` when the record has no id. After a successful
+ * store we best-effort redis.del the short-TTL soldRows read-through key so a
+ * refresh shows before the TTL expires (fail-open — a cache fault never fails
+ * the write).
+ */
+export async function pullAndStoreSoldListings(
+  externalId: string
+): Promise<{ stored: number; credits: number }> {
+  // 1. Credit gate FIRST — throws ScrydexCreditsNotApproved, no HTTP when denied.
+  await assertScrydexCreditsApproved("listings", 1);
+
+  const credits = SCRYDEX_CREDIT_COST.listings;
+
+  // 2. Resolve externalId -> Card.id (+ scrydexId). Reuse the stored scrydexId;
+  //    if absent, resolve by name+number+set and cache it (best-effort).
+  const found = await prisma.card.findFirst({
+    where: { OR: [{ externalId }, { id: externalId }] },
+    select: {
+      id: true,
+      game: true,
+      scrydexId: true,
+      name: true,
+      number: true,
+      set: { select: { name: true, externalId: true } },
+    },
+  });
+
+  if (!found) {
+    await prisma.syncLog.create({
+      data: {
+        job: SCRYDEX_LISTINGS_JOB,
+        status: "failed",
+        credits,
+        error: `No local card for externalId ${externalId}`,
+      },
+    });
+    return { stored: 0, credits };
+  }
+
+  // Narrow Card.id + scrydexId to non-null WITHOUT a `!` (RULE 3).
+  const cardId = found.id;
+  let scrydexId: string | null = found.scrydexId ?? null;
+  if (!scrydexId) {
+    const resolved = await resolveScrydexCard({
+      name: found.name,
+      number: found.number,
+      setName: found.set?.name ?? undefined,
+      setCode: found.set?.externalId ?? undefined,
+      game: found.game,
+    });
+    if (resolved) {
+      scrydexId = resolved.scrydexId;
+      try {
+        await prisma.card.update({ where: { id: cardId }, data: { scrydexId } });
+      } catch {
+        // swallow — cache-only; a re-resolve next run is harmless.
+      }
+    }
+  }
+
+  if (!scrydexId) {
+    await prisma.syncLog.create({
+      data: {
+        job: SCRYDEX_LISTINGS_JOB,
+        cardId,
+        status: "failed",
+        credits,
+        error: `No Scrydex match for ${externalId} (${found.name})`,
+      },
+    });
+    return { stored: 0, credits };
+  }
+
+  // 3. Fetch SOLD records — null → failed SyncLog, DO NOT clobber a prior set.
+  const listings = await fetchScrydexSoldListings(scrydexId, found.game, {
+    source: "ebay",
+    pageSize: 8,
+  });
+  if (!listings) {
+    await prisma.syncLog.create({
+      data: {
+        job: SCRYDEX_LISTINGS_JOB,
+        cardId,
+        status: "failed",
+        credits,
+        error: "listings fetch returned null",
+      },
+    });
+    return { stored: 0, credits };
+  }
+
+  // 4. Upsert each sold_at-bearing record on [cardId, itemId] (idempotent).
+  let stored = 0;
+  for (const l of listings) {
+    if (!l.sold_at) continue; // never store a non-sold record (defensive — client filters too)
+    const itemId = l.id ?? `${l.sold_at}-${l.price}`;
+    const data = {
+      source: l.source ?? null,
+      title: l.title ?? null,
+      price: typeof l.price === "number" ? l.price : null,
+      currency: l.currency ?? null,
+      soldAt: new Date(l.sold_at),
+      grade: l.grade ?? null,
+      company: l.company ?? null,
+      url: l.url ?? null,
+      fetchedAt: new Date(),
+    };
+    await prisma.soldListing.upsert({
+      where: { cardId_itemId: { cardId, itemId } },
+      update: data,
+      create: { cardId, itemId, ...data },
+    });
+    stored++;
+  }
+
+  // 5. Meter — distinct job label so the history freshness gate is unaffected.
+  await prisma.syncLog.create({
+    data: { job: SCRYDEX_LISTINGS_JOB, cardId, status: "ok", credits },
+  });
+
+  // 6. Best-effort invalidation of the short-TTL read-through (fail-open).
+  try {
+    await redis.del(RedisKeys.soldRows(cardId));
+  } catch (err) {
+    console.warn(
+      `[scrydex-pricing] soldRows cache invalidation failed for ${cardId} (non-fatal):`,
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  return { stored, credits };
 }

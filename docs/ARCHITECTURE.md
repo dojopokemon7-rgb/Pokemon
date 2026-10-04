@@ -146,7 +146,7 @@ The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measu
 | `card:search:{game}:{query}` | 24h | `card.service.searchCards` (Zod re-parsed on read) |
 | `ebay:app-token` | 7000s | `ebay.service.getEbayAccessToken` |
 | `ebay:search:{name\|set\|number\|game}` | 24h | `/api/ebay/search` |
-| `ebay:sold:{id\|name\|set\|number\|game}` | 1h | `/api/cards/[id]/ebay-sold` |
+| `card:soldrows:{cardId}` | 120s | `/api/cards/[id]/ebay-sold` (Postgres `SoldListing` read-through; legacy `ebay:sold:*` retired) |
 | `price:card:{externalId}` | 6h | `/api/cards/reprice` |
 | `card:trending:{game\|all}:{sort}:{limit}:{offset}` (built inline in route) | 120s | `/api/cards/trending` |
 | `circuit_breaker:fail:{name}` / `circuit_breaker:{name}` | 600s | `fallback-executor` |
@@ -201,7 +201,7 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 | `["card-multi", game, q]` | search or trending (normalized) | `/search/multi` |
 | `["card-history", id]` | `GET /api/cards/[id]/history` | staleTime 60s |
 | `["population", id]` | `GET /api/cards/[id]/population` | staleTime 24h |
-| `["ebay-sold", id, name, set, rarity, number, game]` | `GET /api/cards/[id]/ebay-sold` | staleTime 1h (matches server cache) |
+| `["ebay-sold", id, name, set, rarity, number, game]` | `GET /api/cards/[id]/ebay-sold` | Postgres `SoldListing` read (Part D); server read-through 120s |
 | `["linked-accounts"]` | `authClient.listAccounts()` | `/you` |
 
 **Invalidation map:** add-to-collection → `["collection"]` + `["portfolio-collection"]`; want-list add/remove/move → whole `["want-list"]`; bulk delete → `["portfolio-collection"]` + `["collection"]`; admin card PATCH → no query invalidation (RSC `router.refresh()`).
@@ -217,6 +217,7 @@ Card 1─n UserCollection (per-variant uniqueness: PARTIAL expression unique ind
       quantity; NOT a plain Prisma @@unique (NULL-distinct + non-partial); sold lots repeat)
       1─n PricingHistory
       1─n CurrentPrice
+      1─n SoldListing (Part D — real eBay SOLD records, onDelete: Cascade)
 Collection 1─n UserCollection (collectionId nullable, onDelete: SetNull — deleting a
              collection unfiles cards, never deletes owned copies)
 Collection 1─n WantListItem (F-#8: collectionId nullable, onDelete: SetNull — null =
@@ -236,7 +237,8 @@ SyncLog: append-only metering/metering table (job, cardId?, credits, status, err
 - `Card.game` (`Game` enum: `POKEMON`/`ONE_PIECE`) + `Card.source` (`DataSource` enum: `TCGDEX`/`SCRYDEX`/…) stamped by the sync on upsert; `Card.scrydexId String? @unique`.
 - `PricingHistory` — append-only time series. Columns `priceMarket`/`priceLow`/`source`/`currency`/`variant`/`condition`/`recordedAt`; unique `[cardId, recordedAt, source, currency, variant, condition]`. Sources: `scrydex`, `add-snapshot` (+ legacy harness rows). `scrydex-trend` is retired (no new rows; existing rows cleaned under Owner_Approval per task 2.14).
 - `CurrentPrice` — latest price per provenance. **Full capture (C1):** columns `company String?` / `grade String?` / `type String @default("raw")` (`raw`|`graded`); unique `[cardId, source, currency, variant, condition, company, grade, type]` (migration `20250103000000_current_price_full_capture`, index `current_price_cardId_source_currency_variant_condition_comp_key`). Raw rows → `company`/`grade` NULL + real condition; graded rows → `condition="GRADED"` sentinel + uppercased company + verbatim grade. `source=DataSource` enum.
-- `SyncLog` — `job`/`cardId?`/`credits`/`status`/`error`/`ranAt`; the Scrydex freshness gate + credit meter read/write `job="scrydex_history"` rows.
+- `SyncLog` — `job`/`cardId?`/`credits`/`status`/`error`/`ranAt`; the Scrydex freshness gate + credit meter read/write `job="scrydex_history"` rows. Population pulls meter under `job="scrydex_population"`, sold-listings under `job="scrydex_listings"` (both separable, neither touches the history gate).
+- `SoldListing` (**Part D**) — persisted real eBay SOLD records for the card-detail "Recent Sales" section (migration `20250104000000_sold_listing`). Columns `source?`/`itemId`/`title?`/`price?`/`currency?`/`soldAt?`/`grade?`/`company?`/`url?`/`fetchedAt`; unique `[cardId, itemId]` (idempotent upsert); index `[cardId, soldAt]` (read `orderBy soldAt desc nulls-last take 8`); FK `cardId → card(id)` ON DELETE CASCADE. Written ONLY by the owner-approval-gated single writer `pullAndStoreSoldListings` (gate stays DENY; not invoked live). The read route `/api/cards/[id]/ebay-sold` is a pure Postgres read (NO credit gate), with a 120s `soldRows` read-through; the legacy Redis-only `ebay:sold` cache is retired.
 
 Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([tags], type: Gin)` (`has` search), `CardSet.@@index([name])` (set filter), `PricingHistory.@@index([cardId, recordedAt])` (history chart), `UserCollection.@@index([userId, addedAt])` (dashboard/portfolio/collection `where userId + orderBy addedAt desc`), `SyncLog.@@index([job, ranAt])` + `@@index([job, cardId, ranAt])` (the Scrydex freshness-gate query), `WantListItem.@@index([userId, intent])` (back-compat intent-only query) + `@@index([userId, collectionId, intent])` (F-#8 per-collection want query), plus the two F-#8 partial/expression unique indexes `uc_variant_coalesced` and `wli_scope_coalesced` (first real migration under `prisma/migrations/`; the project previously used `db push`). Graded metadata lives in `UserCollection.condition` ("PSA 10") + `Card.rarity` — dedicated columns are the planned migration.
 

@@ -316,6 +316,19 @@ export const RedisKeys = {
    * live, credit-consuming Scrydex fetch.
    */
   cardPopulation: (externalId: string): string => `card:pop:${externalId}`,
+
+  /**
+   * `GET /api/cards/[id]/ebay-sold` payload (recent SOLD records), keyed by the
+   * INTERNAL card id (cuid) the route resolves to. USER-AGNOSTIC (RULE 3 — the
+   * sold set is identical for everyone). Postgres (SoldListing) is the SOURCE OF
+   * TRUTH; this is a SHORT-TTL read-through (CACHE_TTL.soldRows = 120s) so a
+   * burst of detail-page views doesn't re-query every time. DISTINCT from the
+   * legacy `ebaySold` key (the old Redis-only credit-gated cache): that key is
+   * left to age out on its own TTL and is NO LONGER read or written by the
+   * route. INVALIDATED BY: pullAndStoreSoldListings (best-effort redis.del after
+   * a store so a refresh shows before the 120s TTL expires).
+   */
+  soldRows: (cardId: string): string => `card:soldrows:${cardId}`,
 } as const;
 
 /**
@@ -332,4 +345,5 @@ export const CACHE_TTL = {
   cardPrices: 300, // 5 min
   cardHistory: 600, // 10 min
   cardPopulation: 86400, // 24h — matches the route's existing max-age=86400
+  soldRows: 120, // 2 min — short read-through; Postgres (SoldListing) is truth
 } as const;

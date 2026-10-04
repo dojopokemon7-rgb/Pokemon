@@ -207,6 +207,7 @@ model Card {
   currentPrices   CurrentPrice[]
   syncLogs        SyncLog[]
   populationReports PopulationReport[]
+  soldListings    SoldListing[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -438,6 +439,38 @@ model PopulationReport {
   @@unique([cardId, source, company, language])
   @@index([cardId])
   @@map("population_report")
+}
+
+// Real eBay SOLD records for a card (Scrydex documented /listings endpoint,
+// source=ebay, each row carries sold_at). PART D — persists what was previously
+// Redis-only + credit-gated so the card-detail "Recent Sales" section can read
+// from Postgres (gate-free) instead of re-spending a credit on every view and
+// losing the data after the 24h Redis TTL. We NEVER fabricate sales and NEVER
+// store active listings — only genuine sold records. Written ONLY by the
+// owner-approval-gated pullAndStoreSoldListings (the single writer); the read
+// route is a pure Postgres read. A card with no stored sales simply has no rows
+// (read returns { listings: [] } → UI "No recent sales found").
+model SoldListing {
+  id        String    @id @default(cuid())
+  cardId    String
+  source    String? // e.g. "ebay"
+  itemId    String // Scrydex listing id, or a synthetic `${sold_at}-${price}` key
+  title     String?
+  price     Float?
+  currency  String?
+  soldAt    DateTime?
+  grade     String?
+  company   String?
+  url       String?
+  fetchedAt DateTime  @default(now())
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  // One row per card + listing id → upsertable on repeat pulls (idempotent).
+  @@unique([cardId, itemId])
+  // Serves the read route's `where { cardId } orderBy { soldAt desc }` take 8.
+  @@index([cardId, soldAt])
+  @@map("sold_listing")
 }
 
 // =============================================================
