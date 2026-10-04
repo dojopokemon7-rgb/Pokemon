@@ -92,7 +92,33 @@ function scaleCoords(
 ): [number, number][] {
   const n = values.length;
   const range = max - min || 1;
+  // n===1 would divide by zero → NaN; place a lone point mid-axis.
+  if (n === 1) return [[w / 2, h - ((values[0] - min) / range) * h]];
   return values.map((v, i) => [(i / (n - 1)) * w, h - ((v - min) / range) * h]);
+}
+
+// Build a SMOOTH SVG path through the points (Catmull-Rom → cubic bezier) so a
+// dense history line reads as a curve, not a jagged polyline. Falls back to a
+// straight "M L" path for < 3 points. `k` is the smoothing tension (0.2 keeps
+// it close to the data — no overshoot that would misrepresent prices).
+function smoothLinePath(pts: [number, number][]): string {
+  if (pts.length < 3) {
+    return pts.map((c, i) => `${i === 0 ? "M" : "L"} ${c[0].toFixed(1)} ${c[1].toFixed(1)}`).join(" ");
+  }
+  const k = 0.2;
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] ?? pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] ?? p2;
+    const c1x = p1[0] + ((p2[0] - p0[0]) * k);
+    const c1y = p1[1] + ((p2[1] - p0[1]) * k);
+    const c2x = p2[0] - ((p3[0] - p1[0]) * k);
+    const c2y = p2[1] - ((p3[1] - p1[1]) * k);
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  return d;
 }
 
 export function AreaChart({
@@ -178,9 +204,7 @@ export function AreaChart({
                 <line key={i} x1={0} x2={w} y1={h * f} y2={h * f} stroke={STROKE_CARD} strokeWidth={1} />
               ))}
             {seriesData.map((s, si) => {
-              const line = s.coords
-                .map((c, i) => `${i === 0 ? "M" : "L"} ${c[0].toFixed(1)} ${c[1].toFixed(1)}`)
-                .join(" ");
+              const line = smoothLinePath(s.coords);
               const area = `${line} L ${w} ${h} L 0 ${h} Z`;
               return (
                 <g key={si}>
@@ -301,9 +325,7 @@ export function AreaChart({
   const coords = scaleCoords(values, w, h, max, min);
   const rising = values[values.length - 1] >= values[0];
   const trendCol = color || (trendColor ? (rising ? JADE : VERM) : ACCENT);
-  const line = coords
-    .map((c, i) => `${i === 0 ? "M" : "L"} ${c[0].toFixed(1)} ${c[1].toFixed(1)}`)
-    .join(" ");
+  const line = smoothLinePath(coords);
   const area = `${line} L ${w} ${h} L 0 ${h} Z`;
 
   return (

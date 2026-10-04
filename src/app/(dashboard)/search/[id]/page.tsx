@@ -136,7 +136,11 @@ function PopulationReport({ id }: { id: string }) {
       if (!res.ok) return { report: null };
       return res.json();
     },
-    staleTime: 24 * 60 * 60_000,
+    // Short staleTime + refetch-on-mount so a just-enriched population shows up
+    // without a hard refresh (the 24h cache used to pin an early empty result).
+    // The GET is a cheap DB read (Redis-cached server-side), so this is fine.
+    staleTime: 30_000,
+    refetchOnMount: "always",
   });
 
   const report = data?.report ?? null;

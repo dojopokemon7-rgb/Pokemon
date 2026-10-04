@@ -20,6 +20,7 @@ import Link from "next/link";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
+import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
 
 // ── Real collection item shape ──
 interface CollectionItem {
@@ -629,6 +630,19 @@ export default function PortfolioPage() {
     }
   }, []);
 
+  // Portfolio value history for the chart — ALL owned lots (collectionIds=all),
+  // "ALL" range for the widest view. Same endpoint the dashboard chart uses;
+  // returns { histories: { all: [{date, value|null}] } }. Null values are gaps.
+  const { data: historyData } = useQuery<{ histories: Record<string, { date: string; value: number | null }[]> }>({
+    queryKey: ["portfolio-history", "all", "ALL"],
+    queryFn: async () => {
+      const res = await fetch("/api/users/me/collection/history?collectionIds=all&range=ALL", { credentials: "include" });
+      if (!res.ok) return { histories: {} };
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
   const { data, isLoading, isError } = useQuery<CollectionApiResponse>({
     queryKey: ["portfolio-collection"],
     queryFn: async () => {
@@ -777,6 +791,20 @@ export default function PortfolioPage() {
     return { marketValue, paid, realized, unrealized };
   }, [rawItems]);
 
+  // Portfolio value chart points — real stored history only (null gaps dropped,
+  // never a fabricated 0). Needs >=2 real points to draw an honest line.
+  const chartData = useMemo<AreaChartDatum[]>(() => {
+    const series = historyData?.histories?.all ?? [];
+    const real = series.filter((p): p is { date: string; value: number } => typeof p.value === "number");
+    return real.map((p) => {
+      const d = new Date(`${p.date}T00:00:00.000Z`);
+      const label = Number.isNaN(d.getTime())
+        ? p.date
+        : d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+      return { label, value: p.value };
+    });
+  }, [historyData]);
+
   const totalValue = useMemo(() => {
     if (cardType === "sold") {
       // soldPrice is already the gross total for the row's quantity — do NOT
@@ -913,6 +941,19 @@ export default function PortfolioPage() {
             Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{portfolioStats.unrealized >= 0 ? "+" : ""}{fmt(portfolioStats.unrealized)}</span>
           </span>
         </div>
+
+        {/* ── Portfolio value chart ── Real stored collection-value history
+            (same source as the dashboard chart). Only drawn when there are
+            >=2 real points; otherwise an honest "not enough history" note. */}
+        {chartData.length >= 2 ? (
+          <div style={{ marginTop: "16px" }}>
+            <AreaChart data={chartData} valueKey="value" height={240} />
+          </div>
+        ) : (
+          <div style={{ marginTop: "16px", padding: "26px 15px", textAlign: "center", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+            Not enough history to chart yet
+          </div>
+        )}
       </div>
 
         </div>
