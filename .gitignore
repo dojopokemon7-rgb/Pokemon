@@ -78,3 +78,20 @@ scripts/pull-sold-listings.ts
 
 # Local performance compose override
 docker-compose.localperf.yml
+
+# More local-only throwaway scripts + full-pull logs (never push)
+scripts/check-empty-source.ts
+scripts/check-owned-cards.ts
+scripts/check-page-size.ts
+scripts/check-supabase-schema.ts
+scripts/count-by-game.ts
+scripts/flush-all-cards.ts
+scripts/flush-card-data.ts
+scripts/pull-full-catalog.ts
+scripts/pull-one-set.ts
+scripts/scan-catalog-size.ts
+scripts/scan-language-split.ts
+scripts/scan-supabase.ts
+scripts/verify-set.ts
+scripts/whoami-db.ts
+.full-pull*.log
