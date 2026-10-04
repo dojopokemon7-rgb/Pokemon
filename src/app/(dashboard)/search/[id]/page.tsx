@@ -30,7 +30,7 @@
 
 import { useState, useMemo, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
 import { RecentSales } from "@/components/RecentSales";
 import { AreaChart } from "@/components/AreaChart";
@@ -303,6 +303,11 @@ function CardDetailInner() {
   const starred = isWanted(id);
   const [activeSeries, setActiveSeries] = useState<Set<string>>(new Set(["raw"]));
   const [range, setRange] = useState<string>("1M");
+  // Recent Sales is button-gated now (no auto fetch on mount) — this flips true
+  // once the user clicks "Load recent sales", which fires the gated POST pull
+  // and then mounts <RecentSales> (its own GET renders the stored rows).
+  const [salesRequested, setSalesRequested] = useState(false);
+  const queryClient = useQueryClient();
   // ADD TO COLLECTION opens the shared AddCardSheet (same flow as Explore).
   const [sheetOpen, setSheetOpen] = useState(false);
   // Single toast channel for this page: add confirmations, favorites
@@ -380,6 +385,32 @@ function CardDetailInner() {
     staleTime: 60_000,
   });
 
+  // ON-VIEW enrichment: fire the enrich POST exactly ONCE per card mount. Using
+  // a useQuery (not a bare useEffect) keyed ["enrich", id] with Infinity
+  // stale/gc + no retry dedupes the POST across remounts via the query cache
+  // (TanStack-first convention). The route is a no-op {enriched:false} unless
+  // SCRYDEX_ONVIEW_ENABLED is on, so this costs nothing in dev. When it reports
+  // enriched:true we invalidate the two read queries so the fresh stored data
+  // repaints; a failed / {enriched:false} response is a silent no-op.
+  useQuery({
+    queryKey: ["enrich", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/enrich`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const body = await res.json().catch(() => ({ enriched: false }));
+      if (body?.enriched === true) {
+        queryClient.invalidateQueries({ queryKey: ["card-history", id] });
+        queryClient.invalidateQueries({ queryKey: ["population", id] });
+      }
+      return body;
+    },
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+
   // Live price for each price-history chip (null → "—"), keyed on the new chip
   // id scheme. Raw = the card's market price; each graded chip's price comes
   // from its /prices row (numeric). The two live /graded queries OVERRIDE the
@@ -431,6 +462,7 @@ function CardDetailInner() {
         history: historyData,
         chipPrice,
         rangeDays: RANGE_DAYS[range] ?? Infinity,
+        range,
       }),
     [allChips, activeSeries, historyData, chipPrice, range]
   );
@@ -677,7 +709,7 @@ function CardDetailInner() {
               #2). Item 4 fades the swap in. */}
           {historyLoading ? (
             <div className="dojo-fade-in-fast" style={{ padding: "0 22px" }}>
-              <Skeleton height={170} />
+              <Skeleton height={280} />
             </div>
           ) : (
             <div className="dojo-fade-in-fast">
@@ -691,7 +723,7 @@ function CardDetailInner() {
               <AreaChart
                 data={matrix.data}
                 series={matrix.series}
-                height={170}
+                height={280}
               />
             </div>
           )}
@@ -745,7 +777,32 @@ function CardDetailInner() {
             threading it here would be wrong; graded sold-record labelling is
             unresolved (Audit L2). RecentSales keeps optional grade?/variant?
             params for a future single-grade filter, left unused for now. */}
-        <RecentSales id={id} setName={setName} rarity={rarity} />
+        {/* Button-gated: no sold-record fetch happens until the user clicks.
+            The POST runs the on-view-allowance-gated pull (a no-op when the
+            flag is off), then invalidates ["ebay-sold", id] so RecentSales'
+            GET re-reads the stored rows. Once requested, RecentSales mounts and
+            renders exactly as before ("No recent sales found" when empty). */}
+        {salesRequested ? (
+          <RecentSales id={id} setName={setName} rarity={rarity} />
+        ) : (
+          <button
+            className="dojo-btn dojo-btn-outline"
+            style={{ width: "100%", marginTop: "22px", height: "44px" }}
+            onClick={() => {
+              setSalesRequested(true);
+              fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold`, {
+                method: "POST",
+                credentials: "include",
+              })
+                .catch(() => {})
+                .finally(() => {
+                  queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });
+                });
+            }}
+          >
+            Load recent sales
+          </button>
+        )}
 
         {/* Accessories block REMOVED — it was dummy/hardcoded data (plan §4). */}
       </div>

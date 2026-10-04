@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildChips,
   buildChartMatrix,
+  fmtChartDate,
   type Chip,
   type HistoryResponse,
 } from "@/app/(dashboard)/search/[id]/price-history-chart";
@@ -249,5 +250,42 @@ describe("buildChartMatrix", () => {
     expect(series.length).toBeLessThanOrEqual(1);
     expect(data.length).toBe(2);
     expect(data.every((d) => d.value === 1)).toBe(true);
+  });
+
+  it("threads the range into the datum labels (1M → day-level, 3M → month)", () => {
+    const history: HistoryResponse = {
+      raw: [
+        { date: "2026-06-01", price: 10 },
+        { date: "2026-06-20", price: 12 },
+      ],
+      graded: {},
+    };
+    const oneM = buildChartMatrix({ activeChips: [chip({})], history, chipPrice: { raw: 12 }, rangeDays: Infinity, range: "1M" });
+    // 1M labels carry a day number, no year.
+    expect(String(oneM.data[0].label)).toMatch(/^[A-Z][a-z]{2} \d{1,2}$/);
+    const threeM = buildChartMatrix({ activeChips: [chip({})], history, chipPrice: { raw: 12 }, rangeDays: Infinity, range: "3M" });
+    // 3M labels are month-only, no digits.
+    expect(String(threeM.data[0].label)).toMatch(/^[A-Z][a-z]{2}$/);
+  });
+});
+
+describe("fmtChartDate (range-aware x-axis labels)", () => {
+  it("1M → day-level 'Jun 12' (no year)", () => {
+    expect(fmtChartDate("2026-06-12", "1M")).toBe("Jun 12");
+  });
+
+  it("3M → month-only 'Jun' (no digits)", () => {
+    const label = fmtChartDate("2026-06-12", "3M");
+    expect(label).toBe("Jun");
+    expect(label).not.toMatch(/\d/);
+  });
+
+  it("1Y / default → month + 4-digit year", () => {
+    expect(fmtChartDate("2026-06-12", "1Y")).toMatch(/\b\d{4}\b/);
+    expect(fmtChartDate("2026-06-12")).toBe("Jun 2026");
+  });
+
+  it("returns a synthetic/invalid date unchanged (flat-marker guard)", () => {
+    expect(fmtChartDate("flat-0", "1M")).toBe("flat-0");
   });
 });

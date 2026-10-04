@@ -74,12 +74,24 @@ export function sortByGradeDesc<T extends { grade: string }>(rows: T[]): T[] {
   });
 }
 
-// F-09: format a point's date for the AreaChart x-axis / tooltip, e.g.
-// "2026-06-01" → "Jun 2026".
-export function fmtChartDate(iso: string): string {
+// F-09: format a point's date for the AreaChart x-axis / tooltip, RANGE-AWARE
+// so the axis granularity matches the window the user picked:
+//   1M      → day-level  "Jun 12"   (ticks within one month need the day)
+//   3M      → month-only "Jun"      (a few months spread across the axis)
+//   1Y/ALL  → "Jun 2026" (default)  (long spans need the year to disambiguate)
+// The synthetic "flat-*" / invalid-date guard returns `iso` unchanged (a flat
+// marker carries no real date). Only the LABEL text changes — buildChartMatrix's
+// dense-matrix shape, windowing, and no-NaN contract are untouched.
+export function fmtChartDate(iso: string, range?: string): string {
   const d = new Date(`${iso}T00:00:00.000Z`);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  const opts: Intl.DateTimeFormatOptions =
+    range === "1M"
+      ? { month: "short", day: "numeric", timeZone: "UTC" }
+      : range === "3M"
+        ? { month: "short", timeZone: "UTC" }
+        : { month: "short", year: "numeric", timeZone: "UTC" };
+  return d.toLocaleDateString("en-US", opts);
 }
 
 // Numeric price read for a current-price row (priceMarket ?? priceLow ?? null)
@@ -177,11 +189,13 @@ export function buildChartMatrix({
   history,
   chipPrice,
   rangeDays,
+  range,
 }: {
   activeChips: Chip[];
   history: HistoryResponse | undefined;
   chipPrice: Record<string, number | null>;
   rangeDays: number;
+  range?: string;
 }): { data: AreaChartDatum[]; series: AreaChartSeries[] } {
   const raw = history?.raw ?? [];
   const graded = history?.graded ?? {};
@@ -233,7 +247,7 @@ export function buildChartMatrix({
   // For each series, carry-forward / leading-edge back-fill so EVERY union date
   // has a real number (no undefined/NaN poisoning the shared scale).
   const data: AreaChartDatum[] = allDates.map((date) => {
-    const datum: AreaChartDatum = { label: fmtChartDate(date) };
+    const datum: AreaChartDatum = { label: fmtChartDate(date, range) };
     for (const { chip, points } of drawn) {
       datum[chip.id] = valueAtDate(points, date);
     }

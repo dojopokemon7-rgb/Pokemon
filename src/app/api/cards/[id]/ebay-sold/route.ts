@@ -26,12 +26,23 @@
  *
  * Always 200 so the detail page renders regardless (unknown card / no rows →
  * { listings: [] }).
+ *
+ * POST /api/cards/[id]/ebay-sold — BUTTON-GATED pull of real SOLD records.
+ * Triggered only by the detail page's "Load recent sales" button (never on
+ * mount). Gated by the SAME on-view allowance flag SCRYDEX_ONVIEW_ENABLED as
+ * the enrich route: when OFF it is an honest no-op (`{ pulled:false }`,
+ * NO call to pullAndStoreSoldListings) so the UI shows "No recent sales found"
+ * — never an error. When ON, it runs the credit-gated single writer fail-open
+ * (a throw → `{ pulled:false }`, never a 5xx). The writer best-effort busts the
+ * soldRows cache so the subsequent GET re-reads the fresh set.
  */
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
+import { isScrydexOnViewApproved } from "@/lib/services/scrydex-credit-gate";
+import { pullAndStoreSoldListings } from "@/lib/services/scrydex-pricing.service";
 
 interface SoldRecord {
   itemId: string;
@@ -103,4 +114,26 @@ export async function GET(
   await cacheSetJson(cacheKey, listings, CACHE_TTL.soldRows);
 
   return NextResponse.json({ listings, source: "db" }, { status: 200 });
+}
+
+export async function POST(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const { id } = await params;
+
+  // ON-VIEW allowance OFF → honest no-op, NO pull call (asserted by test).
+  // The GET read still renders stored rows / "No recent sales found".
+  if (!(await isScrydexOnViewApproved())) {
+    return NextResponse.json({ pulled: false, reason: "disabled" }, { status: 200 });
+  }
+
+  // Allowance ON → run the credit-gated single writer fail-open: a thrown
+  // ScrydexCreditsNotApproved / transient fault must NOT 5xx (AGENTS.md rule 7).
+  try {
+    const { stored } = await pullAndStoreSoldListings(id);
+    return NextResponse.json({ pulled: true, stored }, { status: 200 });
+  } catch {
+    return NextResponse.json({ pulled: false, reason: "unavailable" }, { status: 200 });
+  }
 }

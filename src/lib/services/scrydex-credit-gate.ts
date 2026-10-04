@@ -55,6 +55,24 @@ function envApproved(): boolean {
   return (process.env.SCRYDEX_LIVE_CREDITS_APPROVED ?? "").toLowerCase() === "true";
 }
 
+function envOnViewApproved(): boolean {
+  return (process.env.SCRYDEX_ONVIEW_ENABLED ?? "").toLowerCase() === "true";
+}
+
+/**
+ * True when ON-VIEW card-detail enrichment may spend Scrydex credits.
+ *
+ * SEPARATE from `isScrydexLiveApproved` by design: the two card-detail POST
+ * routes (enrich, ebay-sold) gate on THIS flag so on-view enrichment can be
+ * enabled in production WITHOUT opening the big-bulk credit gate — and so dev /
+ * verification stays a no-op (flag unset = DISABLED, no HTTP, no credits). The
+ * owner enables it in prod via env `SCRYDEX_ONVIEW_ENABLED=true`. Env-only (no
+ * Redis dependency) — the simplest honest check that keeps dev DENY by default.
+ */
+export async function isScrydexOnViewApproved(): Promise<boolean> {
+  return envOnViewApproved();
+}
+
 /** True when live Scrydex credit spend is currently approved (env OR redis flag). */
 export async function isScrydexLiveApproved(): Promise<boolean> {
   if (envApproved()) return true;
