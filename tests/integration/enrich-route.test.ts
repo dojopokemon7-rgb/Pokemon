@@ -82,12 +82,17 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(prismaMock.pricingHistory.count).not.toHaveBeenCalled();
   });
 
-  it("(b) already fresh (has history + population) → {enriched:false}, NO service call", async () => {
-    // Even with the allowance ON, a card that already has both must not spend.
+  it("(b) fresh within 7 days (has history + recent population) → {enriched:false}, NO service call", async () => {
+    // Even with the allowance ON, a card refreshed within the 7-day window must
+    // not spend — this is the once-per-week credit guard. refreshedAt = now.
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
     prismaMock.pricingHistory.count.mockResolvedValue(5);
-    populationMock.getStoredPopulationReport.mockResolvedValue({ source: "scrydex", companies: [] });
+    populationMock.getStoredPopulationReport.mockResolvedValue({
+      source: "scrydex",
+      companies: [],
+      refreshedAt: new Date().toISOString(), // refreshed just now → fresh
+    });
 
     const [req, ctx] = enrichRequest("base1-4");
     const res = await POST(req, ctx);
@@ -98,6 +103,29 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.reason).toBe("fresh");
     expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
+  });
+
+  it("(c) stale > 7 days → refreshes once (calls both services) when allowance ON", async () => {
+    // A card last refreshed 8 days ago is re-enriched on this view (the weekly
+    // refresh, triggered by the user opening the card).
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
+    prismaMock.pricingHistory.count.mockResolvedValue(5);
+    prismaMock.currentPrice.findMany.mockResolvedValue([]);
+    populationMock.getStoredPopulationReport.mockResolvedValue({
+      source: "scrydex",
+      companies: [],
+      refreshedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), // 8 days old
+    });
+
+    const [req, ctx] = enrichRequest("base1-4");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.enriched).toBe(true);
+    expect(pricingMock.pullAndStoreScrydexHistory).toHaveBeenCalledTimes(1);
+    expect(pricingMock.pullAndStorePopulation).toHaveBeenCalledTimes(1);
   });
 
   it("returns {enriched:false,reason:'unknown'} + 200 for an unknown card (never 4xx)", async () => {

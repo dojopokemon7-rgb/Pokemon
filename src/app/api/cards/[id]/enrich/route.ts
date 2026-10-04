@@ -62,16 +62,25 @@ export async function POST(
     return NextResponse.json({ enriched: false, reason: "disabled" }, { status: 200 });
   }
 
-  // Freshness (store-once): already has history AND population → no spend.
+  // WEEKLY freshness: a card is re-enriched at most ONCE per 7 days. The first
+  // view of a card pulls+stores (1 charge); every view inside the next 7 days is
+  // free; after 7 days the next view refreshes once. `population_report.
+  // refreshedAt` is the per-card "last enriched at" marker (enrich pulls history
+  // + population together). We refresh when EITHER piece is missing OR the pop
+  // marker is older than STALE_MS.
+  const STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
   const hasHistory = (await prisma.pricingHistory.count({ where: { cardId: card.id } })) > 0;
-  const hasPop = (await getStoredPopulationReport(id)) != null;
-  if (hasHistory && hasPop) {
+  const pop = await getStoredPopulationReport(id);
+  const popAgeMs = pop?.refreshedAt ? Date.now() - new Date(pop.refreshedAt).getTime() : Infinity;
+  const isFresh = hasHistory && pop != null && popAgeMs < STALE_MS;
+  if (isFresh) {
     return NextResponse.json({ enriched: false, reason: "fresh" }, { status: 200 });
   }
-
-  // Pull only what's missing. Each pull is fail-open (a ScrydexCreditsNotApproved
-  // or any throw must NOT 5xx — AGENTS.md rule 7).
-  if (!hasHistory && card.scrydexId) {
+  // Not fresh → this is the once-per-week refresh (triggered BY the user opening
+  // the card, never a background job). Refresh BOTH history and population so
+  // the weekly spend keeps everything current together. Each pull is fail-open
+  // (a ScrydexCreditsNotApproved or any throw must NOT 5xx — AGENTS.md rule 7).
+  if (card.scrydexId) {
     // Only the card's actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades.
     const gradedRows = await prisma.currentPrice.findMany({
       where: { cardId: card.id, type: "graded", priceMarket: { not: null } },
@@ -97,7 +106,7 @@ export async function POST(
     }
   }
 
-  if (!hasPop) {
+  {
     try {
       await pullAndStorePopulation({
         id: card.id,
