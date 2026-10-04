@@ -63,3 +63,18 @@ __pycache__/
 *.py[cod]
 ebay_service.py
 test_last_sold.py
+
+# Local-only agent artifacts & worktrees (never push)
+.agents/
+.worktrees/
+
+# Local-only throwaway scripts (Scrydex probes, DB debug, one-off pulls)
+scripts/probe-*.ts
+scripts/check-bgs-chips.ts
+scripts/check-dashboard-transpose.ts
+scripts/debug-dashboard-history.ts
+scripts/pull-history-full.ts
+scripts/pull-sold-listings.ts
+
+# Local performance compose override
+docker-compose.localperf.yml
