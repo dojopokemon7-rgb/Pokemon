@@ -48,6 +48,10 @@ describe("resolveGradedPrice with a Scrydex PSA priceSource", () => {
 
 const prismaMock = vi.hoisted(() => ({
   card: { findUnique: vi.fn() },
+  // The route now reads a STORED graded CurrentPrice row FIRST (the real
+  // per-grade price, no fabrication). Default to null so the existing
+  // Scrydex/curated-fallback tests exercise that path; one test overrides it.
+  currentPrice: { findFirst: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -80,6 +84,8 @@ const PRICED_CARD = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no stored graded row → route falls through to Scrydex/curated.
+  prismaMock.currentPrice.findFirst.mockResolvedValue(null);
 });
 
 describe("GET /api/cards/[id]/graded (NFR-4 / AC-16)", () => {
@@ -100,6 +106,25 @@ describe("GET /api/cards/[id]/graded (NFR-4 / AC-16)", () => {
     expect(res.status).toBe(200);
     expect(body.price).toBe(42000);
     expect(body.isFallback).toBe(false);
+  });
+
+  it("returns the STORED graded CurrentPrice first (isFallback:false, no Scrydex call)", async () => {
+    // The real fix: when a per-grade graded CurrentPrice row exists, return it
+    // verbatim — the SAME number the detail-page chips show — instead of the
+    // fabricated multiplier. No Scrydex pull, no curated fallback.
+    prismaMock.card.findUnique.mockResolvedValue(PRICED_CARD);
+    prismaMock.currentPrice.findFirst.mockResolvedValue({ priceMarket: 326.17, updatedAt: new Date() });
+
+    const [req, ctx] = gradedRequest("base1-4");
+    const res = await GET(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.price).toBe(326.17);
+    expect(body.isFallback).toBe(false);
+    // Stored price short-circuits BEFORE any Scrydex refetch or heuristic.
+    expect(pricingMock.pullAndStoreScrydexPrice).not.toHaveBeenCalled();
+    expect(scrydexMock.pickGradedPrice).not.toHaveBeenCalled();
   });
 
   it("returns {price:null} + 200 for an UNKNOWN card (never 4xx/5xx)", async () => {

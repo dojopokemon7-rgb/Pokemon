@@ -65,10 +65,11 @@ it("shows ADD TO COLLECTION when a quantity > 0 even though every price is null 
   );
 });
 
-it("hides ADD TO COLLECTION when every selected quantity is 0", async () => {
-  // Give the raw row a REAL price so the OLD dollar gate would have SHOWN the
-  // button on price alone — proving the new gate keys on quantity: with every
-  // quantity cleared to 0 the button must be absent.
+it("keeps ADD TO COLLECTION visible even when every selected quantity is 0", async () => {
+  // The button is ALWAYS rendered now (the old addQtyTotal>0 guard hid it on a
+  // fresh page, which read as "add to collection not coming"). Clicking it opens
+  // the collection-picker modal; a zero-quantity confirm defaults to one raw
+  // copy. So after zeroing every stepper the button must STILL be present.
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
@@ -83,14 +84,10 @@ it("hides ADD TO COLLECTION when every selected quantity is 0", async () => {
 
   render(createElement(CardDetailPage), { wrapper: wrapper(makeClient()) });
 
-  // The button is present initially (addQty psa10 = 1). Zero every quantity by
-  // clicking each stepper's decrement control (the AddQtyRow "−" button) a few
-  // times, which drops addQtyTotal to 0 and must hide the button.
   await waitFor(() =>
     expect(screen.getByRole("button", { name: /ADD TO COLLECTION/i })).toBeTruthy()
   );
-  // Decrement controls render the U+2212 minus; clamp at 0 so repeated clicks
-  // are safe. Click each a couple times to guarantee every qty reaches 0.
+  // Zero every stepper (U+2212 minus, clamped at 0).
   const decs = screen.getAllByText("\u2212").filter((el) => el.tagName === "BUTTON");
   expect(decs.length).toBeGreaterThan(0);
   for (const d of decs) {
@@ -98,7 +95,8 @@ it("hides ADD TO COLLECTION when every selected quantity is 0", async () => {
     fireEvent.click(d);
   }
 
+  // Button stays visible regardless of quantity (always-on CTA).
   await waitFor(() =>
-    expect(screen.queryByRole("button", { name: /ADD TO COLLECTION/i })).toBeNull()
+    expect(screen.getByRole("button", { name: /ADD TO COLLECTION/i })).toBeTruthy()
   );
 });
