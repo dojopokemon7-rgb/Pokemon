@@ -108,27 +108,52 @@ export async function buildCollectionHistories(
       .map((r) => ({ cardId: r.cardId, at: r.recordedAt.getTime(), price: r.priceMarket as number }));
 
     // Daily timeline from the window start to now (inclusive).
+    const startMs = startDate.getTime();
+    const nowMs = now.getTime();
+    const dayKey = (t: number) => new Date(t).toISOString().slice(0, 10);
+
     const timeline: number[] = [];
-    for (let t = startDate.getTime(); t <= now.getTime(); t += DAY_MS) timeline.push(t);
-    if (timeline[timeline.length - 1] !== now.getTime()) timeline.push(now.getTime());
+    const gridDays = new Set<string>();
+    for (let t = startMs; t <= nowMs; t += DAY_MS) {
+      timeline.push(t);
+      gridDays.add(dayKey(t));
+    }
+    // The `now`/today day is deliberately NOT treated as "covered" for anchor
+    // dedup: a lot added earlier TODAY needs its anchor as a distinct intraday
+    // point (its only grid neighbour is the final `now` endpoint). Earlier grid
+    // days ARE covered, so a past-day anchor is dropped as a duplicate date.
+    gridDays.delete(dayKey(nowMs));
 
     // Inject each lot's acquisition instant as a timeline anchor. Without this
     // a freshly-added lot (addedAt ≈ now) fails the `t >= addedAt` ownership
     // gate at every earlier daily point, leaving only the final `now` point —
     // < 2 drawable points, so the chart renders empty. Clamp each addedAt into
-    // the window [startMs, nowMs] so no point lands left of the window, skip a
-    // lot already sold before the window opened, then sort + dedupe exact-equal
-    // timestamps before handing the timeline to the (unchanged) series math.
+    // the window [startMs, nowMs] so no point lands left of the window, and skip
+    // a lot already sold before the window opened. An anchor whose CALENDAR DAY
+    // already has a daily-grid point is redundant (the grid point already values
+    // that day) and would otherwise emit a second same-day series point whose
+    // ms differs by the sub-second drift between the stored addedAt and the grid
+    // clock — a duplicate chart date. Drop those; keep only anchors that open a
+    // new day (e.g. a lot added TODAY, whose only grid neighbour is the `now`
+    // endpoint pushed below — that extra same-day point is what gives a
+    // freshly-added lot its 2nd drawable point).
     // ponytail: O(lots) extra anchor points — fine at per-user lot counts; if a
     // user ever holds thousands of lots, bucket anchors by day before merging.
-    const startMs = startDate.getTime();
-    const nowMs = now.getTime();
     for (const l of lots) {
       if (l.isSold && l.soldAt && l.soldAt.getTime() < startMs) continue;
       const added = l.addedAt.getTime();
       if (!Number.isFinite(added)) continue;
-      timeline.push(Math.min(Math.max(added, startMs), nowMs));
+      const anchor = Math.min(Math.max(added, startMs), nowMs);
+      if (gridDays.has(dayKey(anchor))) continue; // day already covered by the grid
+      timeline.push(anchor);
     }
+
+    // The `now` endpoint: ensure the series ends exactly at now (it may differ
+    // from the last grid step by < 1 day). This is intentionally NOT a
+    // grid day for anchor-dedup purposes — a lot added today still gets its
+    // anchor as a distinct same-day point.
+    if (timeline[timeline.length - 1] !== nowMs) timeline.push(nowMs);
+
     timeline.sort((a, b) => a - b);
     const deduped = timeline.filter((t, i) => i === 0 || t !== timeline[i - 1]);
 
