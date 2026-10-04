@@ -38,6 +38,11 @@ export interface PopulationCompany {
   /** Language scope of the coverage; Scrydex public = English only. */
   language: "English";
   total: number;
+  // C3 — ladder sub-totals (null for legacy rows / when the source omitted
+  // them; the UI renders a secondary line only when non-null, never "0").
+  gradeTotal: number | null;
+  qualifiedGradeTotal: number | null;
+  halfGradeTotal: number | null;
   grades: PopulationGrade[];
 }
 
@@ -52,9 +57,21 @@ export interface PopulationReport {
 /** Full grade ladder the UI renders (highest → Auth), per the design. */
 const GRADE_LADDER = ["10", "9", "8", "7", "6", "5", "4", "3", "2", "1.5", "1", "Auth"] as const;
 
-// RULE 4: re-parse the stored JSON blob on read; a malformed / legacy blob is
-// treated as "no data" (null), never crashes or renders junk.
-const StoredGradesSchema = z.array(z.object({ grade: z.string(), count: z.number() }));
+// RULE 4: re-parse the stored JSON blob on read; a malformed blob is treated
+// as "no data" (null), never crashes or renders junk.
+// C3: the blob is EITHER the legacy bare {grade,count}[] array OR the new
+// object carrying the ladder sub-totals. The union accepts both (back-compat,
+// no backfill); a legacy array normalizes to null ladder totals.
+const GradeEntrySchema = z.object({ grade: z.string(), count: z.number() });
+const StoredGradesSchema = z.union([
+  z.array(GradeEntrySchema), // legacy blob
+  z.object({
+    grades: z.array(GradeEntrySchema),
+    gradeTotal: z.number().nullish(),
+    qualifiedGradeTotal: z.number().nullish(),
+    halfGradeTotal: z.number().nullish(),
+  }),
+]);
 
 /**
  * Returns the STORED population report for a card, or null when none has been
@@ -94,6 +111,17 @@ export async function getStoredPopulationReport(
   const parsed = StoredGradesSchema.safeParse(row.grades);
   if (!parsed.success) return null;
 
+  // Normalize both shapes to one internal form: a legacy array → null ladder
+  // totals; the new object carries them (nullish → null).
+  const normalized = Array.isArray(parsed.data)
+    ? { grades: parsed.data, gradeTotal: null, qualifiedGradeTotal: null, halfGradeTotal: null }
+    : {
+        grades: parsed.data.grades,
+        gradeTotal: parsed.data.gradeTotal ?? null,
+        qualifiedGradeTotal: parsed.data.qualifiedGradeTotal ?? null,
+        halfGradeTotal: parsed.data.halfGradeTotal ?? null,
+      };
+
   return {
     source: "scrydex",
     companies: [
@@ -101,7 +129,10 @@ export async function getStoredPopulationReport(
         company: "PSA",
         language: "English",
         total: row.total,
-        grades: parsed.data,
+        gradeTotal: normalized.gradeTotal,
+        qualifiedGradeTotal: normalized.qualifiedGradeTotal,
+        halfGradeTotal: normalized.halfGradeTotal,
+        grades: normalized.grades,
       },
     ],
     refreshedAt: row.refreshedAt.toISOString(),

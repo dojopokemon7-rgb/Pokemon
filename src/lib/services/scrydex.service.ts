@@ -442,6 +442,10 @@ export async function fetchScrydexSoldListings(
 // a non-finite/absent count drops that grade (never a fabricated 0). An empty
 // variants[].pop_reports (card genuinely has no population — e.g. me55c-4) →
 // null → honest empty state, NOT a bug and NOT fabricated.
+const GradeCountSchema = z.object({
+  grade: z.union([z.string(), z.number()]).nullish(),
+  count: z.number().nullish(),
+});
 const PopReportEntrySchema = z.object({
   company: z.string().nullish(), // expected "PSA" | "BGS" | ...
   language: z.string().nullish(), // expected "English" | ...
@@ -449,9 +453,17 @@ const PopReportEntrySchema = z.object({
   count: z.number().nullish(), // per-entry graded count
   total: z.number().nullish(),
   // Some shapes may nest grades under the entry rather than one entry per grade.
-  grades: z
-    .array(z.object({ grade: z.union([z.string(), z.number()]).nullish(), count: z.number().nullish() }))
-    .nullish(),
+  grades: z.array(GradeCountSchema).nullish(),
+  // C3 / MEDIUM-2: ladder totals (assumed shape; .nullish() so absence → null,
+  // not a crash — RULE 4). Scrydex may report grade/qualified/half sub-totals.
+  grade_total: z.number().nullish(),
+  qualified_grade_total: z.number().nullish(),
+  half_grade_total: z.number().nullish(),
+  // C3 / MEDIUM-2 DEFENSIVE: if half ("8.5") / qualified ("9Q") per-grade
+  // counts ship under SEPARATE keys instead of mixed into grades[], capture
+  // them too so they are not silently dropped.
+  half_grades: z.array(GradeCountSchema).nullish(),
+  qualified_grades: z.array(GradeCountSchema).nullish(),
 });
 // pop_reports lives on EACH VARIANT (verified), alongside prices.
 const PopReportVariantSchema = z.object({
@@ -468,6 +480,10 @@ export interface ScrydexPopulation {
   company: "PSA";
   language: "English";
   total: number;
+  // C3 — ladder sub-totals (null when the payload omits them; never fabricated).
+  gradeTotal: number | null;
+  qualifiedGradeTotal: number | null;
+  halfGradeTotal: number | null;
   grades: { grade: string; count: number }[];
 }
 
@@ -551,16 +567,34 @@ export async function fetchScrydexPopulation(
       const key = String(grade);
       gradeCounts.set(key, (gradeCounts.get(key) ?? 0) + count);
     };
+    // C3: sum each ladder sub-total across PSA-English entries the same way as
+    // declaredTotal — a finite number present → add; else leave null (never
+    // fabricate a 0 ladder total).
+    let gradeTotal: number | null = null;
+    let qualifiedGradeTotal: number | null = null;
+    let halfGradeTotal: number | null = null;
+    const addLadderTotal = (acc: number | null, v: unknown): number | null => {
+      if (typeof v !== "number" || !Number.isFinite(v)) return acc;
+      return (acc ?? 0) + v;
+    };
     for (const entry of psaEntries) {
       if (typeof entry.total === "number" && Number.isFinite(entry.total)) {
         declaredTotal += entry.total;
         sawDeclaredTotal = true;
       }
+      gradeTotal = addLadderTotal(gradeTotal, entry.grade_total);
+      qualifiedGradeTotal = addLadderTotal(qualifiedGradeTotal, entry.qualified_grade_total);
+      halfGradeTotal = addLadderTotal(halfGradeTotal, entry.half_grade_total);
       if (entry.grades && entry.grades.length > 0) {
         for (const g of entry.grades) addGrade(g.grade, g.count);
       } else {
         addGrade(entry.grade, entry.count);
       }
+      // C3 DEFENSIVE: flatten nested-separate-key half/qualified grades into the
+      // one grades[] map (verbatim labels incl "8.5"/"9Q") so they are never
+      // dropped if Scrydex ships them under their own keys.
+      if (entry.half_grades) for (const g of entry.half_grades) addGrade(g.grade, g.count);
+      if (entry.qualified_grades) for (const g of entry.qualified_grades) addGrade(g.grade, g.count);
     }
 
     const grades = [...gradeCounts.entries()].map(([grade, count]) => ({ grade, count }));
@@ -570,7 +604,15 @@ export async function fetchScrydexPopulation(
     // Step 5: empty grades AND no real total → null (honest gap, NOT fabricated).
     if (grades.length === 0 && total === 0) return null;
 
-    return { company: "PSA", language: "English", total, grades };
+    return {
+      company: "PSA",
+      language: "English",
+      total,
+      gradeTotal,
+      qualifiedGradeTotal,
+      halfGradeTotal,
+      grades,
+    };
   } catch (err) {
     console.warn(`[scrydex] population ${scrydexId} error:`, err instanceof Error ? err.message : err);
     return null;

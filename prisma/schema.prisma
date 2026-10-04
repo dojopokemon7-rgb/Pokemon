@@ -375,13 +375,17 @@ model CurrentPrice {
   currency    String     @default("USD")
   variant     String     @default("normal")
   condition   String     @default("NM")
+  // C1: full price capture — every Scrydex variants[].prices[] entry becomes a row.
+  company     String?    // null for raw; "PSA"|"CGC"|"BGS"|"TAG" for graded
+  grade       String?    // null for raw; "10"|"9"|"8.5"|"9Q" etc. for graded (verbatim)
+  type        String     @default("raw") // "raw" | "graded"
   priceMarket Float?
   priceLow    Float?
   updatedAt   DateTime   @updatedAt
 
   card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
 
-  @@unique([cardId, source, currency, variant, condition])
+  @@unique([cardId, source, currency, variant, condition, company, grade, type])
   @@index([cardId])
   @@map("current_price")
 }

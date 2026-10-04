@@ -19,7 +19,11 @@ import { Game, DataSource } from "@prisma/client";
 const prismaMock = vi.hoisted(() => ({
   syncLog: { findFirst: vi.fn(), create: vi.fn() },
   pricingHistory: { count: vi.fn(), createMany: vi.fn() },
-  currentPrice: { upsert: vi.fn() },
+  // C1: the full-capture pass REPLACES the SCRYDEX price set atomically —
+  // deleteMany (source-scoped) + createMany inside a $transaction.
+  currentPrice: { deleteMany: vi.fn(), createMany: vi.fn() },
+  // $transaction runs its ops; we just resolve so the writer proceeds.
+  $transaction: vi.fn(async (ops: unknown) => (Array.isArray(ops) ? ops : [])),
   card: { update: vi.fn() },
   // Lazy cost-basis resolution writes to userCollection.updateMany after a
   // successful priced pull (plan §5) — mock it so the resolver path runs.
@@ -54,7 +58,21 @@ const CARD = {
 
 const RESOLVED = {
   scrydexId: "me55c-4",
-  card: { id: "me55c-4", name: "Charizard", number: "4", variants: [] },
+  card: {
+    id: "me55c-4",
+    name: "Charizard",
+    number: "4",
+    // C1: the full-capture loop iterates variants[].prices[]. One raw NM entry
+    // so the CurrentPrice upsert fires (the headline NM row the loop captures).
+    variants: [
+      {
+        name: "holofoil",
+        prices: [
+          { type: "raw", condition: "NM", company: null, grade: null, market: 191.34, low: 170, currency: "USD" },
+        ],
+      },
+    ],
+  },
 };
 
 const RAW = {
@@ -72,7 +90,9 @@ beforeEach(() => {
   prismaMock.syncLog.findFirst.mockResolvedValue(null);
   prismaMock.pricingHistory.count.mockResolvedValue(1); // not a first pull by default
   prismaMock.pricingHistory.createMany.mockResolvedValue({ count: 1 });
-  prismaMock.currentPrice.upsert.mockResolvedValue({});
+  prismaMock.currentPrice.deleteMany.mockResolvedValue({ count: 0 });
+  prismaMock.currentPrice.createMany.mockResolvedValue({ count: 0 });
+  prismaMock.$transaction.mockImplementation(async (ops: unknown) => (Array.isArray(ops) ? ops : []));
   prismaMock.syncLog.create.mockResolvedValue({});
   prismaMock.card.update.mockResolvedValue({});
   prismaMock.userCollection.updateMany.mockResolvedValue({ count: 0 });
@@ -100,15 +120,25 @@ describe("pullAndStoreScrydexPrice — fresh pull (AC-9/12)", () => {
       condition: "NM",
     });
 
-    // One CurrentPrice upsert keyed by [cardId,source,currency,variant,condition].
-    const upsertArg = prismaMock.currentPrice.upsert.mock.calls[0][0];
-    expect(upsertArg.where.cardId_source_currency_variant_condition).toMatchObject({
-      cardId: CARD.id,
-      source: DataSource.SCRYDEX,
-      currency: "USD",
-      variant: "holofoil",
-      condition: "NM",
+    // C1: the SCRYDEX price set is replaced atomically — deleteMany is
+    // source-scoped (never touches non-Scrydex rows), createMany writes the
+    // fresh set. The raw NM entry is a row with null company/grade + type 'raw'.
+    expect(prismaMock.currentPrice.deleteMany).toHaveBeenCalledWith({
+      where: { cardId: CARD.id, source: DataSource.SCRYDEX },
     });
+    const createArg = prismaMock.currentPrice.createMany.mock.calls[0][0];
+    expect(createArg.data).toContainEqual(
+      expect.objectContaining({
+        cardId: CARD.id,
+        source: DataSource.SCRYDEX,
+        currency: "USD",
+        variant: "holofoil",
+        condition: "NM",
+        company: null,
+        grade: null,
+        type: "raw",
+      })
+    );
 
     // SyncLog ok + credits.
     expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
@@ -179,7 +209,8 @@ describe("pullAndStoreScrydexPrice — failed pull (AC-12)", () => {
 
     expect(result).toEqual({ pulled: false, credits: 0, card: null });
     expect(prismaMock.pricingHistory.createMany).not.toHaveBeenCalled();
-    expect(prismaMock.currentPrice.upsert).not.toHaveBeenCalled();
+    expect(prismaMock.currentPrice.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.currentPrice.deleteMany).not.toHaveBeenCalled();
     expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: "failed", credits: 0, cardId: CARD.id }),
@@ -201,6 +232,125 @@ describe("pullAndStoreScrydexPrice — failed pull (AC-12)", () => {
     expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "ok" }) })
     );
+  });
+});
+
+describe("pullAndStoreScrydexPrice — C1 full current-price capture", () => {
+  // C1: persist EVERY variants[].prices[] entry as its own CurrentPrice row on
+  // the widened 8-column key. The loop iterates scrydexCard.variants, which is
+  // only non-null on the fresh-fetch path — so this test drives past the
+  // freshness gate via opts:{force:true}. pickRawPrice stays mocked (headline
+  // NM raw) but is independent of the full-capture loop.
+  const MULTI_CARD = {
+    id: "me55c-4",
+    name: "Charizard",
+    number: "4",
+    variants: [
+      {
+        name: "holofoil",
+        prices: [
+          { type: "raw", condition: "NM", company: null, grade: null, market: 191.34, low: 170, currency: "USD" },
+          { type: "raw", condition: "LP", company: null, grade: null, market: 150, low: 140, currency: "USD" },
+          { type: "raw", condition: "MP", company: null, grade: null, market: 120, low: null, currency: "USD" },
+          { type: "raw", condition: "HP", company: null, grade: null, market: null, low: 90, currency: "USD" },
+          { type: "graded", condition: null, company: "psa", grade: "10", market: 3200, low: 3000, currency: "USD" },
+          { type: "graded", condition: null, company: "PSA", grade: "9", market: 1100, low: 1000, currency: "USD" },
+          { type: "graded", condition: null, company: "PSA", grade: "8.5", market: 600, low: null, currency: "USD" },
+          { type: "graded", condition: null, company: "PSA", grade: "9Q", market: 850, low: null, currency: "USD" },
+          { type: "graded", condition: null, company: "cgc", grade: "9.5", market: 900, low: null, currency: "USD" },
+          { type: "graded", condition: null, company: "PSA", grade: "7", market: null, low: null, currency: "USD" }, // both-null → skipped
+        ],
+      },
+      {
+        name: "reverse-holofoil",
+        prices: [
+          // Same PSA-10 grade under a DIFFERENT variant → a DISTINCT row.
+          { type: "graded", condition: null, company: "PSA", grade: "10", market: 2800, low: 2600, currency: "USD" },
+        ],
+      },
+    ],
+  };
+
+  it("createMany writes one row per non-null entry (raw conds + graded company/grade)", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: MULTI_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    await pullAndStoreScrydexPrice(CARD, { force: true });
+
+    const rows = prismaMock.currentPrice.createMany.mock.calls[0][0].data;
+
+    // 11 entries (10 holofoil + 1 reverse-holofoil) - 1 both-null skip = 10 rows.
+    expect(rows).toHaveLength(10);
+
+    // Raw NM row: real condition, null company/grade, type 'raw'.
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        cardId: CARD.id, source: DataSource.SCRYDEX, currency: "USD",
+        variant: "holofoil", condition: "NM", company: null, grade: null, type: "raw",
+      })
+    );
+    // All four raw conditions present.
+    expect(
+      rows.filter((r: { type: string }) => r.type === "raw").map((r: { condition: string }) => r.condition).sort()
+    ).toEqual(["HP", "LP", "MP", "NM"]);
+
+    // Graded rows: sentinel condition 'GRADED', uppercased company, verbatim grade.
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        type: "graded", condition: "GRADED", company: "PSA", grade: "10", variant: "holofoil",
+      })
+    );
+    // Verbatim half / qualified grades preserved.
+    expect(rows.some((r: { grade: string | null }) => r.grade === "8.5")).toBe(true);
+    expect(rows.some((r: { grade: string | null }) => r.grade === "9Q")).toBe(true);
+    // Lower-cased company upper-cased on the stored row.
+    expect(rows.some((r: { company: string | null; grade: string | null }) => r.company === "CGC" && r.grade === "9.5")).toBe(true);
+
+    // both-null PSA 7 entry skipped (never a fabricated $0).
+    expect(rows.some((r: { grade: string | null }) => r.grade === "7")).toBe(false);
+
+    // Two PSA-10 under DIFFERENT variants → two distinct rows.
+    const psa10s = rows.filter((r: { type: string; grade: string | null }) => r.type === "graded" && r.grade === "10");
+    expect(psa10s.map((r: { variant: string }) => r.variant).sort()).toEqual(["holofoil", "reverse-holofoil"]);
+  });
+
+  it("replaces the set atomically — source-scoped deleteMany + createMany in a $transaction", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: MULTI_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    await pullAndStoreScrydexPrice(CARD, { force: true });
+
+    // deleteMany is scoped to source=SCRYDEX so non-Scrydex rows are untouched.
+    expect(prismaMock.currentPrice.deleteMany).toHaveBeenCalledWith({
+      where: { cardId: CARD.id, source: DataSource.SCRYDEX },
+    });
+    // Both writes went through $transaction (atomic replace).
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes market/low on each row and keeps a market-only entry's low null (no fabricated $0)", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: MULTI_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    await pullAndStoreScrydexPrice(CARD, { force: true });
+
+    const rows = prismaMock.currentPrice.createMany.mock.calls[0][0].data;
+    const mp = rows.find((r: { condition: string }) => r.condition === "MP");
+    // MP had market=120, low=null → stored verbatim, low stays null.
+    expect(mp).toMatchObject({ priceMarket: 120, priceLow: null });
+  });
+
+  it("is idempotent — a repeat persist replaces, never grows the set", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: MULTI_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    await pullAndStoreScrydexPrice(CARD, { force: true });
+    const firstRows = prismaMock.currentPrice.createMany.mock.calls[0][0].data.length;
+
+    await pullAndStoreScrydexPrice(CARD, { force: true });
+    const secondRows = prismaMock.currentPrice.createMany.mock.calls[1][0].data.length;
+    // Each pull deletes then writes the SAME full set — the row count is stable.
+    expect(secondRows).toBe(firstRows);
   });
 });
 

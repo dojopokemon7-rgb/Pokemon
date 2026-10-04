@@ -103,6 +103,52 @@ function fmtUSDCompact(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(n);
 }
 
+// ── C4 — current-price completeness (raw + graded blocks) ──────────────
+// A single CurrentPrice row as returned by /api/cards/[id]/prices
+// (card.currentPrices verbatim — the new company/grade/type columns flow
+// through automatically).
+interface CurrentPriceRow {
+  condition?: string | null;
+  company?: string | null;
+  grade?: string | null;
+  type?: string | null;
+  priceMarket?: number | null;
+  priceLow?: number | null;
+}
+
+// Raw condition display order; anything else falls after these in payload order.
+const RAW_CONDITION_ORDER = ["NM", "LP", "MP", "HP"];
+
+// Grade sort: numeric descending with half-grades interleaved (10, 9.5, 9,
+// 8.5 …) and a qualified grade ("9Q") placed immediately AFTER its numeric peer
+// (so 9 then 9Q then 8.5). Non-numeric labels sink to the bottom alphabetically.
+function gradeSortKey(grade: string): [number, number] {
+  const qualified = /q$/i.test(grade);
+  const numeric = parseFloat(grade.replace(/q$/i, ""));
+  if (!Number.isFinite(numeric)) return [-Infinity, 0];
+  // Primary: numeric descending (negate). Secondary: a qualified grade sorts
+  // just after its numeric peer (tiny positive bump so it follows the plain one).
+  return [-numeric, qualified ? 1 : 0];
+}
+function sortByGradeDesc<T extends { grade: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const [an, aq] = gradeSortKey(a.grade);
+    const [bn, bq] = gradeSortKey(b.grade);
+    if (an !== bn) return an - bn;
+    if (aq !== bq) return aq - bq;
+    return a.grade.localeCompare(b.grade);
+  });
+}
+
+function fmtPriceCell(market?: number | null, low?: number | null): string {
+  const v = market ?? low;
+  return typeof v === "number" ? fmtUSD(v) : "—";
+}
+
+// Companies always surfaced in the graded block (PSA first + always shown);
+// others render only when the card actually has rows for them.
+const GRADED_COMPANY_ORDER = ["PSA", "CGC", "BGS", "TAG", "SGC"];
+
 // ── Area chart — same port of app.js chart() used on the dashboard:
 // area polygon + polyline(s) + grid lines. Supports multiple series
 // (price-history can show up to 3 grade lines at once).
@@ -133,7 +179,16 @@ function fmtChartDate(iso: string): string {
 // is refreshed (a manual, owner-approval-gated action) there is no data and we
 // show an honest fallback. BGS is explicitly "not available", not an empty grid.
 interface PopGrade { grade: string; count: number }
-interface PopCompany { company: "PSA"; language?: string; total: number; grades: PopGrade[] }
+interface PopCompany {
+  company: "PSA";
+  language?: string;
+  total: number;
+  // C3/C4 — ladder sub-totals (null when the source omitted them).
+  gradeTotal?: number | null;
+  qualifiedGradeTotal?: number | null;
+  halfGradeTotal?: number | null;
+  grades: PopGrade[];
+}
 interface PopReport { source: "scrydex"; companies: PopCompany[]; refreshedAt?: string }
 
 function PopulationReport({ id }: { id: string }) {
@@ -198,8 +253,21 @@ function PopulationReport({ id }: { id: string }) {
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px", color: "var(--color-dojo-ink)" }}>
             PSA English · {psa.total.toLocaleString()} total
           </div>
+          {/* C4 — ladder sub-totals as a secondary line; only parts that are
+              non-null are shown (never a fabricated "0" — AC-34). */}
+          {(() => {
+            const parts: string[] = [];
+            if (typeof psa.gradeTotal === "number") parts.push(`${psa.gradeTotal.toLocaleString()} graded`);
+            if (typeof psa.halfGradeTotal === "number") parts.push(`${psa.halfGradeTotal.toLocaleString()} half`);
+            if (typeof psa.qualifiedGradeTotal === "number") parts.push(`${psa.qualifiedGradeTotal.toLocaleString()} qualified`);
+            return parts.length > 0 ? (
+              <div style={{ marginTop: "4px", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "11px", color: "var(--color-dojo-faint)" }}>
+                {parts.join(" · ")}
+              </div>
+            ) : null;
+          })()}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", columnGap: "10px", marginTop: "10px" }}>
-            {psa.grades.map((g) => (
+            {sortByGradeDesc(psa.grades).map((g) => (
               <div key={g.grade} style={{ padding: "10px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13.5px", color: "var(--color-dojo-ink)" }}>{g.grade}</div>
                 <div style={{ marginTop: "4px", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", color: "var(--color-dojo-faint)" }}>{g.count.toLocaleString()}</div>
@@ -251,7 +319,13 @@ function CardDetailInner() {
   // → the trend row renders "—" (never a fabricated number — AGENTS.md rule 2).
   const weeklyChangePct: number | null =
     typeof pricesData?.weeklyChangePct === "number" ? pricesData.weeklyChangePct : null;
-  const rawPriceData = currentPrices.find((p: any) => p.condition === "NM") || currentPrices[0];
+  // Headline raw NM point (26px price) — UNCHANGED. Prefer a type==='raw' NM
+  // row, else any NM, else the first row (back-compat with pre-C1 rows that
+  // carry no `type`).
+  const rawPriceData =
+    currentPrices.find((p: CurrentPriceRow) => (p.type ?? "raw") === "raw" && p.condition === "NM") ||
+    currentPrices.find((p: CurrentPriceRow) => p.condition === "NM") ||
+    currentPrices[0];
   const fetchedPrice = rawPriceData?.priceMarket ?? rawPriceData?.priceLow;
   // No fabricated fallback (AGENTS.md rule 2): when neither a live price nor a
   // tile-passed ?price= exists, price is null and every consumer renders "—".
@@ -499,6 +573,51 @@ function CardDetailInner() {
     psa10: gradedData?.price ?? null,
     psa9: graded9Data?.price ?? null,
   };
+
+  // C4(a) — RAW conditions block. Filter currentPrices to type==='raw', one row
+  // per condition in RAW_CONDITION_ORDER then any other present. RAW is ALWAYS
+  // shown: when no raw rows exist, render the canonical conditions with "—"
+  // (AC-31). priceMarket ?? priceLow ?? "—" (never fabricated — RULE 2).
+  const rawRows: { condition: string; label: string }[] = useMemo(() => {
+    const rows = (currentPrices as CurrentPriceRow[]).filter((p) => (p.type ?? "raw") === "raw");
+    const byCondition = new Map<string, CurrentPriceRow>();
+    for (const r of rows) byCondition.set((r.condition || "NM").toUpperCase(), r);
+    const present = [...byCondition.keys()];
+    const ordered = [
+      ...RAW_CONDITION_ORDER.filter((c) => byCondition.has(c) || c === "NM"),
+      ...present.filter((c) => !RAW_CONDITION_ORDER.includes(c)),
+    ];
+    // De-dupe while preserving order (NM is always listed even if absent).
+    return [...new Set(ordered)].map((condition) => {
+      const row = byCondition.get(condition);
+      return { condition, label: fmtPriceCell(row?.priceMarket, row?.priceLow) };
+    });
+  }, [currentPrices]);
+
+  // C4(b) — GRADED block. Filter type==='graded', group by company. PSA ALWAYS
+  // shown (even if absent → "—" row); CGC/BGS/TAG/… only when present (AC-32/33).
+  // Grades sorted desc with half interleaved + qualified after its peer.
+  const gradedCompanies: { company: string; grades: { grade: string; label: string }[] }[] = useMemo(() => {
+    const graded = (currentPrices as CurrentPriceRow[]).filter((p) => (p.type ?? "raw") === "graded");
+    const byCompany = new Map<string, { grade: string; label: string }[]>();
+    for (const r of graded) {
+      const company = (r.company || "").toUpperCase();
+      const grade = r.grade ?? "";
+      if (!company || !grade) continue; // no fabricated row for a missing company/grade
+      if (!byCompany.has(company)) byCompany.set(company, []);
+      byCompany.get(company)!.push({ grade, label: fmtPriceCell(r.priceMarket, r.priceLow) });
+    }
+    // Ensure PSA is always present (empty → the view renders a "—" row).
+    if (!byCompany.has("PSA")) byCompany.set("PSA", []);
+    const companies = [
+      ...GRADED_COMPANY_ORDER.filter((c) => byCompany.has(c)),
+      ...[...byCompany.keys()].filter((c) => !GRADED_COMPANY_ORDER.includes(c)).sort(),
+    ];
+    return [...new Set(companies)].map((company) => ({
+      company,
+      grades: sortByGradeDesc(byCompany.get(company) ?? []),
+    }));
+  }, [currentPrices]);
 
   return (
     <div style={{ paddingBottom: "24px" }}>
@@ -780,6 +899,42 @@ function CardDetailInner() {
       </div>
 
       <div style={{ padding: "0 22px" }}>
+        {/* ── C4(a) Current prices — RAW conditions (always shown) ──
+            Reuses the panel idiom (dark card, 1px stroke, square corners,
+            --font-display). priceMarket ?? priceLow ?? "—" (RULE 2). */}
+        <div style={{ marginTop: "22px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
+          Current prices
+        </div>
+        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "4px 15px 10px" }}>
+          <div style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Raw</div>
+          {rawRows.map((r) => (
+            <div key={r.condition} style={{ display: "flex", alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>{r.condition}</span>
+              <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: r.label === "—" ? "var(--color-dojo-faint)" : "var(--color-dojo-ink)" }}>{r.label}</span>
+            </div>
+          ))}
+
+          {/* C4(b) GRADED — PSA always shown; other companies only when present. */}
+          {gradedCompanies.map((c) => (
+            <div key={c.company}>
+              <div style={{ marginTop: "13px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>{c.company}</div>
+              {c.grades.length === 0 ? (
+                <div style={{ display: "flex", alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                  <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-faint)" }}>—</span>
+                  <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", color: "var(--color-dojo-faint)" }}>—</span>
+                </div>
+              ) : (
+                c.grades.map((g) => (
+                  <div key={g.grade} style={{ display: "flex", alignItems: "baseline", padding: "9px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
+                    <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", color: "var(--color-dojo-ink)" }}>{c.company} {g.grade}</span>
+                    <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 400, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: g.label === "—" ? "var(--color-dojo-faint)" : "var(--color-dojo-ink)" }}>{g.label}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          ))}
+        </div>
+
         {/* ── Adding to: Main ── */}
         <div style={{ marginTop: "22px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "15px" }}>
           <div style={{ display: "flex", alignItems: "baseline" }}>

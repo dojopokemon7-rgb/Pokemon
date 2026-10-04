@@ -57,7 +57,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - `[id]` = **externalId**. Always `200 { points: [{ date: "YYYY-MM-DD", price: number }] }` oldest→newest, sourced from stored `PricingHistory` (real `scrydex` / `add-snapshot` points — never fabricated; `scrydex-trend` retired). Rows with `priceMarket == null` are **dropped** (NFR-2 — no fabricated `$0` point). Unknown card / DB error → `{ points: [] }`. `Cache-Control: no-store`.
 
 ### `GET /api/cards/[id]/prices`
-- `[id]` = **externalId**. 200 `{ prices: CurrentPrice[] }` — the stored current prices for the card (one row per `source`/`currency`/`variant`/`condition`). Unknown card **and** any thrown error → `{ prices: [] }` + 200 (NFR-4 — public card route never 4xx/5xx; UI renders "—"). `Cache-Control: no-store`.
+- `[id]` = **externalId**. 200 `{ prices: CurrentPrice[] }` — the stored current prices for the card. **Full capture (C1):** one row per `source`/`currency`/`variant`/`condition`/`company`/`grade`/`type` — all raw conditions (`type:"raw"`, `company`/`grade` null) plus all graded entries (`type:"graded"`, `condition:"GRADED"`, uppercased `company`, verbatim `grade` incl `8.5`/`9Q`). New columns flow through verbatim (no route change). Unknown card **and** any thrown error → `{ prices: [] }` + 200 (NFR-4 — public card route never 4xx/5xx; UI renders "—"). `Cache-Control: no-store`.
 
 ### `GET /api/cards/[id]/graded` — PSA graded price (FR-6)
 - `[id]` = **externalId**. Query: `grade?` (default `"10"`; accepts `"PSA 10"`/`"10"`/`10`). `game` is read from DB `Card.game` (NFR-3), never the query string.
@@ -68,7 +68,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - Unknown card, unpriced card (`marketPrice == null`), or any thrown error → `{ price: null, isFallback: true, isStale: true }` + 200 (NFR-4). `Cache-Control: no-store`.
 
 ### `GET /api/cards/[id]/population`
-- `[id]` ignored today. 200 `{ report: { source: "psa"|"reference", companies: [{ company: "PSA"|"BGS", total, grades: [{ grade, count }] }] } }` or `{ report: null }` (still 200). Deterministic reference data. `Cache-Control: private, max-age=86400`.
+- `[id]` = **externalId** (or cuid). 200 `{ report: { source: "scrydex", companies: [{ company: "PSA", language: "English", total, gradeTotal, qualifiedGradeTotal, halfGradeTotal, grades: [{ grade, count }] }], refreshedAt }, bgsSupported: false }` or `{ report: null, bgsSupported: false }` (still 200). **PSA English ONLY, never fabricated** — pure read of the stored `PopulationReport`; null until a manual owner-approval-gated Scrydex refresh persists data. BGS unavailable. **Full ladder (C3):** the stored `grades` JSON is a widened object carrying the per-grade array (incl half `8.5` / qualified `9Q`) + the three ladder sub-totals (`gradeTotal`/`qualifiedGradeTotal`/`halfGradeTotal`, null when the source omitted them); a legacy bare `{grade,count}[]` blob still reads back with null ladder totals (back-compat). `Cache-Control: private, max-age=86400`.
 
 ### `POST /api/cards/recognize` — scanner OCR + ranking
 - Body: `{ image?: base64 (Vision), text?: pre-extracted OCR, game?: "pokemon"|"onepiece", source?: "tesseract"|"manual" }`. Invalid JSON → 400.

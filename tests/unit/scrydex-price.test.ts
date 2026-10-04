@@ -267,6 +267,10 @@ describe("fetchScrydexPopulation (variants[].pop_reports path fix)", () => {
       company: "PSA",
       language: "English",
       total: 168, // summed (no declared entry.total)
+      // C3: ladder sub-totals are null when the payload omits them.
+      gradeTotal: null,
+      qualifiedGradeTotal: null,
+      halfGradeTotal: null,
       grades: [
         { grade: "10", count: 123 },
         { grade: "9", count: 45 },
@@ -297,6 +301,9 @@ describe("fetchScrydexPopulation (variants[].pop_reports path fix)", () => {
       company: "PSA",
       language: "English",
       total: 10,
+      gradeTotal: null,
+      qualifiedGradeTotal: null,
+      halfGradeTotal: null,
       grades: [{ grade: "10", count: 10 }],
     });
   });
@@ -324,6 +331,9 @@ describe("fetchScrydexPopulation (variants[].pop_reports path fix)", () => {
       company: "PSA",
       language: "English",
       total: 2000,
+      gradeTotal: null,
+      qualifiedGradeTotal: null,
+      halfGradeTotal: null,
       grades: [
         { grade: "10", count: 1200 },
         { grade: "9", count: 800 },
@@ -343,6 +353,9 @@ describe("fetchScrydexPopulation (variants[].pop_reports path fix)", () => {
       company: "PSA",
       language: "English",
       total: 8,
+      gradeTotal: null,
+      qualifiedGradeTotal: null,
+      halfGradeTotal: null,
       grades: [{ grade: "10", count: 8 }],
     });
   });

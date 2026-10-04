@@ -223,34 +223,78 @@ export async function pullAndStoreScrydexPrice(
       skipDuplicates: true,
     });
 
-    await prisma.currentPrice.upsert({
-      where: {
-        cardId_source_currency_variant_condition: {
-          cardId: card.id,
-          source: DataSource.SCRYDEX,
-          currency,
-          variant,
-          condition,
-        },
-      },
-      update: { priceMarket: raw.market, priceLow: raw.low },
-      create: {
-        cardId: card.id,
-        source: DataSource.SCRYDEX,
-        currency,
-        variant,
-        condition,
-        priceMarket: raw.market,
-        priceLow: raw.low,
-      },
-    });
-
     // --- 4. Real history backfill: the fabricated scrydex-trend derivation
     // is REMOVED (Req 7.2). Real multi-point history comes from the DOCUMENTED
     // endpoint GET /{slug}/v1/cards/{id}/price_history (fetchScrydexPriceHistory),
     // a live 3-credit-per-call request gated behind Owner_Approval (Checkpoint D)
     // and NOT invoked from this writer. Until that pull runs, history is exactly
     // the real points already stored — honest gaps, never fabricated points.
+  }
+
+  // C1 — full price capture: persist EVERY variants[].prices[] entry as its own
+  // CurrentPrice row (all raw conditions + all graded company/grade). This runs
+  // OUTSIDE the `if (raw)` block so a GRADED-ONLY card (no raw NM price) still
+  // captures its graded rows (AC-18). It runs after the `if (!scrydexCard)`
+  // guard, where variants[] is guaranteed present (HIGH-2); a throttled call
+  // returns at the top and captures nothing new (the prior fresh call already
+  // stored the full set — AC-24).
+  //
+  // WHY delete+createMany (not per-entry upsert): raw rows carry company=NULL /
+  // grade=NULL, and Prisma cannot target a nullable column through a
+  // compound-unique `where` ("Argument company must not be null"), so
+  // upsert-on-the-8-column-key is impossible for raw rows. Instead we REPLACE
+  // the whole SCRYDEX set for this card: delete the card's existing SCRYDEX
+  // CurrentPrice rows (source-scoped — never touches non-Scrydex rows) then
+  // createMany the fresh full set. Correctly idempotent because the 24h
+  // freshness gate guarantees one COMPLETE fresh set per pull. The two writes
+  // run in a $transaction so a mid-way crash can never leave the card with zero
+  // prices. Keeps company/grade NULL for raw (RULE 2 — no fabricated sentinel).
+  const priceRows: {
+    cardId: string;
+    source: DataSource;
+    currency: string;
+    variant: string;
+    condition: string;
+    company: string | null;
+    grade: string | null;
+    type: string;
+    priceMarket: number | null;
+    priceLow: number | null;
+  }[] = [];
+  for (const v of scrydexCard.variants) {
+    for (const p of v.prices) {
+      const market = typeof p.market === "number" ? p.market : null;
+      const low = typeof p.low === "number" ? p.low : null;
+      if (market == null && low == null) continue; // honest skip (AC-22) — never a fabricated $0
+      const isGraded = p.type !== "raw";
+      // MEDIUM-1: graded `condition` is NOISE for the dedupe identity (a graded
+      // row's identity is company+grade+variant). Scrydex often returns
+      // condition:null for graded entries. Coerce to a SINGLE STABLE sentinel
+      // "GRADED". Raw rows keep their real condition (null → "NM"), which IS
+      // part of their identity (NM vs LP vs MP vs HP distinct rows).
+      priceRows.push({
+        cardId: card.id,
+        source: DataSource.SCRYDEX,
+        currency: p.currency || "USD",
+        variant: v.name || "normal",
+        condition: isGraded ? "GRADED" : (p.condition || "NM"),
+        company: isGraded ? (p.company ?? "").toUpperCase() || null : null,
+        grade: isGraded ? (p.grade ?? null) : null, // verbatim (incl "8.5","9Q")
+        type: isGraded ? "graded" : "raw",
+        priceMarket: market,
+        priceLow: low,
+      });
+    }
+  }
+  // Atomic replace of the SCRYDEX price set — only when there is at least one
+  // real row (never wipe the stored set to nothing on an all-null payload).
+  if (priceRows.length > 0) {
+    await prisma.$transaction([
+      prisma.currentPrice.deleteMany({
+        where: { cardId: card.id, source: DataSource.SCRYDEX },
+      }),
+      prisma.currentPrice.createMany({ data: priceRows }),
+    ]);
   }
 
   // --- 5. Credit metering --------------------------------------------------
@@ -451,6 +495,16 @@ export async function pullAndStorePopulation(card: {
   }
 
   // 4. Upsert the one CURRENT PSA-English report in place.
+  // C3: store the WIDENED grades JSON object carrying the ladder sub-totals
+  // alongside the per-grade array (incl half "8.5" / qualified "9Q"). The
+  // `total` top-level column is unchanged. A legacy bare {grade,count}[] blob
+  // from before this change still reads back (reader union — population.service).
+  const gradesJson = {
+    grades: population.grades,
+    gradeTotal: population.gradeTotal,
+    qualifiedGradeTotal: population.qualifiedGradeTotal,
+    halfGradeTotal: population.halfGradeTotal,
+  };
   await prisma.populationReport.upsert({
     where: {
       cardId_source_company_language: {
@@ -460,13 +514,13 @@ export async function pullAndStorePopulation(card: {
         language: "English",
       },
     },
-    update: { grades: population.grades, total: population.total, refreshedAt: new Date() },
+    update: { grades: gradesJson, total: population.total, refreshedAt: new Date() },
     create: {
       cardId: card.id,
       source: "scrydex",
       company: "PSA",
       language: "English",
-      grades: population.grades,
+      grades: gradesJson,
       total: population.total,
       refreshedAt: new Date(),
     },
