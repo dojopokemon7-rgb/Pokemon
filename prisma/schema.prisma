@@ -359,11 +359,18 @@ model PricingHistory {
   sourceCurrency String?
   variant        String   @default("normal")
   condition      String   @default("NM")
+  // Per-grade history capture — mirrors CurrentPrice's column vocabulary.
+  //   company null for raw; "PSA"|"CGC"|"BGS"|"TAG" for graded
+  //   grade   null for raw; "10"|"9"|"8.5"|"9Q" etc. for graded (verbatim)
+  //   type    "raw" | "graded"
+  company        String?
+  grade          String?
+  type           String   @default("raw")
   recordedAt     DateTime @default(now())
 
   card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
 
-  @@unique([cardId, recordedAt, source, currency, variant, condition])
+  @@unique([cardId, recordedAt, source, currency, variant, condition, company, grade, type])
   @@index([cardId, recordedAt])
   @@map("pricing_history")
 }

@@ -130,7 +130,7 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 |---|---|---|---|
 | `auth/[...all]/route.ts` | GET, POST | public (IS the auth handler) | `toNextJsHandler(auth)` — Better Auth |
 | `cards/[id]/ebay-sold/route.ts` | GET | public | **Part D: pure Postgres read** of `SoldListing` (soldAt desc nulls-last, take 8) → `{listings:[]}` map; NO credit gate; `soldRows` 120s read-through; legacy `ebay:sold` retired |
-| `cards/[id]/history/route.ts` | GET | public | Prisma `PricingHistory` (drops `priceMarket==null` rows; `{points:[]}`+200 on unknown/err) |
+| `cards/[id]/history/route.ts` | GET | public | Prisma `PricingHistory` → `{raw:[], graded:{"PSA\|10":[…]}}` (per-grade partition on `type`/`company`/`grade`; drops `priceMarket==null`; Zod-parsed; `{raw:[],graded:{}}`+200 on unknown/err) |
 | `cards/[id]/prices/route.ts` | GET | public | Prisma `CurrentPrice[]` (`{prices:[]}`+200 on unknown/err — NFR-4) |
 | `cards/[id]/graded/route.ts` | GET | public | `pullAndStoreScrydexPrice` (freshness-gated) + `pickGradedPrice` → `resolveGradedPrice`; `{price:null}`+200 on unknown/unpriced/err (NFR-4) |
 | `cards/[id]/population/route.ts` | GET | public | `getStoredPopulationReport` (PSA English only, null until manual refresh; `bgsSupported:false`) — never fabricated |
@@ -258,7 +258,7 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 
 ## 11. `prisma/` — 13 models
 
-`User` (Better Auth + `isAdmin`, `phoneNumber*`), `Session`, `Account`, `Verification` (exact Better Auth field names — DO NOT rename), `CardSet` (`externalId` unique, `@@index([name])` for set filter), `Card` (`externalId` unique; `tags String[]` with GIN index for `has` search; `@@index([updatedAt])` for trending; `marketPrice`/`lastEbayPrice`/`lastPricedAt` snapshot), `Collection` (`@@unique([userId,name])`), `UserCollection` (`@@unique([userId,cardId,isFoil])`, `purchasePrice`, `collectionId` nullable SetNull, `addedAt`), `AuditLog`, `PricingHistory` (`@@index([cardId, recordedAt])`), `SupportTicket`, `WantListItem` (`cardId` = external id; `@@unique([userId,cardId,intent])`), `ScanFeedback` (OCR candidates + picked card = tuning ground truth). Enums: `CollectionType`, `TicketStatus`, `WantIntent`.
+`User` (Better Auth + `isAdmin`, `phoneNumber*`), `Session`, `Account`, `Verification` (exact Better Auth field names — DO NOT rename), `CardSet` (`externalId` unique, `@@index([name])` for set filter), `Card` (`externalId` unique; `tags String[]` with GIN index for `has` search; `@@index([updatedAt])` for trending; `marketPrice`/`lastEbayPrice`/`lastPricedAt` snapshot), `Collection` (`@@unique([userId,name])`), `UserCollection` (`@@unique([userId,cardId,isFoil])`, `purchasePrice`, `collectionId` nullable SetNull, `addedAt`), `AuditLog`, `PricingHistory` (per-grade: `company`/`grade` nullable + `type` default `"raw"`; `@@unique([cardId,recordedAt,source,currency,variant,condition,company,grade,type])`, `@@index([cardId, recordedAt])`), `SupportTicket`, `WantListItem` (`cardId` = external id; `@@unique([userId,cardId,intent])`), `ScanFeedback` (OCR candidates + picked card = tuning ground truth). Enums: `CollectionType`, `TicketStatus`, `WantIntent`.
 
 `prisma/seed.ts` (full seed) / `prisma/seed-test.ts` (`npm run seed` — test data) / `prisma/drafts/`, `prisma/sql/` (manual SQL scratch).
 

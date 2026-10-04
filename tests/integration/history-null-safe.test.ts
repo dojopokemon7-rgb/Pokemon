@@ -60,34 +60,40 @@ beforeEach(() => {
 // --- /api/cards/[id]/history ----------------------------------------------
 
 describe("GET /api/cards/[id]/history (NFR-2 / NFR-4)", () => {
-  it("drops rows with priceMarket == null (no fabricated 0 point)", async () => {
+  it("partitions raw vs graded, drops null-price rows, keeps oldest→newest", async () => {
     prismaMock.card.findUnique.mockResolvedValue({ id: "card_1" });
     prismaMock.pricingHistory.findMany.mockResolvedValue([
-      { priceMarket: 10, recordedAt: new Date("2026-01-01") },
-      { priceMarket: null, recordedAt: new Date("2026-01-02") }, // must be dropped
-      { priceMarket: 12, recordedAt: new Date("2026-01-03") },
+      { priceMarket: 10, recordedAt: new Date("2026-01-01"), type: "raw", company: null, grade: null },
+      { priceMarket: null, recordedAt: new Date("2026-01-02"), type: "raw", company: null, grade: null }, // dropped
+      { priceMarket: 12, recordedAt: new Date("2026-01-03"), type: "raw", company: null, grade: null },
+      // a graded PSA 10 point lands under graded["PSA|10"]
+      { priceMarket: 900, recordedAt: new Date("2026-01-03"), type: "graded", company: "PSA", grade: "10" },
     ]);
 
     const res = await historyGET(new Request("http://localhost/x"), ctxFor("base1-4"));
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.points).toHaveLength(2);
-    expect(body.points.map((p: { price: number }) => p.price)).toEqual([10, 12]);
+    // raw: null-price row dropped, oldest→newest preserved.
+    expect(body.raw).toHaveLength(2);
+    expect(body.raw.map((p: { price: number }) => p.price)).toEqual([10, 12]);
+    // graded keyed by `${company}|${grade}`.
+    expect(body.graded["PSA|10"]).toHaveLength(1);
+    expect(body.graded["PSA|10"][0].price).toBe(900);
   });
 
-  it("returns {points:[]} + 200 for an unknown card", async () => {
+  it("returns { raw: [], graded: {} } + 200 for an unknown card", async () => {
     prismaMock.card.findUnique.mockResolvedValue(null);
     const res = await historyGET(new Request("http://localhost/x"), ctxFor("nope"));
     expect(res.status).toBe(200);
-    expect((await res.json()).points).toEqual([]);
+    expect(await res.json()).toEqual({ raw: [], graded: {} });
   });
 
-  it("returns {points:[]} + 200 when the DB throws", async () => {
+  it("returns { raw: [], graded: {} } + 200 when the DB throws", async () => {
     prismaMock.card.findUnique.mockRejectedValue(new Error("db down"));
     const res = await historyGET(new Request("http://localhost/x"), ctxFor("base1-4"));
     expect(res.status).toBe(200);
-    expect((await res.json()).points).toEqual([]);
+    expect(await res.json()).toEqual({ raw: [], graded: {} });
   });
 });
 

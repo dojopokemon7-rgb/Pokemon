@@ -368,19 +368,24 @@ export async function pullAndStoreScrydexPrice(
  * scrydex-credit-gate). Throws `ScrydexCreditsNotApproved` when denied — callers
  * surface that as "pending approval", never silently spend.
  *
- * `scrydexId` MUST be the Scrydex-returned card id. We only persist RAW NM
- * points here (the RAW chart series); GRADED (PSA/BGS) history-series storage
- * is intentionally deferred because the response's company/grade labelling is
- * UNRESOLVED (Audit L2) — we never fabricate graded series. Points are stored
- * with their REAL `date` as recordedAt, `source="scrydex"`, `sourceCurrency`
- * preserved; a null market+low point is skipped (honest gap, never $0).
+ * `scrydexId` MUST be the Scrydex-returned card id. We persist RAW NM points
+ * (the RAW chart series) always, and — when `filters.grades` is supplied — one
+ * extra credit-consuming call PER requested (company, grade) that stores a
+ * GRADED history series. GRADED storage was previously deferred (Audit L2);
+ * it is enabled here but the capture is STILL credit-gated and NOT invoked from
+ * any route/sync/render (the gate stays DENY). Points are stored with their
+ * REAL `date` as recordedAt, `source="scrydex"`, `sourceCurrency` preserved; a
+ * null market+low point is skipped (honest gap, never $0).
  */
 export async function pullAndStoreScrydexHistory(
   card: { id: string; game: Game; scrydexId: string },
-  filters?: { days?: number }
+  filters?: { days?: number; grades?: Array<{ company: string; grade: string }> }
 ): Promise<{ stored: number; credits: number }> {
-  // Hard gate — refuses to spend credits without owner approval.
-  await assertScrydexCreditsApproved("priceHistory", 1);
+  // Hard gate ONCE at the top — refuses to spend credits without owner approval.
+  // Estimate = the raw NM call (1) PLUS one call per requested (company,grade),
+  // so a DENY throws ScrydexCreditsNotApproved BEFORE any HTTP happens.
+  const grades = filters?.grades ?? [];
+  await assertScrydexCreditsApproved("priceHistory", 1 + grades.length);
 
   const days = await fetchScrydexPriceHistory(card.scrydexId, card.game, {
     condition: "NM",
@@ -443,11 +448,80 @@ export async function pullAndStoreScrydexHistory(
     await prisma.pricingHistory.createMany({ data: rows, skipDuplicates: true });
   }
 
+  // --- Per-grade GRADED history capture ------------------------------------
+  // For each requested (company, grade), one extra credit-consuming call. The
+  // single top-of-function gate already covered these; no further gate here.
+  let gradedStored = 0;
+  for (const g of grades) {
+    const gradedDays = await fetchScrydexPriceHistory(card.scrydexId, card.game, {
+      company: g.company,
+      grade: g.grade,
+      days: filters?.days,
+    });
+    if (!gradedDays) continue; // honest gap — a no-history (company,grade) stores nothing
+
+    const gradedRows: Array<{
+      cardId: string;
+      priceMarket: number | null;
+      priceLow: number | null;
+      source: string;
+      currency: string;
+      sourceCurrency: string;
+      variant: string;
+      condition: string;
+      company: string;
+      grade: string;
+      type: string;
+      recordedAt: Date;
+    }> = [];
+    for (const day of gradedDays) {
+      const recordedAt = new Date(`${day.date}T00:00:00.000Z`);
+      if (Number.isNaN(recordedAt.getTime())) continue; // skip unparseable dates
+      for (const p of day.prices) {
+        const market = typeof p.market === "number" ? p.market : null;
+        const low = typeof p.low === "number" ? p.low : null;
+        if (market == null && low == null) continue; // honest gap, never $0
+        const cur = p.currency || "USD";
+        // ponytail: the REQUESTED company/grade is STAMPED onto the stored row
+        // (not read from the response) because Scrydex's graded labelling in the
+        // price_history RESPONSE is UNCONFIRMED (Audit L2). Ceiling: if a future
+        // audit confirms the response carries trustworthy company/grade, read
+        // them from `p.company`/`p.grade` instead. Company is uppercased to match
+        // the CurrentPrice vocabulary; grade is kept verbatim (incl "8.5"/"9Q").
+        gradedRows.push({
+          cardId: card.id,
+          priceMarket: market,
+          priceLow: low,
+          source: "scrydex",
+          currency: cur,
+          sourceCurrency: cur,
+          variant: p.variant || "normal",
+          condition: "GRADED",
+          company: g.company.toUpperCase(),
+          grade: g.grade,
+          type: "graded",
+          recordedAt,
+        });
+      }
+    }
+    if (gradedRows.length > 0) {
+      await prisma.pricingHistory.createMany({ data: gradedRows, skipDuplicates: true });
+      gradedStored += gradedRows.length;
+    }
+  }
+
+  // Meter ONE SyncLog covering the raw call + every graded call (3 credits each,
+  // the documented price_history cost).
   await prisma.syncLog.create({
-    data: { job: SCRYDEX_HISTORY_JOB, cardId: card.id, status: "ok", credits },
+    data: {
+      job: SCRYDEX_HISTORY_JOB,
+      cardId: card.id,
+      status: "ok",
+      credits: SCRYDEX_CREDIT_COST.priceHistory * (1 + grades.length),
+    },
   });
 
-  return { stored: rows.length, credits };
+  return { stored: rows.length + gradedStored, credits: credits * (1 + grades.length) };
 }
 
 /**
