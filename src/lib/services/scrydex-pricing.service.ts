@@ -377,6 +377,19 @@ export async function pullAndStoreScrydexPrice(
  * REAL `date` as recordedAt, `source="scrydex"`, `sourceCurrency` preserved; a
  * null market+low point is skipped (honest gap, never $0).
  */
+/**
+ * Parse a Scrydex price_history `date` into a UTC Date. Scrydex returns dates as
+ * "YYYY/MM/DD" (slash-separated) — `new Date("2026/10/04T00:00:00.000Z")` is
+ * Invalid Date, which silently dropped EVERY history point (0 stored despite a
+ * full-year response). Normalize slashes → dashes before appending the UTC time.
+ * Returns null when still unparseable (honest skip).
+ */
+function parseHistoryDate(date: string): Date | null {
+  const iso = date.replace(/\//g, "-");
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export async function pullAndStoreScrydexHistory(
   card: { id: string; game: Game; scrydexId: string },
   filters?: { days?: number; grades?: Array<{ company: string; grade: string }> }
@@ -421,8 +434,8 @@ export async function pullAndStoreScrydexHistory(
     recordedAt: Date;
   }> = [];
   for (const day of days) {
-    const recordedAt = new Date(`${day.date}T00:00:00.000Z`);
-    if (Number.isNaN(recordedAt.getTime())) continue; // skip unparseable dates
+    const recordedAt = parseHistoryDate(day.date);
+    if (!recordedAt) continue; // skip unparseable dates
     for (const p of day.prices) {
       if ((p.type ?? "raw") !== "raw") continue; // RAW series only (see docstring)
       if ((p.condition ?? "NM") !== "NM") continue; // Near Mint only
@@ -475,8 +488,8 @@ export async function pullAndStoreScrydexHistory(
       recordedAt: Date;
     }> = [];
     for (const day of gradedDays) {
-      const recordedAt = new Date(`${day.date}T00:00:00.000Z`);
-      if (Number.isNaN(recordedAt.getTime())) continue; // skip unparseable dates
+      const recordedAt = parseHistoryDate(day.date);
+      if (!recordedAt) continue; // skip unparseable dates
       for (const p of day.prices) {
         const market = typeof p.market === "number" ? p.market : null;
         const low = typeof p.low === "number" ? p.low : null;
