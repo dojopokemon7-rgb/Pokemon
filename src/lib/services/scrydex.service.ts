@@ -426,24 +426,40 @@ export async function fetchScrydexSoldListings(
 
 // Scrydex pop_reports (docs/SCRYDEX_AUDIT.md Area 4b). Public coverage is PSA
 // English only; BGS is UNSUPPORTED and never read as data.
-// SHAPE UNVERIFIED (Audit L0): the Audit documents coverage + the include +
-// the credit cost, but gives NO pop_reports payload sample. The per-entry
-// keys below (company/language/total/grades[{grade,count}]) are a DEFENSIVE
-// GUESS — confirm against ONE real response before/at the first gated pull.
-// Zod drops unknown keys; a wrong shape yields zero PSA-English grades → the
-// fetcher warn-logs the raw keys (see mapping step 2b) so it fails LOUD, not
-// silent. Grade label + count are read verbatim; a non-finite/absent count
-// drops that grade (never a fabricated 0).
+// SHAPE VERIFIED (GET /pokemon/v1/cards/me55c-4?include=prices,pop_reports):
+// pop_reports is NOT a top-level key on `data`. It is NESTED INSIDE EACH
+// VARIANT, exactly like prices — i.e. `data.variants[] = [{ name, images,
+// marketplaces, pop_reports: [...], prices: [...] }, ...]`. We therefore read
+// pop_reports off every variant (mirroring how pickRawPrice/pickGradedPrice
+// reach into variants[].prices) and aggregate the PSA-English entries across
+// variants. (The previous code read the non-existent `data.pop_reports`, so it
+// ALWAYS returned null — this path fix is the whole bug.)
+// Each pop_reports entry carries a grading company (PSA), a grade label, and a
+// count (and possibly language/total). Shapes are parsed DEFENSIVELY with
+// `.nullish()`; Zod drops unknown keys. A wrong shape yields zero PSA-English
+// grades → the fetcher warn-logs the VARIANT-level keys it saw (see mapping
+// step 2b) so it fails LOUD, not silent. Grade label + count are read verbatim;
+// a non-finite/absent count drops that grade (never a fabricated 0). An empty
+// variants[].pop_reports (card genuinely has no population — e.g. me55c-4) →
+// null → honest empty state, NOT a bug and NOT fabricated.
 const PopReportEntrySchema = z.object({
   company: z.string().nullish(), // expected "PSA" | "BGS" | ...
   language: z.string().nullish(), // expected "English" | ...
+  grade: z.union([z.string(), z.number()]).nullish(), // per-entry grade label
+  count: z.number().nullish(), // per-entry graded count
   total: z.number().nullish(),
+  // Some shapes may nest grades under the entry rather than one entry per grade.
   grades: z
     .array(z.object({ grade: z.union([z.string(), z.number()]).nullish(), count: z.number().nullish() }))
     .nullish(),
 });
+// pop_reports lives on EACH VARIANT (verified), alongside prices.
+const PopReportVariantSchema = z.object({
+  name: z.string().nullish(),
+  pop_reports: z.array(PopReportEntrySchema).nullish(),
+});
 const PopReportCardSchema = z.object({
-  pop_reports: z.array(PopReportEntrySchema).default([]),
+  variants: z.array(PopReportVariantSchema).default([]),
 });
 // Response wrapper mirrors fetchScrydexCardById: card object at `.data`.
 const PopReportResponseSchema = z.object({ data: PopReportCardSchema });
@@ -467,10 +483,12 @@ export interface ScrydexPopulation {
  * parse failure → warn-log + null, so a credit-gated orchestrator degrades to
  * "no data" and never clobbers a prior stored report.
  *
- * FAIL-LOUD (Finding 4): because the pop_reports shape is UNVERIFIED, a 200
- * that parses to zero PSA-English grades warn-logs the raw top-level keys it
- * saw, so the first owner-approved real pull can confirm/repair the schema
- * instead of silently returning null for every card.
+ * SHAPE (verified): pop_reports is nested per VARIANT (data.variants[].
+ * pop_reports), NOT at data top level. We aggregate PSA-English grades across
+ * all variants. FAIL-LOUD (Finding 4): a 200 that parses to zero PSA-English
+ * grades warn-logs the VARIANT-level keys it saw, so a still-wrong per-entry
+ * shape gives the right diagnostic next time instead of silently returning
+ * null for every card.
  */
 export async function fetchScrydexPopulation(
   scrydexId: string,
@@ -493,44 +511,64 @@ export async function fetchScrydexPopulation(
       return null;
     }
 
-    // Step 3: first entry where company==PSA AND language==English (case-insensitive).
-    const entry = parsed.data.data.pop_reports.find(
-      (e) =>
-        (e.company ?? "").toUpperCase() === "PSA" &&
-        (e.language ?? "").toLowerCase() === "english"
-    );
+    // Step 1+2: pop_reports is nested per variant (verified). Flatten every
+    // variant's pop_reports and keep only PSA-English entries (case-insensitive;
+    // a missing language is treated as English — public coverage is English
+    // only). BGS (or any non-PSA company) is NEVER included.
+    const variants = parsed.data.data.variants;
+    const psaEntries = variants
+      .flatMap((v) => v.pop_reports ?? [])
+      .filter((e) => {
+        if ((e.company ?? "").toUpperCase() !== "PSA") return false;
+        const lang = (e.language ?? "english").toLowerCase();
+        return lang === "english";
+      });
 
-    // Step 2b fail-loud diagnostic: no PSA-English entry → warn the raw keys.
-    if (!entry) {
+    // Step 2b fail-loud diagnostic: no PSA-English entry → warn the VARIANT-level
+    // keys, so a still-wrong per-entry shape is diagnosable next time.
+    if (psaEntries.length === 0) {
+      const rawVariants = ((body?.data as Record<string, unknown>)?.variants ?? []) as Record<
+        string,
+        unknown
+      >[];
       console.warn(
-        `[scrydex] population ${scrydexId}: no PSA-English pop_reports; raw top-level keys:`,
-        Object.keys((body?.data ?? body ?? {}) as Record<string, unknown>)
+        `[scrydex] population ${scrydexId}: no PSA-English pop_reports; variant keys:`,
+        rawVariants.map((v) => Object.keys(v ?? {}))
       );
       return null;
     }
 
-    // Step 4: coerce grade→string; drop grades whose count is not finite
-    // (never fabricate a 0). total = entry.total when finite else sum kept.
-    const grades: { grade: string; count: number }[] = [];
-    for (const g of entry.grades ?? []) {
-      const count = typeof g.count === "number" && Number.isFinite(g.count) ? g.count : null;
-      if (count === null) continue;
-      if (g.grade == null) continue;
-      grades.push({ grade: String(g.grade), count });
+    // Step 3+4: build the grade map. An entry carries EITHER a nested grades[]
+    // array OR its own grade+count (one entry per grade). Coerce grade→string;
+    // drop grades whose count is not finite (never fabricate a 0). Aggregate
+    // across variants/entries, summing counts for repeated grade labels.
+    const gradeCounts = new Map<string, number>();
+    let declaredTotal = 0;
+    let sawDeclaredTotal = false;
+    const addGrade = (grade: unknown, count: unknown) => {
+      if (grade == null) return;
+      if (typeof count !== "number" || !Number.isFinite(count)) return;
+      const key = String(grade);
+      gradeCounts.set(key, (gradeCounts.get(key) ?? 0) + count);
+    };
+    for (const entry of psaEntries) {
+      if (typeof entry.total === "number" && Number.isFinite(entry.total)) {
+        declaredTotal += entry.total;
+        sawDeclaredTotal = true;
+      }
+      if (entry.grades && entry.grades.length > 0) {
+        for (const g of entry.grades) addGrade(g.grade, g.count);
+      } else {
+        addGrade(entry.grade, entry.count);
+      }
     }
-    const total =
-      typeof entry.total === "number" && Number.isFinite(entry.total)
-        ? entry.total
-        : grades.reduce((sum, g) => sum + g.count, 0);
 
-    // Step 5: empty grades AND no real total → fail-loud + null (honest gap).
-    if (grades.length === 0 && total === 0) {
-      console.warn(
-        `[scrydex] population ${scrydexId}: no PSA-English pop_reports; raw top-level keys:`,
-        Object.keys((body?.data ?? body ?? {}) as Record<string, unknown>)
-      );
-      return null;
-    }
+    const grades = [...gradeCounts.entries()].map(([grade, count]) => ({ grade, count }));
+    const summed = grades.reduce((sum, g) => sum + g.count, 0);
+    const total = sawDeclaredTotal ? declaredTotal : summed;
+
+    // Step 5: empty grades AND no real total → null (honest gap, NOT fabricated).
+    if (grades.length === 0 && total === 0) return null;
 
     return { company: "PSA", language: "English", total, grades };
   } catch (err) {

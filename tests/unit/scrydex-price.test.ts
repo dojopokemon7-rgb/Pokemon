@@ -27,6 +27,7 @@ import {
   pickGradedPrice,
   resolveScrydexCard,
   fetchScrydexCardById,
+  fetchScrydexPopulation,
   type ScrydexCard,
 } from "@/lib/services/scrydex.service";
 
@@ -239,5 +240,115 @@ describe("fetchScrydexCardById", () => {
   it("returns null (never throws) on a non-OK response", async () => {
     mockFetchOnce(() => ({ ok: false, status: 404, json: async () => ({}) }));
     await expect(fetchScrydexCardById("missing", Game.POKEMON)).resolves.toBeNull();
+  });
+});
+
+describe("fetchScrydexPopulation (variants[].pop_reports path fix)", () => {
+  const popBody = (variants: unknown[]) => ({
+    ok: true,
+    json: async () => ({ data: { variants } }),
+  });
+
+  it("extracts PSA English grades nested under data.variants[].pop_reports", async () => {
+    const fn = mockFetchOnce(() =>
+      popBody([
+        {
+          name: "holofoil",
+          pop_reports: [
+            { company: "PSA", grade: "10", count: 123 },
+            { company: "PSA", grade: "9", count: 45 },
+          ],
+        },
+      ])
+    );
+    const pop = await fetchScrydexPopulation("me55c-4", Game.POKEMON);
+    expect(fn.mock.calls[0][0]).toContain("/pokemon/v1/cards/me55c-4?include=pop_reports");
+    expect(pop).toEqual({
+      company: "PSA",
+      language: "English",
+      total: 168, // summed (no declared entry.total)
+      grades: [
+        { grade: "10", count: 123 },
+        { grade: "9", count: 45 },
+      ],
+    });
+  });
+
+  it("returns null (honest empty) when variants[].pop_reports is empty", async () => {
+    mockFetchOnce(() => popBody([{ name: "holofoil", pop_reports: [] }]));
+    await expect(fetchScrydexPopulation("me55c-4", Game.POKEMON)).resolves.toBeNull();
+  });
+
+  it("excludes BGS entries and never fabricates them", async () => {
+    const pop = await (async () => {
+      mockFetchOnce(() =>
+        popBody([
+          {
+            pop_reports: [
+              { company: "PSA", grade: "10", count: 10 },
+              { company: "BGS", grade: "9.5", count: 999 },
+            ],
+          },
+        ])
+      );
+      return fetchScrydexPopulation("me55c-4", Game.POKEMON);
+    })();
+    expect(pop).toEqual({
+      company: "PSA",
+      language: "English",
+      total: 10,
+      grades: [{ grade: "10", count: 10 }],
+    });
+  });
+
+  it("supports the nested grades[] entry shape with a declared total", async () => {
+    mockFetchOnce(() =>
+      popBody([
+        {
+          pop_reports: [
+            {
+              company: "PSA",
+              language: "English",
+              total: 2000,
+              grades: [
+                { grade: "10", count: 1200 },
+                { grade: "9", count: 800 },
+              ],
+            },
+          ],
+        },
+      ])
+    );
+    const pop = await fetchScrydexPopulation("me55c-4", Game.POKEMON);
+    expect(pop).toEqual({
+      company: "PSA",
+      language: "English",
+      total: 2000,
+      grades: [
+        { grade: "10", count: 1200 },
+        { grade: "9", count: 800 },
+      ],
+    });
+  });
+
+  it("aggregates PSA grades across multiple variants, summing repeats", async () => {
+    mockFetchOnce(() =>
+      popBody([
+        { name: "normal", pop_reports: [{ company: "PSA", grade: "10", count: 5 }] },
+        { name: "holofoil", pop_reports: [{ company: "psa", grade: "10", count: 3 }] },
+      ])
+    );
+    const pop = await fetchScrydexPopulation("me55c-4", Game.POKEMON);
+    expect(pop).toEqual({
+      company: "PSA",
+      language: "English",
+      total: 8,
+      grades: [{ grade: "10", count: 8 }],
+    });
+  });
+
+  it("returns null when the card response has no variants at all", async () => {
+    mockFetchOnce(() => popBody([]));
+    await expect(fetchScrydexPopulation("me55c-4", Game.POKEMON)).resolves.toBeNull();
   });
 });
