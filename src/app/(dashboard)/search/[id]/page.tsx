@@ -30,6 +30,8 @@ import { useState, useMemo, Suspense, useEffect, useRef } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
+import { DojoSelect } from "@/components/DojoSelect";
+import { RecentSales } from "@/components/RecentSales";
 import { AreaChart } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
@@ -82,7 +84,7 @@ const GROUPS = ["Raw", "PSA"];
 // in CardDetailInner based on the card's actual marketPrice, not hardcoded.
 const ADD_ROWS_TEMPLATE = [
   { id: "raw", section: "raw" as const, label: "Foil" },
-  { id: "psa10", section: "graded" as const, label: "PSA 10 (GEM - MT)", variant: "Foil", pop: "Pop: 3583" },
+  { id: "psa10", section: "graded" as const, label: "PSA 10 (GEM - MT)", variant: "Foil" },
 ];
 
 // Range tabs filter the REAL history points by a trailing date window
@@ -124,102 +126,6 @@ function fmtChartDate(iso: string): string {
 // old hand-rolled DojoChart (custom hover/tooltip/markers/x-axis) was removed
 // in favour of that single canonical component. `fmtChartDate` is kept: it
 // builds the AreaChart x-axis labels from the REAL {date} points.
-
-// ── Sellers on the Floor (Task 6) ───────────────────────────────────
-// Recent Sales — REAL eBay SOLD records from Scrydex's documented listings
-// endpoint (/api/cards/[id]/ebay-sold → Scrydex source=ebay, filtered to
-// records with sold_at). These are completed sales, NOT active listings — we
-// never fall back to active listings. Empty / unavailable / pending-approval →
-// "No recent sales found" (plan §4). Filtered by the selected grade/variant.
-interface SoldRecord {
-  itemId: string;
-  source: string | null;
-  title: string | null;
-  price: number | null;
-  currency: string | null;
-  soldAt: string | null;
-  grade: string | null;
-  company: string | null;
-  url: string | null;
-}
-
-function RecentSales({
-  id, setName, rarity, grade, variant,
-}: {
-  id: string; setName: string; rarity: string; grade?: string; variant?: string;
-}) {
-  const { data, isLoading } = useQuery<{ listings: SoldRecord[] }>({
-    queryKey: ["ebay-sold", id, grade ?? "", variant ?? ""],
-    queryFn: async () => {
-      const qs = new URLSearchParams();
-      if (grade) qs.set("grade", grade);
-      if (variant) qs.set("variant", variant);
-      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold?${qs.toString()}`);
-      if (!res.ok) return { listings: [] };
-      return res.json();
-    },
-    staleTime: 24 * 60 * 60_000, // matches the route's 24h shared cache
-  });
-
-  const listings = data?.listings ?? [];
-  const heading = { fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" as const, color: "var(--color-dojo-body)" };
-
-  return (
-    <>
-      <div style={{ marginTop: "22px", display: "flex", alignItems: "baseline" }}>
-        <span style={heading}>Recent Sales</span>
-        {!isLoading && listings.length > 0 && (
-          <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            {listings.length} sale{listings.length !== 1 ? "s" : ""}
-          </span>
-        )}
-      </div>
-
-      {isLoading ? (
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>Checking sold records…</span>
-        </div>
-      ) : listings.length === 0 ? (
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "22px 15px", textAlign: "center" }}>
-          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-faint)" }}>No recent sales found</span>
-        </div>
-      ) : (
-        <div style={{ marginTop: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "2px 15px 6px" }}>
-          {listings.map((l) => {
-            const soldLabel = l.soldAt ? new Date(l.soldAt.replace(/\//g, "-")).toLocaleDateString() : "";
-            const gradeLabel = l.company && l.grade ? `${l.company} ${l.grade}` : l.grade ?? "";
-            const sub = [gradeLabel, setName, rarity].filter(Boolean).join(" · ");
-            const priceStr = l.price != null && l.price > 0 ? new Intl.NumberFormat("en-US", { style: "currency", currency: l.currency ?? "USD" }).format(l.price) : "—";
-            const Row = (
-              <div style={{ display: "flex", alignItems: "center", gap: "11px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
-                <div aria-hidden="true" style={{ flex: "none", width: "34px", height: "34px", background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px" }}>
-                  {(l.source ?? "e").charAt(0).toUpperCase()}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    Sold{soldLabel ? ` ${soldLabel}` : ""}
-                  </div>
-                  {sub && (
-                    <div style={{ marginTop: "2px", fontSize: "10.5px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
-                  )}
-                </div>
-                <div style={{ textAlign: "right", flex: "none" }}>
-                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>{priceStr}</div>
-                  {l.url && (
-                    <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ marginTop: "3px", display: "inline-block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}>
-                      View sale ›
-                    </a>
-                  )}
-                </div>
-              </div>
-            );
-            return <div key={l.itemId}>{Row}</div>;
-          })}
-        </div>
-      )}
-    </>
-  );
-}
 
 // ── Population report (PSA English only; BGS unavailable; no fabrication) ──
 // Plan §4: Scrydex public coverage is Pokémon PSA English only. We NEVER show
@@ -391,6 +297,9 @@ function CardDetailInner() {
   const [addQty, setAddQty] = useState<Record<string, number>>({ raw: 0, psa10: 1 });
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  // The collection the "Add to collection" flow targets. '' = loose/Main
+  // (no collectionId sent → server files it unbucketed). Picked via DojoSelect.
+  const [collectionId, setCollectionId] = useState<string>("");
   // Single toast channel for this page: add confirmations, favorites
   // feedback, and Report submissions all route through here (Phase 3).
   const [toast, setToast] = useState<string | null>(null);
@@ -428,6 +337,21 @@ function CardDetailInner() {
     staleTime: 60_000,
   });
 
+  // The user's named collections for the "Adding to" picker. FILTER to rows
+  // with a string name so the nameless __uncat__ pseudo-entry (the loose
+  // bucket GET /api/collections synthesizes) never shows as a pickable row —
+  // "Main" (value '') already represents loose/unbucketed.
+  const { data: collections = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ["collections"],
+    queryFn: async () => {
+      const res = await fetch("/api/collections", { credentials: "include" });
+      if (!res.ok) return [];
+      const rows = (await res.json()).data ?? [];
+      return rows.filter((c: { name?: unknown }) => typeof c.name === "string");
+    },
+    staleTime: 60_000,
+  });
+
   // Build ADD_ROWS dynamically using the actual card's market price.
   // Ungraded (raw) = actual market price. PSA 10 uses the real server graded
   // price when available, falling back to the local heuristic below.
@@ -450,7 +374,6 @@ function CardDetailInner() {
         section: "graded" as const, 
         label: "PSA 10 (GEM - MT)", 
         variant: "Foil", 
-        pop: "Pop: 3583", 
         price: psa10Price,
         isFallback: gradedData?.price == null ? true : gradedData.isFallback,
       },
@@ -474,6 +397,7 @@ function CardDetailInner() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["collection"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      queryClient.invalidateQueries({ queryKey: ["collections"] });
       // Reset quantities after successful add
       setAddQty({ raw: 0, psa10: 0 });
       setToast(`Added ${name} to your portfolio`);
@@ -851,11 +775,24 @@ function CardDetailInner() {
         <div style={{ marginTop: "22px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "15px" }}>
           <div style={{ display: "flex", alignItems: "baseline" }}>
             <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "14px", color: "var(--color-dojo-ink)" }}>
-              Adding to: <span style={{ color: "var(--color-dojo-gold)" }}>Main</span>
+              Adding to
             </div>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
               <span style={{ fontWeight: 400, color: "var(--color-dojo-faint)" }}>Total: </span>{fmtUSD(addTotal)}
             </div>
+          </div>
+          {/* Collection picker — reuses the shared DojoSelect. 'Main' (value
+              '') is loose/unbucketed; the rest are the user's named
+              collections. Default '' so the add still works with no
+              collections or while the ['collections'] query loads. */}
+          <div style={{ marginTop: "12px" }}>
+            <DojoSelect
+              ariaLabel="Collection"
+              testId="collection-select"
+              value={collectionId}
+              options={[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))]}
+              onChange={setCollectionId}
+            />
           </div>
 
           <div style={{ marginTop: "15px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Ungraded</div>
@@ -865,7 +802,7 @@ function CardDetailInner() {
 
           <div style={{ marginTop: "13px", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Graded</div>
           {ADD_ROWS.filter((d) => d.section === "graded").map((d) => (
-            <AddQtyRow key={d.id} label={d.label} sub={[d.variant, d.pop].filter(Boolean).join(" · ")} price={d.price} qty={addQty[d.id] || 0} onChange={(q) => setAddQty((s) => ({ ...s, [d.id]: q }))} />
+            <AddQtyRow key={d.id} label={d.label} sub={d.variant} price={d.price} qty={addQty[d.id] || 0} onChange={(q) => setAddQty((s) => ({ ...s, [d.id]: q }))} />
           ))}
           {/* "+ Add a graded card" now works: bumps the graded row's qty
               by one so it's ready to submit (Phase 3 QA: graded flow must
@@ -913,6 +850,10 @@ function CardDetailInner() {
                     marketPrice: price || null,
                     quantity: qty,
                     isFoil,
+                    // '' = loose/Main → omit so the server files it unbucketed;
+                    // otherwise carry the chosen collectionId (ownership is
+                    // re-verified server-side, foreign ids coerced to null).
+                    ...(collectionId ? { collectionId } : {}),
                     // Note: Graded card support needs schema changes (Week 3)
                     // For now, graded cards are added as regular foil cards
                   });
@@ -937,7 +878,13 @@ function CardDetailInner() {
         {/* ── Population report — PSA English only; BGS unavailable ── */}
         <PopulationReport id={id} />
 
-        {/* ── Recent Sales — real Scrydex eBay SOLD records (never active) ── */}
+        {/* ── Recent Sales — real Scrydex eBay SOLD records (never active) ──
+            UNFILTERED this phase (design §4.1 option b): no grade/variant is
+            passed. The page's `grade` state is a MULTI-SELECT chart series
+            selector (up to 3 grade lines), NOT a single sold-record filter, so
+            threading it here would be wrong; graded sold-record labelling is
+            unresolved (Audit L2). RecentSales keeps optional grade?/variant?
+            params for a future single-grade filter, left unused for now. */}
         <RecentSales id={id} setName={setName} rarity={rarity} />
 
         {/* Accessories block REMOVED — it was dummy/hardcoded data (plan §4). */}

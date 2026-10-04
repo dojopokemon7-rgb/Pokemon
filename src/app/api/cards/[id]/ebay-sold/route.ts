@@ -18,8 +18,11 @@
  * unavailable) we return an empty list with a reason — the UI shows the empty
  * state, never active listings.
  *
- * Always 200 so the detail page renders regardless. Cached 24h (shared per-card
- * so repeat views don't re-spend credits).
+ * Always 200 so the detail page renders regardless. CACHE IS REDIS ONLY
+ * (RULE 1): a 24h shared per-card entry so repeat views don't re-spend the
+ * credit. It is NEVER persisted to Postgres — these records are fully
+ * reconstructable from Scrydex, so a Redis miss/fault just re-fetches (or
+ * returns the honest empty state); nothing here is a source of truth.
  */
 
 import { NextResponse, type NextRequest } from "next/server";

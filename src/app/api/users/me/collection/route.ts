@@ -194,7 +194,28 @@ export async function POST(request: Request): Promise<NextResponse> {
     ])
   );
 
+  // Server-side ownership coercion (RULE 5 — ownership by query scoping). A
+  // client can send any collectionId; we must only file a copy under a bucket
+  // the user actually OWNS. A foreign/unknown id is coerced to null (filed
+  // loose) — no 4xx and no id-enumeration leak, identical to "unbucketed".
+  // FAST PATH: if NO item carries a non-empty collectionId, skip the query
+  // entirely (the common "add to Main" case does zero extra DB work).
+  const anyCollectionId = parsed.data.cards.some(
+    (c) => typeof c.collectionId === "string" && c.collectionId.length > 0
+  );
+  const owned = new Set<string>();
+  if (anyCollectionId) {
+    const rows = await prisma.collection.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    for (const r of rows) owned.add(r.id);
+  }
+
   for (const item of parsed.data.cards) {
+    // Coerce the requested bucket to one the user owns, else null (loose).
+    const effectiveCollectionId =
+      item.collectionId && owned.has(item.collectionId) ? item.collectionId : null;
     try {
       const setName = item.setName?.trim() || "Unknown Set";
       const setExternalId = `user-added-${slugifySetName(setName)}`;
@@ -284,7 +305,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           cardId: card.id,
           isFoil: item.isFoil,
           isSold: false,
-          collectionId: item.collectionId ?? null,
+          collectionId: effectiveCollectionId,
         },
       });
 
@@ -298,7 +319,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           data: {
             quantity: existingItem.quantity + item.quantity,
             ...(item.condition ? { condition: item.condition } : {}),
-            collectionId: item.collectionId ?? null,
+            collectionId: effectiveCollectionId,
             // Only (re)set cost basis on an existing lot when the user supplied
             // one — don't overwrite a resolved basis with a fresh snapshot.
             ...(item.purchasePrice != null
@@ -326,7 +347,7 @@ export async function POST(request: Request): Promise<NextResponse> {
               costBasisCurrency,
               costBasisAttemptedAt,
               isSold: false,
-              collectionId: item.collectionId ?? null,
+              collectionId: effectiveCollectionId,
               addedAt,
             },
           });
@@ -342,7 +363,7 @@ export async function POST(request: Request): Promise<NextResponse> {
                 cardId: card.id,
                 isFoil: item.isFoil,
                 isSold: false,
-                collectionId: item.collectionId ?? null,
+                collectionId: effectiveCollectionId,
               },
             });
             const match = raced && norm(raced.condition) === norm(item.condition) ? raced : null;
@@ -412,7 +433,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // writes committed): collection:{userId} + dashboard:{userId}. Skip when
   // nothing was actually added.
   if (addedCount > 0) {
-    await invalidateUserCaches(userId, ["collection", "dashboard"]);
+    await invalidateUserCaches(userId, ["collection", "dashboard", "collections"]);
   }
 
   return NextResponse.json(
