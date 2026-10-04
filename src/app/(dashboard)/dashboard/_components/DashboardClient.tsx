@@ -22,7 +22,7 @@
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, useMemo } from "react";
-import { CardDetailsPopup, type CardDetailsData } from "@/components/CardDetailsPopup";
+import { type CardDetailsData } from "@/components/CardDetailsPopup";
 import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
 import { useDelayedFlag } from "@/components/useDelayedFlag";
@@ -270,26 +270,33 @@ function fmtDelta(pct: number | null | undefined): { delta: string | null; up: b
   return { delta: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`, up: pct >= 0 };
 }
 
+// Build the full card-detail href for a dashboard row. Mirrors Explore's
+// goToCard/detailParams (src/app/(dashboard)/search/page.tsx): identity/price
+// ride as query params (there is NO get-by-id card API) and the route keys on
+// Card.externalId (AGENTS.md rule 3), NOT the internal cuid. `game` is NOT
+// threaded — the detail page infers it from the externalId pattern. Price is
+// only appended when non-null (AGENTS.md rule 2 — no fabricated price).
+function cardDetailHref(card: CardDetailsData): string {
+  const params = new URLSearchParams({ name: card.name });
+  if (card.setName) params.set("set", card.setName);
+  if (card.marketPrice != null) params.set("price", String(card.marketPrice));
+  return `/search/${encodeURIComponent(card.externalId)}?${params.toString()}`;
+}
+
 // ── Card row component ─────────────────────────────────────────────
-// F-08: rows are clickable and carry the `card-result` testid so a click
-// opens the shared details popup (same behaviour as the Explore tiles).
-function SectionRow({ name, sub, price, delta, up, onOpen }: {
+// Rows carry the `card-result` testid and NAVIGATE to the full card detail
+// page `/search/<externalId>` on click, exactly like the Explore tiles. The
+// root is a next/link <Link> (natively focusable + Enter-activatable, so no
+// manual onKeyDown/role=button is needed); the visual layout is unchanged.
+function SectionRow({ name, sub, price, delta, up, href }: {
   name: string; sub: string; price: string; delta: string | null; up: boolean;
-  onOpen?: () => void;
+  href: string;
 }) {
   return (
-    <div
+    <Link
+      href={href}
       data-testid="card-result"
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (onOpen && (e.key === "Enter" || e.key === " ")) {
-          e.preventDefault();
-          onOpen();
-        }
-      }}
-      style={{ display: "flex", alignItems: "center", height: "57px", borderTop: "1px solid var(--color-dojo-divider)", cursor: "pointer" }}
+      style={{ display: "flex", alignItems: "center", height: "57px", borderTop: "1px solid var(--color-dojo-divider)", cursor: "pointer", textDecoration: "none", color: "inherit" }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -307,7 +314,7 @@ function SectionRow({ name, sub, price, delta, up, onOpen }: {
           <DeltaTag delta={delta} up={up} />
         </div>
       </div>
-    </div>
+    </Link>
   );
 }
 
@@ -384,8 +391,6 @@ export default function DashboardClient({
   const [focusedId, setFocusedId] = useState<string | null>(null);
   // Whether the selector dropdown panel is open.
   const [collMenuOpen, setCollMenuOpen] = useState(false);
-  // F-08: the card whose details popup is open (null = closed).
-  const [popupCard, setPopupCard] = useState<CardDetailsData | null>(null);
 
   // suppressHydrationWarning on the element that renders this — locale
   // formatting can differ between Node and browser, which is intentional.
@@ -1124,7 +1129,7 @@ export default function DashboardClient({
               /* Card lists — Most valuable / Gainers / Losers / Want to Buy/Sell/Trade */
               getActiveRows().length > 0 ? (
                 getActiveRows().map(({ card, ...row }, i) => (
-                  <SectionRow key={`${row.name}-${i}`} {...row} onOpen={() => setPopupCard(card)} />
+                  <SectionRow key={`${row.name}-${i}`} {...row} href={cardDetailHref(card)} />
                 ))
               ) : (
                 <div style={{ padding: "20px 0", textAlign: "center", color: "var(--color-dojo-faint)", fontSize: "12px" }}>
@@ -1197,18 +1202,6 @@ export default function DashboardClient({
         </>
       )}
 
-      {/* F-08: card details popup — opens when a Most Valuable / Gainers /
-          Losers row is clicked. Add-to-collection routes the user to the
-          search flow (the dashboard has no inline add sheet). */}
-      {popupCard && (
-        <CardDetailsPopup
-          card={popupCard}
-          onClose={() => setPopupCard(null)}
-          onAddToCollection={() => {
-            window.location.href = "/search";
-          }}
-        />
-      )}
     </div>
   );
 }
