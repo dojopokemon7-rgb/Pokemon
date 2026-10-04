@@ -407,6 +407,21 @@ function CardDetailInner() {
   );
   const allChips = useMemo(() => chipGroups.flatMap((g) => g.chips), [chipGroups]);
 
+  // Every stored graded price for this card (company+grade+price) — passed to
+  // AddCardSheet so its single Grader dropdown lists only this card's graders
+  // and shows the LIVE price per selection.
+  const gradedPrices = useMemo(
+    () =>
+      (currentPrices as CurrentPriceRow[])
+        .filter((p) => (p.type ?? "raw") === "graded" && p.company && p.grade)
+        .map((p) => ({
+          company: (p.company as string).toUpperCase(),
+          grade: p.grade as string,
+          price: p.priceMarket ?? p.priceLow ?? null,
+        })),
+    [currentPrices]
+  );
+
   // Multi-series chart matrix for the user's selected chips (each plots its OWN
   // real stored per-grade history, windowed by the active range tab).
   const matrix = useMemo(
@@ -715,7 +730,7 @@ function CardDetailInner() {
 
         {sheetOpen && (
           <AddCardSheet
-            card={{ externalId: id, name, setName: setName || null, imageUrl: img || null, marketPrice: fetchedPrice ?? (priceParam > 0 ? priceParam : null) }}
+            card={{ externalId: id, name, setName: setName || null, imageUrl: img || null, marketPrice: fetchedPrice ?? (priceParam > 0 ? priceParam : null), gradedPrices }}
             onClose={() => setSheetOpen(false)}
             onAdded={(msg) => { setSheetOpen(false); setToast(msg); }}
           />

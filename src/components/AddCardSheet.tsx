@@ -20,45 +20,42 @@ import { DojoSelect } from "@/components/DojoSelect";
 
 // Minimal shape every caller can satisfy (explore tile, search result, or the
 // card-detail header). externalId is the catalog id sent to the collection API.
+// A single graded price entry for the card (company + grade + its live price).
+export interface GradedPriceEntry {
+  company: string; // "PSA" | "CGC" | "BGS" | …
+  grade: string;   // "10" | "9.5" | …
+  price: number | null;
+}
+
+// Minimal shape every caller can satisfy (explore tile, search result, or the
+// card-detail header). externalId is the catalog id sent to the collection API.
 export interface AddableCard {
   externalId: string;
   name: string;
   setName?: string | null;
   imageUrl?: string | null;
+  /** Raw Near-Mint market price (the "Raw" grader's live value). */
   marketPrice?: number | null;
+  /** EVERY stored graded price for THIS card (PSA/CGC/BGS/… each grade). Drives
+   *  the single Grader dropdown + the live price shown per selection. */
+  gradedPrices?: GradedPriceEntry[];
 }
 
-const GRADERS = ["PSA", "BGS", "CGC", "SGC"] as const;
+const KNOWN_GRADERS = ["PSA", "BGS", "CGC", "SGC", "TAG", "ACE", "AGS"] as const;
 
-// Raw (ungraded) condition options — full names per design, short code stored.
-const RAW_CONDITIONS: { label: string; value: string }[] = [
-  { label: "Near mint", value: "NM" },
-  { label: "Lightly played", value: "LP" },
-  { label: "Moderately played", value: "MP" },
-  { label: "Heavily played", value: "HP" },
-  { label: "Damaged", value: "DMG" },
-];
-
-// PSA numeric-grade options; value carries the grade so we persist "PSA <grade>".
-const PSA_CONDITIONS: { label: string; value: string }[] = [
-  { label: "Gem Mint 10", value: "Grade 10" },
-  { label: "Mint 9", value: "Grade 9" },
-  { label: "NM-MT 8", value: "Grade 8" },
-  { label: "EX-MT 6", value: "Grade 6" },
-  { label: "EX 5", value: "Grade 5" },
-  { label: "VG-EX 4", value: "Grade 4" },
-  { label: "VG 3", value: "Grade 3" },
-  { label: "Good 2", value: "Grade 2" },
-  { label: "Fair 1.5", value: "Grade 1.5" },
-  { label: "Poor 1", value: "Grade 1" },
-];
+// PSA-style grade label by numeric grade (used for every company's grades).
+const GRADE_LABEL: Record<string, string> = {
+  "10": "Gem Mint 10", "9.5": "9.5", "9": "Mint 9", "8.5": "8.5", "8": "NM-MT 8",
+  "7.5": "7.5", "7": "NM 7", "6": "EX-MT 6", "5.5": "5.5", "5": "EX 5",
+  "4": "VG-EX 4", "3": "VG 3", "2": "Good 2", "1.5": "Fair 1.5", "1": "Poor 1",
+};
 
 /** "PSA 10" / "BGS 9.5" → { grader, grade }; null when it names no company. */
 export function parseGraded(
   condition: string | undefined | null
-): { grader: (typeof GRADERS)[number]; grade: string } | null {
+): { grader: string; grade: string } | null {
   if (!condition) return null;
-  const grader = GRADERS.find((g) => new RegExp(`\\b${g}\\b`, "i").test(condition));
+  const grader = KNOWN_GRADERS.find((g) => new RegExp(`\\b${g}\\b`, "i").test(condition));
   if (!grader) return null;
   const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "";
   return { grader, grade };
@@ -77,17 +74,55 @@ export function AddCardSheet({
   card: AddableCard;
   onClose: () => void;
   onAdded: (message: string) => void;
-  /** "PSA 10" pre-opens the PSA form at that grade. */
+  /** "PSA 10" pre-opens that grader + grade. */
   initialCondition?: string;
 }) {
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
+  const marketPrice = card.marketPrice ?? null;
+  const imgSrc = card.imageUrl ?? undefined;
+  const setLabel = card.setName ?? "";
+  const showSet = setLabel && setLabel.toLowerCase() !== "unknown set";
+
+  // Build the GRADER list from what the card actually has: "Raw" first (when a
+  // raw price exists), then every company present in gradedPrices, uppercased
+  // and de-duplicated. graded[company][grade] = live price.
+  const graded = card.gradedPrices ?? [];
+  const byCompany = new Map<string, Map<string, number | null>>();
+  for (const g of graded) {
+    const co = (g.company ?? "").toUpperCase();
+    if (!co || !g.grade) continue;
+    if (!byCompany.has(co)) byCompany.set(co, new Map());
+    byCompany.get(co)!.set(g.grade, g.price ?? null);
+  }
+  const companyOrder = [
+    ...KNOWN_GRADERS.filter((c) => byCompany.has(c)),
+    ...[...byCompany.keys()].filter((c) => !KNOWN_GRADERS.includes(c as (typeof KNOWN_GRADERS)[number])).sort(),
+  ];
+  // Grader dropdown options: "Raw" (value "RAW") + each company (value = company).
+  const graderOptions = [
+    ...(marketPrice != null ? [{ label: "Raw", value: "RAW" }] : []),
+    ...companyOrder.map((c) => ({ label: c, value: c })),
+  ];
+  // Guard: a card with neither raw price nor graded prices still offers Raw.
+  if (graderOptions.length === 0) graderOptions.push({ label: "Raw", value: "RAW" });
+
+  // Grades for a given grader, numeric-desc, as condition dropdown options.
+  function gradesFor(graderVal: string): { label: string; value: string }[] {
+    if (graderVal === "RAW") return [{ label: "Near mint", value: "NM" }];
+    const grades = [...(byCompany.get(graderVal)?.keys() ?? [])].sort((a, b) => parseFloat(b) - parseFloat(a));
+    const list = grades.length ? grades : ["10"];
+    return list.map((g) => ({ label: GRADE_LABEL[g] ?? g, value: `Grade ${g}` }));
+  }
+
   const parsed = parseGraded(initialCondition);
-  const [grader, setGrader] = useState<"RAW" | "PSA">(parsed ? "PSA" : "RAW");
+  const initialGrader =
+    parsed && byCompany.has(parsed.grader) ? parsed.grader : graderOptions[0].value;
+  const [grader, setGrader] = useState<string>(initialGrader);
   const [condition, setCondition] = useState<string>(
-    parsed ? `Grade ${parsed.grade}` : RAW_CONDITIONS[0].value
+    parsed && byCompany.has(parsed.grader) ? `Grade ${parsed.grade}` : gradesFor(initialGrader)[0].value
   );
   const [collectionId, setCollectionId] = useState<string>("");
   const [qty, setQty] = useState(1);
@@ -103,25 +138,25 @@ export function AddCardSheet({
     },
   });
 
-  const marketPrice = card.marketPrice ?? null;
-  const imgSrc = card.imageUrl ?? undefined;
-  const setLabel = card.setName ?? "";
-  const showSet = setLabel && setLabel.toLowerCase() !== "unknown set";
+  const conditionOptions = gradesFor(grader);
 
-  const conditionOptions = grader === "PSA" ? PSA_CONDITIONS : RAW_CONDITIONS;
-
-  const onGraderChange = (g: "RAW" | "PSA") => {
+  const onGraderChange = (g: string) => {
     setGrader(g);
-    setCondition(g === "PSA" ? PSA_CONDITIONS[0].value : RAW_CONDITIONS[0].value);
+    setCondition(gradesFor(g)[0].value);
   };
+
+  // LIVE price for the current grader + grade selection. Raw → marketPrice;
+  // graded → the stored price for that company+grade. Drives the big header
+  // price so it updates as you switch grader/grade (not stuck on raw).
+  const selectedGrade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "";
+  const livePrice =
+    grader === "RAW" ? marketPrice : byCompany.get(grader)?.get(selectedGrade) ?? null;
 
   /** Persisted condition: PSA → "PSA <grade>"; RAW → the raw code (e.g. "NM"). */
   function resolveCondition(): string {
-    if (grader === "PSA") {
-      const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "10";
-      return `PSA ${grade}`;
-    }
-    return condition;
+    if (grader === "RAW") return condition; // raw grade code (e.g. "NM")
+    const grade = condition.match(/\d+(?:\.\d+)?/)?.[0] ?? "10";
+    return `${grader} ${grade}`; // "PSA 10", "CGC 9.5", "BGS 10", …
   }
 
   async function handleAdd() {
@@ -209,11 +244,12 @@ export function AddCardSheet({
             <div className="dojo-heading" style={{ fontSize: "18px", lineHeight: 1.2 }}>{card.name}</div>
             {showSet && (
               <div style={{ marginTop: "4px", fontSize: "11.5px", color: "var(--color-dojo-body)" }}>
-                {setLabel}{grader === "PSA" ? ` · ${resolveCondition()}` : " · Raw"}
+                {setLabel} · {grader === "RAW" ? "Raw" : resolveCondition()}
               </div>
             )}
-            <div style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "22px", fontVariantNumeric: "tabular-nums", color: marketPrice != null ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)" }}>
-              {marketPrice != null ? fmtUSD(marketPrice) : "—"}
+            {/* LIVE price for the selected grader + grade (updates on change). */}
+            <div style={{ marginTop: "8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "22px", fontVariantNumeric: "tabular-nums", color: livePrice != null ? "var(--color-dojo-gold)" : "var(--color-dojo-faint)" }}>
+              {livePrice != null ? fmtUSD(livePrice) : "—"}
             </div>
           </div>
           {imgSrc && (
@@ -229,32 +265,20 @@ export function AddCardSheet({
           </div>
         )}
 
-        {/* GRADER — RAW / PSA segmented pills */}
+        {/* GRADER — single dropdown listing every grader this card has
+            (Raw + PSA/CGC/BGS/… present in its stored prices). */}
         <div style={{ ...label, marginBottom: "8px" }}>Grader</div>
-        <div role="radiogroup" aria-label="Grading Company" style={{ display: "flex", border: "1px solid var(--color-dojo-stroke)", marginBottom: "18px" }}>
-          {(["RAW", "PSA"] as const).map((g) => {
-            const on = grader === g;
-            return (
-              <button
-                key={g}
-                type="button"
-                role="radio"
-                aria-checked={on}
-                onClick={() => onGraderChange(g)}
-                style={{
-                  flex: 1, padding: "11px 0", cursor: "pointer", border: "none",
-                  background: on ? "var(--color-dojo-gold)" : "var(--color-dojo-card)",
-                  color: on ? "var(--color-dojo-app)" : "var(--color-dojo-faint)",
-                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.14em",
-                }}
-              >
-                {g}
-              </button>
-            );
-          })}
+        <div style={{ marginBottom: "18px" }}>
+          <DojoSelect
+            ariaLabel="Grader"
+            testId="grader-select"
+            value={grader}
+            options={graderOptions}
+            onChange={onGraderChange}
+          />
         </div>
 
-        {/* CONDITION — RAW: Near mint / Lightly played / … ; PSA: Gem Mint 10 / … */}
+        {/* CONDITION — grades available for the selected grader (per-card). */}
         <div style={{ ...label, marginBottom: "8px" }}>Condition</div>
         <div style={{ marginBottom: "18px" }}>
           <DojoSelect

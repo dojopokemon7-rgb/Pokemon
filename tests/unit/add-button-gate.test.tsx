@@ -91,8 +91,8 @@ it("ADD TO COLLECTION opens the shared AddCardSheet (RAW/PSA grader + condition)
   // The shared sheet opens with the grader radiogroup + condition select.
   const dialog = await screen.findByRole("dialog", { name: /add card to portfolio/i });
   expect(dialog).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /RAW/i })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /PSA/i })).toBeTruthy();
-  // Condition select present (RAW conditions: Near mint / Lightly played / …).
+  // Grader is now a single dropdown (Raw + whatever companies the card has),
+  // plus the per-grader condition dropdown.
+  expect(screen.getByTestId("grader-select")).toBeTruthy();
   expect(screen.getByTestId("condition-select")).toBeTruthy();
 });
