@@ -123,3 +123,48 @@ export function aggregatePortfolio(
 
   return { marketValue, paid, realized, unrealized, unresolvedCount };
 }
+
+/**
+ * A raw collection lot as stored / returned by GET /collection — the SINGLE
+ * shape both the dashboard and portfolio views aggregate from. Mapping it to
+ * {@link aggregatePortfolio} here (one place) is what keeps the two views from
+ * ever disagreeing on the same card.
+ *
+ * IMPORTANT provenance (sell route): `soldPrice` is the GROSS TOTAL proceeds
+ * for the row's `quantity` (grossPerCopy × quantity), while `purchasePrice` is
+ * PER COPY. So a sold lot's grossPerCopy is `soldPrice / quantity` — multiplying
+ * `soldPrice` by quantity again (the old inline dashboard math) double-counts.
+ */
+export interface RawLot {
+  quantity: number;
+  purchasePrice: number | null;
+  marketPrice: number | null;
+  isSold?: boolean | null;
+  soldPrice?: number | null;
+}
+
+/**
+ * Aggregate portfolio stats straight from raw collection rows — the shared
+ * source of truth for BOTH the dashboard stat card and the portfolio summary.
+ * Splits active vs sold, derives per-copy gross from the stored gross total,
+ * and defers all honesty rules (null basis never 0, unresolved excluded +
+ * counted) to {@link aggregatePortfolio}.
+ */
+export function statsFromLots(lots: readonly RawLot[]): PortfolioStats {
+  const active: ActiveLot[] = [];
+  const sold: SoldLot[] = [];
+  for (const lot of lots) {
+    if (lot.isSold) {
+      // soldPrice is the gross TOTAL for lot.quantity → per-copy = total / qty.
+      const grossPerCopy = lot.quantity > 0 ? (lot.soldPrice ?? 0) / lot.quantity : 0;
+      sold.push({ qty: lot.quantity, grossPerCopy, basisPerCopy: lot.purchasePrice });
+    } else {
+      active.push({
+        qty: lot.quantity,
+        marketPerCopy: lot.marketPrice,
+        basisPerCopy: lot.purchasePrice,
+      });
+    }
+  }
+  return aggregatePortfolio(active, sold);
+}

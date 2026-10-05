@@ -4,6 +4,7 @@ import {
   realizedPnL,
   unrealizedPnL,
   aggregatePortfolio,
+  statsFromLots,
 } from "@/lib/utils/portfolio-accounting";
 
 /**
@@ -59,5 +60,63 @@ describe("aggregatePortfolio", () => {
     expect(stats.realized).toBe(50);
     expect(stats.unrealized).toBe(40); // only the lot with both resolved
     expect(stats.unresolvedCount).toBe(2); // 1 active + 1 sold
+  });
+});
+
+/**
+ * statsFromLots — the SOURCE-OF-TRUTH adapter the dashboard AND the portfolio
+ * page both call, so the two views can never show a different value for the
+ * same card. These lock the exact bugs the old inline dashboard math had.
+ */
+describe("statsFromLots (shared dashboard + portfolio aggregation)", () => {
+  it("market value sums ACTIVE lots only; sold lots excluded", () => {
+    const s = statsFromLots([
+      { quantity: 2, purchasePrice: 10, marketPrice: 25, isSold: false },
+      // sold lot: soldPrice is the GROSS TOTAL for qty 3 (gross-per-copy × 3)
+      { quantity: 3, purchasePrice: 10, marketPrice: 25, isSold: true, soldPrice: 90 },
+    ]);
+    expect(s.marketValue).toBe(50); // 25 × 2 active only (sold 3 excluded)
+    expect(s.paid).toBe(20); // active cost basis 10 × 2 only
+  });
+
+  it("realized uses soldPrice as a GROSS TOTAL — never re-multiplied by quantity", () => {
+    // soldPrice 90 is already the total for 3 copies; basis 10/copy × 3 = 30.
+    // Correct realized = 90 − 30 = 60. The old inline bug did (90−10)×3 = 240.
+    const s = statsFromLots([
+      { quantity: 3, purchasePrice: 10, marketPrice: null, isSold: true, soldPrice: 90 },
+    ]);
+    expect(s.realized).toBe(60);
+  });
+
+  it("null cost basis is NOT counted as $0 paid — excluded and counted unresolved", () => {
+    const s = statsFromLots([
+      { quantity: 1, purchasePrice: null, marketPrice: 40, isSold: false },
+      { quantity: 2, purchasePrice: 15, marketPrice: 40, isSold: false },
+    ]);
+    expect(s.paid).toBe(30); // only the resolved lot (15 × 2); null NOT 0
+    expect(s.marketValue).toBe(120); // market known for both (40 × 3)
+    expect(s.unresolvedCount).toBe(1); // the null-basis lot
+    expect(s.unrealized).toBe(50); // only the both-resolved lot: (40−15)×2
+  });
+
+  it("null marketPrice on an active lot is NOT counted as $0 value", () => {
+    const s = statsFromLots([
+      { quantity: 2, purchasePrice: 10, marketPrice: null, isSold: false },
+    ]);
+    expect(s.marketValue).toBe(0); // no fabricated market value
+    expect(s.unrealized).toBe(0); // unresolved (market unknown) → not summed
+    // Basis IS resolved (10); only a null COST BASIS marks a lot unresolved,
+    // so a known-cost / unknown-market lot is honestly excluded from value
+    // without being flagged as an unresolved-cost-basis lot.
+    expect(s.unresolvedCount).toBe(0);
+  });
+
+  it("partitioning by collection then summing equals the single-pass total (no double count)", () => {
+    const collA = [{ quantity: 1, purchasePrice: 5, marketPrice: 12, isSold: false }];
+    const collB = [{ quantity: 2, purchasePrice: 8, marketPrice: 20, isSold: false }];
+    const perColl = statsFromLots(collA).marketValue + statsFromLots(collB).marketValue;
+    const whole = statsFromLots([...collA, ...collB]).marketValue;
+    expect(perColl).toBe(whole);
+    expect(whole).toBe(52); // 12 + 20×2 — each lot counted exactly once
   });
 });

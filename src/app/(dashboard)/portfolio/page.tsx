@@ -23,6 +23,7 @@ import { Toast } from "@/components/Toast";
 import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
 import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
+import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 
 // ── Real collection item shape ──
 interface CollectionItem {
@@ -804,30 +805,23 @@ export default function PortfolioPage() {
     });
   }, [consolidatedItems, wantAsItems, query, cardType, selectedColl]);
 
-  // Overall Portfolio Stats (Collectr feature)
-  const portfolioStats = useMemo(() => {
-    let marketValue = 0;
-    let paid = 0;
-    let realized = 0;
-
-    for (const item of rawItems) {
-      if (item.isSold) {
-        // soldPrice is the GROSS TOTAL proceeds for this sold row's quantity
-        // (sell route stores gross-per-copy × quantity). Realized = proceeds −
-        // allocated cost basis (purchasePrice is per-copy). Skip when the cost
-        // basis is UNRESOLVED (null) — never treat a missing basis as 0.
-        if (item.purchasePrice != null) {
-          realized += (item.soldPrice ?? 0) - item.purchasePrice * item.quantity;
-        }
-      } else {
-        marketValue += (item.card.marketPrice ?? 0) * item.quantity;
-        if (item.purchasePrice != null) paid += item.purchasePrice * item.quantity;
-      }
-    }
-
-    const unrealized = marketValue - paid;
-    return { marketValue, paid, realized, unrealized };
-  }, [rawItems]);
+  // Overall Portfolio Stats (Collectr feature) — SOURCE OF TRUTH: the SAME
+  // pure `statsFromLots` helper the dashboard uses, so a card is valued
+  // identically in both views. Honesty rules (null cost basis never 0,
+  // unresolved lots excluded from the sums and counted) live in the helper.
+  const portfolioStats = useMemo(
+    () =>
+      statsFromLots(
+        rawItems.map((i) => ({
+          quantity: i.quantity,
+          purchasePrice: i.purchasePrice,
+          marketPrice: i.card.marketPrice,
+          isSold: i.isSold,
+          soldPrice: i.soldPrice,
+        }))
+      ),
+    [rawItems]
+  );
 
   // Portfolio value chart points — real stored history only (null gaps dropped,
   // never a fabricated 0). Needs >=2 real points to draw an honest line.

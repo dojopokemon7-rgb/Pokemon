@@ -29,6 +29,7 @@ import { useDelayedFlag } from "@/components/useDelayedFlag";
 import { toHistoryToken, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { computeOverallChange } from "@/lib/utils/overall-change";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
+import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -481,26 +482,28 @@ export default function DashboardClient({
   // High value tracker (#2D7FF9 Blue), followed by palette colors.
   const COLL_COLORS = ["#E9B43B", "#0AC27E", "#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A", "#00C9A7", "#845EC2"];
   const collOptions = useMemo(() => {
-    const activeItems = (collectionData ?? []).filter((i) => !i.isSold);
-    const soldItems = (collectionData ?? []).filter((i) => i.isSold);
-
-    // Val maps per collection
-    const mValMap = new Map<string, number>();
-    const paidMap = new Map<string, number>();
+    // Group every lot by its collection bucket, then aggregate EACH bucket
+    // through the SAME `statsFromLots` helper the portfolio summary uses — so
+    // marketValue/paid/realized are computed identically in both views and can
+    // never diverge. The helper owns the honesty rules (null cost basis never
+    // silently 0; soldPrice is a gross TOTAL, never re-multiplied by quantity).
+    const byKey = new Map<string, CollectionItem[]>();
     const countMap = new Map<string, number>();
-    for (const item of activeItems) {
+    for (const item of collectionData ?? []) {
       const key = item.collectionId ?? "__uncat__";
-      mValMap.set(key, (mValMap.get(key) ?? 0) + (item.card.marketPrice ?? 0) * item.quantity);
-      paidMap.set(key, (paidMap.get(key) ?? 0) + (item.purchasePrice ?? 0) * item.quantity);
-      countMap.set(key, (countMap.get(key) ?? 0) + item.quantity);
+      (byKey.get(key) ?? byKey.set(key, []).get(key)!).push(item);
+      if (!item.isSold) countMap.set(key, (countMap.get(key) ?? 0) + item.quantity);
     }
-
-    const realMap = new Map<string, number>();
-    for (const item of soldItems) {
-      const key = item.collectionId ?? "__uncat__";
-      const profit = ((item.soldPrice ?? 0) - (item.purchasePrice ?? 0)) * item.quantity;
-      realMap.set(key, (realMap.get(key) ?? 0) + profit);
-    }
+    const statsFor = (key: string) =>
+      statsFromLots(
+        (byKey.get(key) ?? []).map((i) => ({
+          quantity: i.quantity,
+          purchasePrice: i.purchasePrice,
+          marketPrice: i.card.marketPrice,
+          isSold: i.isSold,
+          soldPrice: i.soldPrice,
+        }))
+      );
 
     const opts: {
       id: string;
@@ -517,13 +520,14 @@ export default function DashboardClient({
     // the SAME helper the SSR page uses (defaultCollectionIds stays byte-identical).
     if (shouldShowUncategorized(collectionData ?? [])) {
       const hasNamedMain = collectionList.some((c) => isMainCollectionName(c.name));
+      const s = statsFor("__uncat__");
       opts.push({
         id: "__uncat__",
         name: hasNamedMain ? "Uncategorized" : "Main",
         color: "#E9B43B", // Gold for Main
-        marketValue: mValMap.get("__uncat__") ?? 0,
-        paid: paidMap.get("__uncat__") ?? 0,
-        realized: realMap.get("__uncat__") ?? 0,
+        marketValue: s.marketValue,
+        paid: s.paid,
+        realized: s.realized,
         cardCount: countMap.get("__uncat__") ?? 0,
       });
     }
@@ -538,13 +542,14 @@ export default function DashboardClient({
     // Named collections from database
     const namedPalette = ["#2D7FF9", "#D400FF", "#EE9A1F", "#FF5A5A", "#00C9A7", "#845EC2"];
     collectionList.forEach((c, i) => {
+      const s = statsFor(c.id);
       opts.push({
         id: c.id,
         name: c.name,
         color: namedPalette[i % namedPalette.length],
-        marketValue: mValMap.get(c.id) ?? 0,
-        paid: paidMap.get(c.id) ?? 0,
-        realized: realMap.get(c.id) ?? 0,
+        marketValue: s.marketValue,
+        paid: s.paid,
+        realized: s.realized,
         cardCount: countMap.get(c.id) ?? 0,
       });
     });
@@ -588,18 +593,19 @@ export default function DashboardClient({
   // ── Computed stats from REAL data ────────────────────────────────
   const stats = useMemo(() => {
     const items = (collectionData ?? []).filter((i) => !i.isSold);
-    const soldItems = (collectionData ?? []).filter((i) => i.isSold);
 
-    const marketValue = items.reduce(
-      (sum, i) => sum + (i.card.marketPrice ?? 0) * i.quantity, 0
+    // SOURCE OF TRUTH: the shared `statsFromLots` helper (same one the portfolio
+    // page + per-collection collOptions use). Honest null-basis + gross-total
+    // handling lives there — no inline math that could drift from the portfolio.
+    const { marketValue, paid, realized, unrealized } = statsFromLots(
+      (collectionData ?? []).map((i) => ({
+        quantity: i.quantity,
+        purchasePrice: i.purchasePrice,
+        marketPrice: i.card.marketPrice,
+        isSold: i.isSold,
+        soldPrice: i.soldPrice,
+      }))
     );
-    const paid = items.reduce(
-      (sum, i) => sum + (i.purchasePrice ?? 0) * i.quantity, 0
-    );
-    const realized = soldItems.reduce(
-      (sum, i) => sum + ((i.soldPrice ?? 0) - (i.purchasePrice ?? 0)) * i.quantity, 0
-    );
-    const unrealized = marketValue - paid;
 
     // Most valuable: top 5 by value (REAL cards, mocked deltas, formatted like Image 1)
     const mostValuable = [...items]
