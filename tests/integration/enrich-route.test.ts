@@ -58,6 +58,13 @@ function enrichRequest(externalId: string): [Request, { params: Promise<{ id: st
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Clear the Scrydex flags BEFORE each test so the suite is deterministic
+  // regardless of ambient env. The project's .env now sets
+  // SCRYDEX_ONVIEW_ENABLED=true (prod on-view enrichment), which would leak into
+  // the first test and make the "allowance OFF" case (a) wrongly fall through
+  // the short-circuit. Each test opts IN to the flags it needs.
+  delete process.env.SCRYDEX_ONVIEW_ENABLED;
+  delete process.env.SCRYDEX_LIVE_CREDITS_APPROVED;
 });
 
 afterEach(() => {
