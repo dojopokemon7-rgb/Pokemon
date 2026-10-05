@@ -464,59 +464,72 @@ export async function pullAndStoreScrydexHistory(
   // --- Per-grade GRADED history capture ------------------------------------
   // For each requested (company, grade), one extra credit-consuming call. The
   // single top-of-function gate already covered these; no further gate here.
-  let gradedStored = 0;
-  for (const g of grades) {
-    const gradedDays = await fetchScrydexPriceHistory(card.scrydexId, card.game, {
-      company: g.company,
-      grade: g.grade,
-      days: filters?.days,
-    });
-    if (!gradedDays) continue; // honest gap — a no-history (company,grade) stores nothing
+  //
+  // The per-grade fetches are INDEPENDENT, so they run CONCURRENTLY via
+  // Promise.all (fetch + map-to-rows per grade), collapsing N sequential
+  // Scrydex round-trips into ~1 of wall time — the real durability fix for the
+  // on-view enrich serverless timeout (the sequential version was ~5 round-trips
+  // and got killed mid-pull on Vercel). DB writes stay AFTER the fetches: a
+  // plain createMany per grade (PgBouncer-safe — NOT an interactive $transaction).
+  const gradedRowsPerGrade = await Promise.all(
+    grades.map(async (g) => {
+      const gradedDays = await fetchScrydexPriceHistory(card.scrydexId, card.game, {
+        company: g.company,
+        grade: g.grade,
+        days: filters?.days,
+      });
+      if (!gradedDays) return []; // honest gap — a no-history (company,grade) stores nothing
 
-    const gradedRows: Array<{
-      cardId: string;
-      priceMarket: number | null;
-      priceLow: number | null;
-      source: string;
-      currency: string;
-      sourceCurrency: string;
-      variant: string;
-      condition: string;
-      company: string;
-      grade: string;
-      type: string;
-      recordedAt: Date;
-    }> = [];
-    for (const day of gradedDays) {
-      const recordedAt = parseHistoryDate(day.date);
-      if (!recordedAt) continue; // skip unparseable dates
-      for (const p of day.prices) {
-        const market = typeof p.market === "number" ? p.market : null;
-        const low = typeof p.low === "number" ? p.low : null;
-        if (market == null && low == null) continue; // honest gap, never $0
-        const cur = p.currency || "USD";
-        // ponytail: the REQUESTED company/grade is STAMPED onto the stored row
-        // (not read from the response) because Scrydex's graded labelling in the
-        // price_history RESPONSE is UNCONFIRMED (Audit L2). Ceiling: if a future
-        // audit confirms the response carries trustworthy company/grade, read
-        // them from `p.company`/`p.grade` instead. Company is uppercased to match
-        // the CurrentPrice vocabulary; grade is kept verbatim (incl "8.5"/"9Q").
-        gradedRows.push({
-          cardId: card.id,
-          priceMarket: market,
-          priceLow: low,
-          source: "scrydex",
-          currency: cur,
-          sourceCurrency: cur,
-          variant: p.variant || "normal",
-          condition: "GRADED",
-          company: g.company.toUpperCase(),
-          grade: g.grade,
-          type: "graded",
-          recordedAt,
-        });
+      const gradedRows: Array<{
+        cardId: string;
+        priceMarket: number | null;
+        priceLow: number | null;
+        source: string;
+        currency: string;
+        sourceCurrency: string;
+        variant: string;
+        condition: string;
+        company: string;
+        grade: string;
+        type: string;
+        recordedAt: Date;
+      }> = [];
+      for (const day of gradedDays) {
+        const recordedAt = parseHistoryDate(day.date);
+        if (!recordedAt) continue; // skip unparseable dates
+        for (const p of day.prices) {
+          const market = typeof p.market === "number" ? p.market : null;
+          const low = typeof p.low === "number" ? p.low : null;
+          if (market == null && low == null) continue; // honest gap, never $0
+          const cur = p.currency || "USD";
+          // ponytail: the REQUESTED company/grade is STAMPED onto the stored row
+          // (not read from the response) because Scrydex's graded labelling in the
+          // price_history RESPONSE is UNCONFIRMED (Audit L2). Ceiling: if a future
+          // audit confirms the response carries trustworthy company/grade, read
+          // them from `p.company`/`p.grade` instead. Company is uppercased to match
+          // the CurrentPrice vocabulary; grade is kept verbatim (incl "8.5"/"9Q").
+          gradedRows.push({
+            cardId: card.id,
+            priceMarket: market,
+            priceLow: low,
+            source: "scrydex",
+            currency: cur,
+            sourceCurrency: cur,
+            variant: p.variant || "normal",
+            condition: "GRADED",
+            company: g.company.toUpperCase(),
+            grade: g.grade,
+            type: "graded",
+            recordedAt,
+          });
+        }
       }
-    }
+      return gradedRows;
+    })
+  );
+
+  let gradedStored = 0;
+  for (const gradedRows of gradedRowsPerGrade) {
     if (gradedRows.length > 0) {
       await prisma.pricingHistory.createMany({ data: gradedRows, skipDuplicates: true });
       gradedStored += gradedRows.length;

@@ -30,6 +30,12 @@ import {
 } from "@/lib/services/scrydex-pricing.service";
 import { getStoredPopulationReport } from "@/lib/services/population.service";
 
+// On-view enrich makes several SEQUENTIAL Scrydex round-trips (raw + graded
+// price_history + population). The default serverless timeout (~10s Hobby)
+// truncates the slow history write mid-pull, so give it an explicit budget —
+// mirrors cron/sync-cards/route.ts. (Pro honours 60; Hobby caps at 60.)
+export const maxDuration = 60;
+
 // On-view history is limited to this small, high-signal grade set (plus raw).
 // Each (company,grade) is one extra Scrydex call, so we only pull the grades
 // the card ACTUALLY has stored — never a speculative fan-out.
@@ -80,6 +86,10 @@ export async function POST(
   // the card, never a background job). Refresh BOTH history and population so
   // the weekly spend keeps everything current together. Each pull is fail-open
   // (a ScrydexCreditsNotApproved or any throw must NOT 5xx — AGENTS.md rule 7).
+  // Surfaced in the 200 body so a swallowed/truncated write shows as stored:0
+  // instead of being masked by a bare `enriched:true` (fail-open contract kept).
+  let historyStored = 0;
+  let populationStored = false;
   if (card.scrydexId) {
     // Only the card's actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades.
     const gradedRows = await prisma.currentPrice.findMany({
@@ -97,18 +107,19 @@ export async function POST(
       grades.push({ company, grade });
     }
     try {
-      await pullAndStoreScrydexHistory(
+      const r = await pullAndStoreScrydexHistory(
         { id: card.id, game: card.game, scrydexId: card.scrydexId },
         { days: 365, grades }
       );
+      historyStored = r.stored;
     } catch {
-      // fail-open — never a 5xx (gate DENY / transient fault).
+      // fail-open — never a 5xx (gate DENY / transient fault). stored stays 0.
     }
   }
 
   {
     try {
-      await pullAndStorePopulation({
+      const r = await pullAndStorePopulation({
         id: card.id,
         game: card.game,
         scrydexId: card.scrydexId,
@@ -116,8 +127,9 @@ export async function POST(
         number: card.number,
         setName: card.set?.name ?? null,
       });
+      populationStored = r.stored;
     } catch {
-      // fail-open — never a 5xx.
+      // fail-open — never a 5xx. stored stays false.
     }
   }
 
@@ -129,5 +141,8 @@ export async function POST(
     // Redis optional — a cache fault never fails the request.
   }
 
-  return NextResponse.json({ enriched: true }, { status: 200 });
+  return NextResponse.json(
+    { enriched: true, history: { stored: historyStored }, population: { stored: populationStored } },
+    { status: 200 }
+  );
 }
