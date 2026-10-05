@@ -18,6 +18,10 @@
  *   - `graded`   Optional (F-06). `"graded"` | `"ungraded"` (rarity-based).
  *   - `minPrice` Optional (F-06). Min marketPrice (USD).
  *   - `maxPrice` Optional (F-06). Max marketPrice (USD).
+ *   - `hasPrice` Optional. `"true"`/`"1"` → keep ONLY cards that actually
+ *                have a displayable price (NM/normal CurrentPrice OR
+ *                Card.marketPrice — the SAME definition the tile uses).
+ *                Omitted/falsey = unchanged (unpriced cards still appear).
  *
  * Response (200):
  * ```json
@@ -83,6 +87,12 @@ const SearchQuerySchema = z.object({
   // non-numeric/negative values are rejected.
   minPrice: z.coerce.number().min(0).optional(),
   maxPrice: z.coerce.number().min(0).optional(),
+  // Opt-in "has price data" filter. "true"/"1" → only cards with a
+  // displayable price; omitted → unchanged (unpriced cards still show).
+  // Parsed as a string flag (like `graded`) rather than z.coerce.boolean
+  // (which treats any non-empty string as true), so only the explicit
+  // truthy values turn it on.
+  hasPrice: z.enum(["true", "1"]).optional(),
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -101,6 +111,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     graded: searchParams.get("graded") ?? undefined,
     minPrice: searchParams.get("minPrice") ?? undefined,
     maxPrice: searchParams.get("maxPrice") ?? undefined,
+    hasPrice: searchParams.get("hasPrice") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -115,7 +126,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query, set, rarity, graded, minPrice, maxPrice } = parsed.data;
+  const { game, query, set, rarity, graded, minPrice, maxPrice, hasPrice } = parsed.data;
   const sort = parsed.data.sort ?? "trending";
   const relevance = sort === "trending";
 
@@ -133,6 +144,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     graded,
     minPrice,
     maxPrice,
+    hasPrice,
   });
   const cached = await cacheGetJson<{ cards: unknown[]; source: string }>(cacheKey);
   if (cached) {
@@ -179,6 +191,30 @@ export async function GET(request: Request): Promise<NextResponse> {
         }
       : {};
 
+  // "Has price data" filter: keep ONLY cards that have a DISPLAYABLE price.
+  // This OR MUST mirror the tile's `currentPrices?.[0]?.priceMarket ??
+  // marketPrice ?? null` definition below exactly — a card shown with a
+  // price must never be hidden, and a card kept here must always render a
+  // price. Wrapped in its OWN nested `AND` so it composes with (never
+  // clobbers) the sibling `graded` top-level OR and the relevance path's
+  // `AND:[{OR:or}]`, which all spread into `baseWhere` in find().
+  const hasPriceFilter: Prisma.CardWhereInput = hasPrice
+    ? {
+        AND: [
+          {
+            OR: [
+              { marketPrice: { not: null } },
+              {
+                currentPrices: {
+                  some: { variant: "normal", condition: "NM", priceMarket: { not: null } },
+                },
+              },
+            ],
+          },
+        ],
+      }
+    : {};
+
   // Multi-field query match: name / card number / set name / set code
   // (the externalId encodes the code, e.g. "pokemon-sv3") / keyword tags.
   // Only applied when there's a query; an empty query lists the game's
@@ -209,11 +245,30 @@ export async function GET(request: Request): Promise<NextResponse> {
     ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
     // F-06: price range.
     ...priceFilter,
+    // "Has price data" — nested AND so it never collides with the graded OR.
+    ...hasPriceFilter,
   };
+
+  // Prisma's `AND` is `T | T[] | undefined`; normalize to an array so the
+  // merge below can concat baseWhere's and extra's clauses uniformly.
+  const toArray = (
+    v: Prisma.CardWhereInput["AND"]
+  ): Prisma.CardWhereInput[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
   const find = (extra: Prisma.CardWhereInput, take: number, orderBy: Prisma.CardOrderByWithRelationInput[]) =>
     prisma.card.findMany({
-      where: { ...baseWhere, ...extra },
+      // Merge `AND` arrays instead of letting the spread overwrite: both
+      // baseWhere (hasPrice) and the relevance/sort path (`extra.AND:[{OR}]`)
+      // can carry `AND`, and a plain `{...baseWhere, ...extra}` would drop
+      // whichever came first. Concatenating keeps BOTH clauses (hasPrice AND
+      // the query OR) so neither filter is silently weakened.
+      where: {
+        ...baseWhere,
+        ...extra,
+        ...((baseWhere.AND || extra.AND)
+          ? { AND: [...toArray(baseWhere.AND), ...toArray(extra.AND)] }
+          : {}),
+      },
       take,
       orderBy,
       select: {

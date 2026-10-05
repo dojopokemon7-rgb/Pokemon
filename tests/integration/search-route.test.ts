@@ -105,6 +105,58 @@ describe("GET /api/cards/search", () => {
   });
 });
 
+describe("hasPrice filter", () => {
+  // The exact "has displayable price" OR the WHERE clause must encode. This
+  // MUST stay identical to the route's tile-price definition
+  // (`currentPrices?.[0]?.priceMarket ?? marketPrice ?? null`): NM/normal
+  // CurrentPrice OR Card.marketPrice. If the WHERE and the display diverge,
+  // this literal stops matching and the test fails.
+  const PRICE_OR = [
+    { marketPrice: { not: null } },
+    { currentPrices: { some: { variant: "normal", condition: "NM", priceMarket: { not: null } } } },
+  ];
+
+  it("adds the price OR (matching the display definition) to every query when ON", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // no name hit → stage 2 recall too
+    await call("game=pokemon&query=charzard&hasPrice=true");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2); // stage 1 + stage 2 recall
+    for (const w of ws) {
+      // Folded in as its OWN nested AND so it never clobbers the sibling
+      // graded OR or the relevance AND:[{OR:or}].
+      const and = w.AND as Array<Record<string, unknown>> | undefined;
+      expect(and).toBeDefined();
+      expect(and).toEqual(expect.arrayContaining([{ OR: PRICE_OR }]));
+    }
+  });
+
+  it("does NOT add the price OR when OFF (default) — unpriced cards still returned", async () => {
+    // A card with NO marketPrice and NO NM currentPrice is still returned.
+    prismaMock.card.findMany.mockResolvedValue([
+      { ...row("unpriced-1", "Caterpie", "10", "Base", null), currentPrices: [] },
+    ]);
+    const body = await (await call("game=pokemon&query=caterpie")).json();
+    expect(body.cards.map((c: { id: string }) => c.id)).toContain("unpriced-1");
+    for (const w of wheres()) {
+      const and = (w.AND as Array<Record<string, unknown>> | undefined) ?? [];
+      expect(and).not.toContainEqual({ OR: PRICE_OR });
+    }
+  });
+
+  it("maps an NM currentPrice with null marketPrice to a visible price (the kept-when-ON case)", async () => {
+    // This is the card the WHERE's second OR branch keeps: null marketPrice
+    // but a real NM CurrentPrice. The tile must then SHOW that NM price, so a
+    // kept card never renders '—'. Pins the two definitions together.
+    prismaMock.card.findMany.mockResolvedValue([
+      { ...row("nm-only", "Perfect Order", "64", "OP01", null), currentPrices: [{ priceMarket: 12.5 }] },
+    ]);
+    const body = await (await call("game=onepiece&query=perfect&hasPrice=true")).json();
+    const card = body.cards.find((c: { id: string }) => c.id === "nm-only");
+    expect(card).toBeDefined();
+    expect(card.marketPrice).toBe(12.5);
+  });
+});
+
 describe("Typesense flag", () => {
   it("is never called when disabled (default)", async () => {
     await call("game=pokemon&query=charizard");

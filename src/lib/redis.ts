@@ -281,6 +281,7 @@ export const RedisKeys = {
     graded?: string;
     minPrice?: number;
     maxPrice?: number;
+    hasPrice?: string;
   }): string => {
     // Stable, order-independent key=value join; query lowercased to match the
     // existing lowercase search convention so ?query=Char and ?query=char hit
@@ -294,6 +295,7 @@ export const RedisKeys = {
       `graded=${params.graded ?? ""}`,
       `min=${params.minPrice ?? ""}`,
       `max=${params.maxPrice ?? ""}`,
+      `hasprice=${params.hasPrice ?? ""}`,
     ];
     return `card:searchq:${parts.join("|")}`;
   },

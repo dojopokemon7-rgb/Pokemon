@@ -999,6 +999,9 @@ function SearchPageInner() {
   const gradedFilter = searchParams.get("graded") ?? ""; // "" | "graded" | "ungraded"
   const minPriceFilter = searchParams.get("minPrice") ?? "";
   const maxPriceFilter = searchParams.get("maxPrice") ?? "";
+  // Opt-in "has price data" toggle. "" (default) = OFF (unpriced cards still
+  // show); "true" = ON (API hides cards with no displayable price).
+  const hasPriceFilter = searchParams.get("hasPrice") ?? "";
 
   // Sort state — persisted only in memory. Query keys below include
   // `sort` so switching the filter sheet triggers a refetch without a
@@ -1113,7 +1116,7 @@ function SearchPageInner() {
   })();
 
   const { data, isFetching, isLoading: searchLoading, isError } = useQuery<SearchApiResponse>({
-    queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter],
+    queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter],
     queryFn: async () => {
       // Compose the optional F-06 filter params only when set.
       // "trending" was never a real search sort: omit it so the API ranks by relevance.
@@ -1124,6 +1127,7 @@ function SearchPageInner() {
       if (gradedFilter) params.set("graded", gradedFilter);
       if (minPriceFilter) params.set("minPrice", minPriceFilter);
       if (maxPriceFilter) params.set("maxPrice", maxPriceFilter);
+      if (hasPriceFilter) params.set("hasPrice", hasPriceFilter);
       const res = await fetch(`/api/cards/search?${params.toString()}`);
       if (!res.ok) {
         if (res.status === 404) return { cards: [] };
@@ -1226,7 +1230,7 @@ function SearchPageInner() {
   // F-06: apply one or more filter changes at once, preserving the query,
   // game, and every other active filter. Pass "" to clear a given filter.
   const applyFilters = (
-    overrides: Partial<{ set: string; rarity: string; graded: string; minPrice: string; maxPrice: string }>
+    overrides: Partial<{ set: string; rarity: string; graded: string; minPrice: string; maxPrice: string; hasPrice: string }>
   ) => {
     const current = {
       set: setFilter,
@@ -1234,6 +1238,7 @@ function SearchPageInner() {
       graded: gradedFilter,
       minPrice: minPriceFilter,
       maxPrice: maxPriceFilter,
+      hasPrice: hasPriceFilter,
       ...overrides,
     };
     const params = new URLSearchParams();
@@ -1612,6 +1617,28 @@ function SearchPageInner() {
                     style={{ minWidth: 0 }}
                   />
                 </div>
+              </div>
+
+              {/* "Has price data" — opt-in toggle. OFF (default) leaves
+                  results unchanged (unpriced cards still show); ON drives
+                  ?hasPrice=true so the API hides cards with no displayable
+                  price. URL-driven via applyFilters like the other filters. */}
+              <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
+                <label className="dojo-label" htmlFor="has-price-filter">Price data</label>
+                <label
+                  htmlFor="has-price-filter"
+                  style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", padding: "8px 0", color: "var(--color-dojo-ink)", fontSize: "13px" }}
+                >
+                  <input
+                    id="has-price-filter"
+                    data-testid="has-price-filter"
+                    type="checkbox"
+                    checked={hasPriceFilter === "true"}
+                    onChange={(e) => applyFilters({ hasPrice: e.target.checked ? "true" : "" })}
+                    style={{ width: "16px", height: "16px", accentColor: "var(--color-dojo-gold)" }}
+                  />
+                  Has price data
+                </label>
               </div>
             </div>
 
