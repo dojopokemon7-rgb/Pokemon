@@ -122,7 +122,12 @@ const AddCardSchema = z.object({
   imageUrl: z.string().url().optional().or(z.literal("")), // Allow empty string
   rarity: z.string().optional(),
   types: z.array(z.string()).optional(),
-  marketPrice: z.number().nullable().optional(),
+  // SECURITY: `marketPrice` is intentionally NOT accepted here. A client-
+  // supplied catalog price must never reach a shared Card / pricing_history row
+  // (price fabrication / shared-catalog override — RULE 2). The real price
+  // comes only from a server-side Scrydex pull. The Add sheet still sends a
+  // `marketPrice` field; Zod strips it (object is non-strict), so this is a
+  // no-op for the client build — it only means we never WRITE it anywhere.
   quantity: z.number().int().min(1).max(999).default(1),
   isFoil: z.boolean().default(false),
   condition: z.string().trim().optional(),
@@ -262,19 +267,18 @@ export async function POST(request: Request): Promise<NextResponse> {
       });
 
       if (card) {
-        card = await prisma.card.update({
-          where: { id: card.id },
-          data: {
-            name: item.name,
-            ...(item.rarity ? { rarity: item.rarity } : {}),
-            ...(item.types ? { types: item.types } : {}),
-            ...(item.imageUrl ? { imageUrl: item.imageUrl } : {}),
-            ...(item.marketPrice != null
-              ? { marketPrice: item.marketPrice, lastPricedAt: new Date() }
-              : {}),
-          },
-        });
+        // SECURITY (price fabrication / shared-catalog override): an ADD must
+        // NEVER mutate a SHARED catalog row from user input. Card.marketPrice,
+        // name, rarity, types, imageUrl are GLOBAL fields every user sees — a
+        // user adding an existing catalog card previously overwrote them with
+        // their own payload (poisoning search/trending/other dashboards, and
+        // RULE 2 fabricating prices). We now reuse the existing `card` as-is
+        // for the FK; its real price comes only from a Scrydex pull, never a
+        // client add. (The user's own cost basis is kept on userCollection.)
       } else {
+        // A genuinely new user-added card (not in the catalog) legitimately
+        // needs metadata, but its PRICE must be null (RULE 2 — never fabricate;
+        // a real price arrives later from a Scrydex pull, never client input).
         card = await prisma.card.create({
           data: {
             externalId: item.externalId,
@@ -283,8 +287,8 @@ export async function POST(request: Request): Promise<NextResponse> {
             rarity: item.rarity ?? "Unknown",
             types: item.types ?? [],
             imageUrl: item.imageUrl ?? null,
-            marketPrice: item.marketPrice ?? null,
-            lastPricedAt: item.marketPrice != null ? new Date() : null,
+            marketPrice: null,
+            lastPricedAt: null,
             setId: cardSet.id,
           },
         });
@@ -294,7 +298,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       // SNAPSHOT the current price at add-time. Record the SOURCE + CURRENCY +
       // attempt timestamp so an unresolved basis (null) is distinguishable from
       // "never tried" and never silently becomes 0. We never fabricate a cost.
-      const snapshotPrice = item.marketPrice ?? card.marketPrice ?? null;
+      // SECURITY: the snapshot fallback uses the REAL catalog price only — a
+      // user-supplied item.marketPrice must not set even the user's own basis
+      // ambiently (an EXPLICIT item.purchasePrice below is their own cost record
+      // and is still honored).
+      const snapshotPrice = card.marketPrice ?? null;
       let purchasePrice: number | null;
       let costBasisSource: string | null;
       if (item.purchasePrice != null) {
@@ -419,7 +427,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       // added (the collection/history aggregation sums all sources per day).
       // Best-effort: wrapped so a snapshot failure NEVER fails the add (NFR-4).
       // A null/zero price writes NO row — never a fabricated $0 point (NFR-2).
-      const addPrice = item.marketPrice ?? card.marketPrice;
+      // SECURITY: this is a write to the SHARED pricing_history (the chart every
+      // user sees) — the point MUST reflect the REAL catalog price at add time,
+      // never a user-supplied item.marketPrice (price fabrication). If the real
+      // price is null, no row is written (existing behavior).
+      const addPrice = card.marketPrice;
       if (addPrice != null && addPrice > 0) {
         try {
           await prisma.pricingHistory.createMany({
