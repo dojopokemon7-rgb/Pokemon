@@ -32,7 +32,9 @@ const globalForRedis = globalThis as unknown as {
 };
 
 function createRedisClient(): Redis {
-  const redisUrl = process.env.REDIS_URL;
+  // STORAGE_REDIS_URL is the name Vercel's Upstash/Redis integration auto-injects;
+  // REDIS_URL is what local/Docker use. Accept either so the same code runs in both.
+  const redisUrl = process.env.REDIS_URL ?? process.env.STORAGE_REDIS_URL;
 
   if (!redisUrl) {
     throw new Error(
