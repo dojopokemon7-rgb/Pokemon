@@ -10,9 +10,17 @@ import Link from "next/link";
 import {
   getPlatformStats,
   getRecentPlatformActivity,
+  getUserGrowthSeries,
+  getCardsAddedSeries,
+  getTopCollectedCards,
   type PlatformActivityItem,
 } from "@/lib/services/admin-metrics";
 import { formatCurrency, formatRelative } from "@/lib/utils/format";
+import {
+  UserGrowthChart,
+  CardsAddedChart,
+  TopCollectedCardsChart,
+} from "./_components/AnalyticsCharts";
 
 interface Stat {
   label: string;
@@ -22,10 +30,14 @@ interface Stat {
 }
 
 export default async function AdminOverviewPage() {
-  const [stats, activity] = await Promise.all([
-    getPlatformStats(),
-    getRecentPlatformActivity(10),
-  ]);
+  const [stats, activity, userGrowth, cardsAdded, topCollected] =
+    await Promise.all([
+      getPlatformStats(),
+      getRecentPlatformActivity(10),
+      getUserGrowthSeries(),
+      getCardsAddedSeries(),
+      getTopCollectedCards(10),
+    ]);
 
   const financial: readonly Stat[] = [
     {
@@ -93,6 +105,19 @@ export default async function AdminOverviewPage() {
         {activityStats.map((s) => (
           <StatCard key={s.label} stat={s} />
         ))}
+      </section>
+
+      {/* ── Analytics (real time-series) ── */}
+      <SectionHeading>Analytics</SectionHeading>
+      <section
+        className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+        style={{ marginBottom: "16px" }}
+      >
+        <UserGrowthChart points={userGrowth.points} />
+        <CardsAddedChart points={cardsAdded.points} />
+      </section>
+      <section style={{ marginBottom: "36px" }}>
+        <TopCollectedCardsChart cards={topCollected} />
       </section>
 
       {/* ── Recent activity feed ── */}
