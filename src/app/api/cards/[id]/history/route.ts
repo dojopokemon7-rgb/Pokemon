@@ -64,8 +64,12 @@ export async function GET(
       select: { id: true },
     });
     if (!card) {
-      // Cache the empty result too (unknown externalId legitimately empty).
-      await cacheSetJson(cacheKey, EMPTY, CACHE_TTL.cardHistory);
+      // Do NOT cache the empty result. An empty blob is structurally valid and
+      // passes the safeParse-on-read, so pinning it for the full TTL would mask
+      // real data that lands moments later (on-view enrich pulls history AFTER
+      // first view, often on a different instance where the best-effort cache
+      // DEL can't reach this entry) — "empty-cache poisoning". The DB read for
+      // an empty/unknown card is cheap and rare, so we just skip the write.
       return NextResponse.json(EMPTY, { headers: { "Cache-Control": "no-store" } });
     }
 
@@ -92,7 +96,14 @@ export async function GET(
     }
 
     const payload = HistoryResponseSchema.parse({ raw, graded });
-    await cacheSetJson(cacheKey, payload, CACHE_TTL.cardHistory);
+    // Only cache a NON-empty result. A card with 0 real history points is a
+    // transient state (enrich hasn't landed yet) — caching it for the full TTL
+    // would mask the real series that arrives after first view (empty-cache
+    // poisoning). An empty payload is cheap to recompute, so skip the write.
+    const isEmpty = payload.raw.length === 0 && Object.keys(payload.graded).length === 0;
+    if (!isEmpty) {
+      await cacheSetJson(cacheKey, payload, CACHE_TTL.cardHistory);
+    }
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("[cards/history] failed:", err instanceof Error ? err.message : err);

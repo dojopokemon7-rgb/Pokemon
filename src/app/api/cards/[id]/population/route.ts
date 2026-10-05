@@ -38,7 +38,15 @@ export async function GET(
   try {
     const report = await getStoredPopulationReport(id);
     const payload = { report, bgsSupported: BGS_POPULATION_SUPPORTED };
-    await cacheSetJson(cacheKey, payload, CACHE_TTL.cardPopulation);
+    // Only cache a REAL report. A null report means this card hasn't been
+    // refreshed yet; pinning that null for the full 24h TTL would mask a
+    // report that lands after first view (a manual refresh / enrich best-effort
+    // DELs this key, but if that runs on another instance or Redis is briefly
+    // unreachable the null blob survives a FULL DAY) — "empty-cache poisoning".
+    // A null report is a cheap stored read, so skip the write.
+    if (report != null) {
+      await cacheSetJson(cacheKey, payload, CACHE_TTL.cardPopulation);
+    }
     return NextResponse.json(
       payload,
       { headers: { "Cache-Control": "private, max-age=86400" } }

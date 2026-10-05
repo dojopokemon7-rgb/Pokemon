@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CACHE_TTL } from "@/lib/redis";
 
 /**
  * NFR-2 / NFR-4 — null-safe history + graceful public card routes.
@@ -87,6 +88,41 @@ describe("GET /api/cards/[id]/history (NFR-2 / NFR-4)", () => {
     const res = await historyGET(new Request("http://localhost/x"), ctxFor("nope"));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ raw: [], graded: {} });
+  });
+
+  // Empty-cache poisoning guard: an unknown card's empty result must NOT be
+  // pinned (the enrich pulls history AFTER first view, often on another
+  // instance where the best-effort cache DEL can't reach this entry).
+  it("does NOT cache the empty result for an unknown card", async () => {
+    prismaMock.card.findUnique.mockResolvedValue(null);
+    await historyGET(new Request("http://localhost/x"), ctxFor("nope"));
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  // Empty-cache poisoning guard: a known card with 0 real history points is a
+  // transient pre-enrich state — don't pin it for the full TTL.
+  it("does NOT cache an empty series for a known card with 0 rows", async () => {
+    prismaMock.card.findUnique.mockResolvedValue({ id: "card_1" });
+    prismaMock.pricingHistory.findMany.mockResolvedValue([]);
+    await historyGET(new Request("http://localhost/x"), ctxFor("base1-4"));
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
+  // A NON-empty series keeps the normal full cardHistory TTL.
+  it("caches a non-empty series with the full cardHistory TTL", async () => {
+    prismaMock.card.findUnique.mockResolvedValue({ id: "card_1" });
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { priceMarket: 10, recordedAt: new Date("2026-01-01"), type: "raw", company: null, grade: null },
+    ]);
+    await historyGET(new Request("http://localhost/x"), ctxFor("base1-4"));
+    expect(redisMock.set).toHaveBeenCalledTimes(1);
+    // ioredis signature: set(key, value, "EX", ttlSeconds)
+    expect(redisMock.set).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      "EX",
+      CACHE_TTL.cardHistory
+    );
   });
 
   it("returns { raw: [], graded: {} } + 200 when the DB throws", async () => {
