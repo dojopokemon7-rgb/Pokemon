@@ -42,6 +42,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
+import { requireAuth } from "@/lib/utils/auth-guard";
 import { isScrydexOnViewApproved } from "@/lib/services/scrydex-credit-gate";
 import { pullAndStoreSoldListings } from "@/lib/services/scrydex-pricing.service";
 
@@ -139,9 +140,17 @@ export async function GET(
 }
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
+  // SECURITY: this BUTTON-GATED POST can trigger a live Scrydex credit spend
+  // (sold-listings pull, ~5cr). It is called ONLY from the authenticated
+  // card-detail page's "Load recent sales" button, so require a session —
+  // otherwise an anonymous caller could iterate catalog ids and drain credits.
+  // The GET above stays PUBLIC (pure Postgres read, no spend; AGENTS.md rule 7).
+  const guard = await requireAuth(request);
+  if (guard.unauthorized) return guard.unauthorized;
+
   const { id } = await params;
 
   // ON-VIEW allowance OFF → honest no-op, NO pull call (asserted by test).

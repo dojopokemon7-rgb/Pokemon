@@ -45,6 +45,12 @@ const prismaMock = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
+// The graded GET resolves the session optionally (anonymous skips the credit-
+// spending pull). This suite tests the AUTHED path reaching the real pricing
+// service, so default the session to present.
+const authMock = vi.hoisted(() => ({ getSession: vi.fn() }));
+vi.mock("@/lib/auth", () => ({ auth: { api: { getSession: authMock.getSession } } }));
+
 import { GET } from "@/app/api/cards/[id]/graded/route";
 
 const PRICED_CARD = {
@@ -62,6 +68,8 @@ const PRICED_CARD = {
 beforeEach(() => {
   vi.clearAllMocks();
   gateMock.approved = false;
+  // Authed by default so the route reaches the (gate-OFF) pull path under test.
+  authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
   // Priced card, but NO stored graded row → the route would reach the pull.
   prismaMock.card.findUnique.mockResolvedValue(PRICED_CARD);
   prismaMock.currentPrice.findFirst.mockResolvedValue(null);

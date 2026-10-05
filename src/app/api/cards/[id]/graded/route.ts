@@ -26,6 +26,7 @@
 
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { auth } from "@/lib/auth";
 import { pullAndStoreScrydexPrice } from "@/lib/services/scrydex-pricing.service";
 import { pickGradedPrice, type ScrydexCard } from "@/lib/services/scrydex.service";
 import { resolveGradedPrice } from "@/lib/utils/graded-price";
@@ -96,25 +97,40 @@ export async function GET(
       );
     }
 
+    // SECURITY (unauthenticated credit-drain): this route STAYS publicly
+    // readable (AGENTS.md rule 7 — the detail page may render it, and the
+    // stored-first branch above already serves most cards credit-free). But the
+    // only credit-SPENDING branch — the cold-card pullAndStoreScrydexPrice
+    // refetch below — must run ONLY for authenticated requests. Resolve the
+    // session WITHOUT rejecting; an anonymous caller skips the pull entirely and
+    // falls through to the curated/multiplier fallback (nullPayload path),
+    // spending nothing and making NO HTTP call to Scrydex. A logged-in user
+    // still gets the on-demand refresh. This closes the id-iteration drain that
+    // the per-card 24h freshness window can't stop (distinct ids each pull once).
+    const session = await auth.api.getSession({ headers: request.headers });
+
     // Route the Scrydex fetch through the central freshness gate + metering +
     // scrydexId write-back (MEDIUM-1). Returns the resolved ScrydexCard on a
-    // fresh pull, or null when the 24h gate short-circuits (credit-free).
+    // fresh pull, or null when the 24h gate short-circuits (credit-free) OR when
+    // the caller is anonymous (no spend for unauthenticated requests).
     // NIT-4: a SINGLE ScrydexCard | null local — no mismatched wrapper object.
-    const scrydexCard: ScrydexCard | null = (
-      await pullAndStoreScrydexPrice(
-        {
-          id: card.id,
-          externalId: card.externalId,
-          name: card.name,
-          number: card.number,
-          game: card.game,
-          scrydexId: card.scrydexId,
-          setName: card.set?.name ?? null,
-          setCode: deriveOnePieceSetCode(card.externalId, card.game) ?? null,
-        },
-        { force: false }
-      )
-    ).card;
+    const scrydexCard: ScrydexCard | null = session
+      ? (
+          await pullAndStoreScrydexPrice(
+            {
+              id: card.id,
+              externalId: card.externalId,
+              name: card.name,
+              number: card.number,
+              game: card.game,
+              scrydexId: card.scrydexId,
+              setName: card.set?.name ?? null,
+              setCode: deriveOnePieceSetCode(card.externalId, card.game) ?? null,
+            },
+            { force: false }
+          )
+        ).card
+      : null;
 
     const resolved = resolveGradedPrice({
       cardName: card.name,

@@ -61,6 +61,12 @@ vi.mock("@/lib/services/scrydex-pricing.service", () => pricingMock);
 const scrydexMock = vi.hoisted(() => ({ pickGradedPrice: vi.fn() }));
 vi.mock("@/lib/services/scrydex.service", () => scrydexMock);
 
+// SECURITY: the graded GET stays PUBLICLY readable, but the credit-SPENDING
+// cold-card pull runs ONLY for authenticated requests. Mock the optional
+// session resolve; default present so the existing pull-path cases run.
+const authMock = vi.hoisted(() => ({ getSession: vi.fn() }));
+vi.mock("@/lib/auth", () => ({ auth: { api: { getSession: authMock.getSession } } }));
+
 import { GET } from "@/app/api/cards/[id]/graded/route";
 
 function gradedRequest(externalId: string, grade = "10"): [Request, { params: Promise<{ id: string }> }] {
@@ -86,6 +92,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default: no stored graded row → route falls through to Scrydex/curated.
   prismaMock.currentPrice.findFirst.mockResolvedValue(null);
+  // Default: authenticated → the credit-spending pull path is reachable.
+  authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
 });
 
 describe("GET /api/cards/[id]/graded (NFR-4 / AC-16)", () => {
@@ -177,5 +185,39 @@ describe("GET /api/cards/[id]/graded (NFR-4 / AC-16)", () => {
 
     expect(res.status).toBe(200);
     expect(body.price).toBeNull();
+  });
+
+  // --- SECURITY: public-read stays, credit-spending refetch is authed-only ---
+
+  it("SECURITY: anonymous GET on a cold card → 200 fallback, pull NOT called (no credit spend)", async () => {
+    // No session → the route must SKIP pullAndStoreScrydexPrice and fall through
+    // to the curated fallback. This closes the id-iteration credit drain.
+    authMock.getSession.mockResolvedValue(null);
+    prismaMock.card.findUnique.mockResolvedValue(PRICED_CARD);
+
+    const [req, ctx] = gradedRequest("base1-4");
+    const res = await GET(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200); // still publicly readable
+    expect(body.price).toBe(35000); // curated Charizard Base Set PSA 10
+    expect(body.isFallback).toBe(true);
+    expect(pricingMock.pullAndStoreScrydexPrice).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: authenticated GET on a cold card → pull IS attempted (logged-in refresh)", async () => {
+    authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
+    prismaMock.card.findUnique.mockResolvedValue(PRICED_CARD);
+    pricingMock.pullAndStoreScrydexPrice.mockResolvedValue({ pulled: true, credits: 1, card: { id: "x", variants: [] } });
+    scrydexMock.pickGradedPrice.mockReturnValue({ market: 42000, grade: "10", company: "PSA" });
+
+    const [req, ctx] = gradedRequest("base1-4");
+    const res = await GET(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(pricingMock.pullAndStoreScrydexPrice).toHaveBeenCalledTimes(1);
+    expect(body.price).toBe(42000);
+    expect(body.isFallback).toBe(false);
   });
 });

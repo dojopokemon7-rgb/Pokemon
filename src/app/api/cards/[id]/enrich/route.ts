@@ -23,6 +23,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { redis, RedisKeys } from "@/lib/redis";
+import { requireAuth } from "@/lib/utils/auth-guard";
 import { isScrydexOnViewApproved } from "@/lib/services/scrydex-credit-gate";
 import {
   pullAndStoreScrydexHistory,
@@ -42,9 +43,17 @@ export const maxDuration = 60;
 const ONVIEW_GRADES = new Set(["PSA|10", "PSA|9", "BGS|10", "CGC|10"]);
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
+  // SECURITY: this POST can trigger a live Scrydex credit spend (history +
+  // population). It is called ONLY from the authenticated card-detail page
+  // (credentials:include on mount), so require a session — otherwise an
+  // anonymous caller could iterate the catalog ids and drain credits even with
+  // SCRYDEX_LIVE_CREDITS_APPROVED/SCRYDEX_ONVIEW_ENABLED on.
+  const guard = await requireAuth(request);
+  if (guard.unauthorized) return guard.unauthorized;
+
   const { id } = await params;
 
   // Unknown card → honest no-op (never a 4xx; the detail page still renders).
