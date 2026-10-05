@@ -1,8 +1,8 @@
 /**
- * Card search tags — shared helper used by the seed, the daily sync cron
- * (sync-cards.service), and the one-off backfill (scripts/backfill-tags),
- * so every card-write path tags cards identically and search-by-tag works
- * for both seeded and cron-imported cards.
+ * Card search tags — shared helper used by the seed and the one-off backfill
+ * (scripts/backfill-tags), so every card-write path tags cards identically and
+ * search-by-tag works across all seeded cards. (The daily sync cron was removed
+ * once the full catalog was seeded; this helper stays for seed + backfill.)
  *
  * Tags are built from the fields the Card/CardSet models actually store:
  * card types, rarity, card number, and set name/series. Richer TCG-API

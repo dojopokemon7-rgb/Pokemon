@@ -1,11 +1,10 @@
 /**
  * GET /api/cards/search
  *
- * Searches Pokémon or One Piece cards. As of the Daily Sync Engine
- * rollout this reads EXCLUSIVELY from the local Supabase catalog —
- * external APIs are only hit by /api/cron/sync-cards. This makes user
- * searches instant and eliminates the API-ban risk that came with
- * live-fetching on every keystroke.
+ * Searches Pokémon or One Piece cards. Reads EXCLUSIVELY from the local
+ * Supabase catalog (fully seeded) — no external API calls on the search
+ * path. This makes user searches instant and eliminates the API-ban risk
+ * that came with live-fetching on every keystroke.
  *
  * Query params:
  *   - `game`     Required. `"pokemon"` or `"onepiece"`.
