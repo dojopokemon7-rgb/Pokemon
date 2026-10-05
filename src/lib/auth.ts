@@ -310,14 +310,16 @@ export const auth = betterAuth({
     process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
     "http://localhost:3000",
     "http://localhost:3001",
-    // Production domain, listed explicitly as a safety net (the wildcard
-    // below should also cover it, but an exact origin is the reliable one
-    // the Google callback is validated against).
+    // Exact production origin — the one the Google callback is validated against.
     "https://pokemon-five-pi.vercel.app",
-    // Accept any Vercel preview deployment for this project
+    // Per-deploy preview URL only (Vercel injects VERCEL_URL for the deploy
+    // currently serving the request), so each preview trusts ITS OWN origin.
     ...(process.env.VERCEL_URL ? [`https://${process.env.VERCEL_URL}`] : []),
-    // Wildcard match for all Vercel preview URLs of this project
-    "https://*.vercel.app",
+    // SECURITY (sec-audit-3 Finding #2): removed the "https://*.vercel.app"
+    // wildcard. It trusted EVERY Vercel tenant — including attacker-controlled
+    // *.vercel.app subdomains — for Better Auth origin/CORS validation. The
+    // exact prod origin + per-deploy VERCEL_URL cover our real deployments
+    // without trusting the whole shared vercel.app namespace.
   ],
 });
 

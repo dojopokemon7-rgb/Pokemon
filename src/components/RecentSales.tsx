@@ -74,6 +74,10 @@ export function RecentSales({
             const gradeLabel = l.company && l.grade ? `${l.company} ${l.grade}` : l.grade ?? "";
             const sub = [gradeLabel, setName, rarity].filter(Boolean).join(" · ");
             const priceStr = l.price != null && l.price > 0 ? new Intl.NumberFormat("en-US", { style: "currency", currency: l.currency ?? "USD" }).format(l.price) : "—";
+            // Scheme-guard the Scrydex-sourced URL (sec-audit-2 Finding #7):
+            // React won't block a javascript:/data: href, so only render the
+            // anchor for an http(s) URL — otherwise show no link.
+            const safeUrl = l.url && /^https?:\/\//i.test(l.url) ? l.url : null;
             const Row = (
               <div style={{ display: "flex", alignItems: "center", gap: "11px", padding: "13px 0", borderBottom: "1px solid var(--color-dojo-divider)" }}>
                 <div aria-hidden="true" style={{ flex: "none", width: "34px", height: "34px", background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px" }}>
@@ -89,8 +93,8 @@ export function RecentSales({
                 </div>
                 <div style={{ textAlign: "right", flex: "none" }}>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13.5px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>{priceStr}</div>
-                  {l.url && (
-                    <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ marginTop: "3px", display: "inline-block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}>
+                  {safeUrl && (
+                    <a href={safeUrl} target="_blank" rel="noopener noreferrer" style={{ marginTop: "3px", display: "inline-block", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)", textDecoration: "none" }}>
                       View sale ›
                     </a>
                   )}

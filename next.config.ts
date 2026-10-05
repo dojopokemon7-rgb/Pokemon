@@ -53,6 +53,78 @@ const nextConfig: NextConfig = {
   // since it's tiny and install-metadata changes should propagate fast.
   async headers() {
     return [
+      // -----------------------------------------------------------------
+      // Application security headers (sec-audit-3 Finding #1, HIGH)
+      // -----------------------------------------------------------------
+      // On Vercel the app previously shipped ZERO security headers (the
+      // Caddyfile sets a few, but only in a local :80 block that is NOT in
+      // the Vercel ingress path). This global `/:path*` entry closes that
+      // gap for every response.
+      //
+      // CSP is shipped as Content-Security-Policy-REPORT-ONLY (not enforcing)
+      // on purpose. Two real client-side loads reach ORIGINS not covered by a
+      // `'self'`-only policy, and we cannot confirm them in a browser here:
+      //   1. The scanner's on-device OCR fallback (F-14) dynamically imports
+      //      tesseract.js, which — with no corePath/langPath override (see
+      //      scanner/page.tsx runTesseract) — fetches its WASM core and the
+      //      `eng` traineddata from https://cdn.jsdelivr.net at runtime. That
+      //      needs connect-src/script-src for jsdelivr + worker-src blob:,
+      //      none of which are in the directive set below.
+      //   2. Next.js injects inline runtime bootstrap + styles, so
+      //      script-src/style-src keep 'unsafe-inline' (tightening to a nonce
+      //      is a deliberate future task — do NOT attempt nonces here).
+      // Report-Only lets the browser REPORT what the policy WOULD block
+      // without breaking the scanner or anything else, so the directives can
+      // be verified against real traffic before flipping to enforcing. To
+      // enforce later: rename the key to "Content-Security-Policy", add
+      // `https://cdn.jsdelivr.net` to connect-src + script-src and
+      // `worker-src 'self' blob:`, then confirm the scanner still OCRs.
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          // Double-covered with CSP `frame-ancestors 'none'` below — both are
+          // intentional (older browsers honor only one).
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            key: "Strict-Transport-Security",
+            value: "max-age=63072000; includeSubDomains; preload",
+          },
+          {
+            // camera=(self): the scanner uses getUserMedia on its own page.
+            // microphone/geolocation are disabled app-wide.
+            key: "Permissions-Policy",
+            value: "camera=(self), microphone=(), geolocation=()",
+          },
+          {
+            key: "Content-Security-Policy-Report-Only",
+            value: [
+              "default-src 'self'",
+              // img-src: every host the browser loads card art from directly.
+              //   Pokémon art — kept in exact sync with the /api/card-img
+              //   proxy allowlist + next.config remotePatterns (images.scrydex.com,
+              //   assets.tcgdex.net, images.pokemontcg.io, *.supabase.co).
+              //   One Piece art — the UI <img> loads these two upstreams
+              //   DIRECTLY (card.service.ts: "the browser can embed them
+              //   directly"; card-image.ts onError chain): tcgplayer-cdn and
+              //   static.cardmarket.com. data:/blob: cover the scanner canvas.
+              "img-src 'self' data: blob: https://*.supabase.co https://images.scrydex.com https://assets.tcgdex.net https://images.pokemontcg.io https://tcgplayer-cdn.tcgplayer.com https://static.cardmarket.com",
+              // 'unsafe-inline' required by Next.js inline runtime/styles.
+              "script-src 'self' 'unsafe-inline'",
+              "style-src 'self' 'unsafe-inline'",
+              // All client fetches hit same-origin /api/* (sec-audit-2 #14).
+              // NOTE: tesseract.js jsdelivr fetch is the one exception — see
+              // the Report-Only rationale above.
+              "connect-src 'self'",
+              "frame-ancestors 'none'",
+              "base-uri 'self'",
+              "form-action 'self'",
+              "object-src 'none'",
+            ].join("; "),
+          },
+        ],
+      },
       {
         source: "/sw.js",
         headers: [
