@@ -20,6 +20,7 @@
  */
 
 import { useState } from "react";
+import { proxiedCardImage } from "@/lib/utils/card-image";
 
 interface CardImageProps {
   src?: string | null;
@@ -64,10 +65,15 @@ export function CardImage({
   loading = "lazy",
 }: CardImageProps) {
   // The ordered list of URLs to try. Prefer an explicit chain; otherwise the
-  // single `src`. De-duped, empties dropped.
-  const chain = (fallbackChain?.length ? fallbackChain : [src]).filter(
-    (u): u is string => typeof u === "string" && u.length > 0
-  );
+  // single `src`. De-duped, empties dropped. Each candidate is routed through
+  // proxiedCardImage: Pokémon CDN URLs become our same-origin cached proxy
+  // (/api/card-img) so we don't hot-link the upstream on every render; every
+  // other URL (One Piece proxy chain, same-origin, other hosts) is untouched,
+  // which keeps this component game-agnostic and the <img onError> fallback
+  // to initials intact.
+  const chain = (fallbackChain?.length ? fallbackChain : [src])
+    .map(proxiedCardImage)
+    .filter((u): u is string => typeof u === "string" && u.length > 0);
   // Index into `chain`. On <img onError> (404, CORP/CORS block, non-image
   // body) we advance to the next candidate; once past the end we give up to
   // the initials placeholder.

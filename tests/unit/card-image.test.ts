@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { onePieceImageUrl, onePieceImageChain, isOnePieceCode } from "@/lib/utils/card-image";
+import {
+  onePieceImageUrl,
+  onePieceImageChain,
+  isOnePieceCode,
+  proxiedCardImage,
+} from "@/lib/utils/card-image";
 
 /**
  * Guards the One Piece image override — the fix for the "SAMPLE"-watermarked
@@ -63,5 +68,53 @@ describe("onePieceImageChain", () => {
     expect(isOnePieceCode("op01-001")).toBe(true);
     expect(isOnePieceCode("P-025")).toBe(true);
     expect(isOnePieceCode("base1-4")).toBe(false);
+  });
+});
+
+/**
+ * Guards the anti-hotlink proxy helper: only allowlisted Pokémon CDN URLs are
+ * rewritten to the same-origin /api/card-img proxy; everything else (null, One
+ * Piece proxy chain, same-origin, other hosts) passes through UNCHANGED so the
+ * helper is safe at a game-agnostic chokepoint.
+ */
+describe("proxiedCardImage", () => {
+  it("proxies allowlisted Pokémon CDN hosts", () => {
+    expect(proxiedCardImage("https://images.scrydex.com/pokemon/mee-1/medium")).toBe(
+      "/api/card-img?u=" +
+        encodeURIComponent("https://images.scrydex.com/pokemon/mee-1/medium")
+    );
+    expect(proxiedCardImage("https://assets.tcgdex.net/en/base/base1/4/high.webp")).toBe(
+      "/api/card-img?u=" +
+        encodeURIComponent("https://assets.tcgdex.net/en/base/base1/4/high.webp")
+    );
+    expect(proxiedCardImage("https://images.pokemontcg.io/base1/4_hires.png")).toBe(
+      "/api/card-img?u=" +
+        encodeURIComponent("https://images.pokemontcg.io/base1/4_hires.png")
+    );
+  });
+
+  it("passes through null / empty unchanged", () => {
+    expect(proxiedCardImage(null)).toBeNull();
+    expect(proxiedCardImage(undefined)).toBeNull();
+    expect(proxiedCardImage("")).toBeNull();
+  });
+
+  it("passes through the One Piece proxy + same-origin URLs unchanged (no double-proxy)", () => {
+    expect(proxiedCardImage("/api/one-piece-img/OP01-001")).toBe(
+      "/api/one-piece-img/OP01-001"
+    );
+    expect(proxiedCardImage("/local/x.png")).toBe("/local/x.png");
+  });
+
+  it("passes through non-allowlisted + non-https hosts unchanged (no SSRF via helper)", () => {
+    expect(proxiedCardImage("https://tcgplayer-cdn.tcgplayer.com/hi.jpg")).toBe(
+      "https://tcgplayer-cdn.tcgplayer.com/hi.jpg"
+    );
+    expect(proxiedCardImage("https://images.scrydex.com.evil.com/x")).toBe(
+      "https://images.scrydex.com.evil.com/x"
+    );
+    expect(proxiedCardImage("http://images.scrydex.com/x")).toBe(
+      "http://images.scrydex.com/x"
+    );
   });
 });

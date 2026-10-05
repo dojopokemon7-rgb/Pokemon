@@ -26,6 +26,44 @@
  * so a 404/blocked source at any tier automatically tries the next.
  */
 
+// Pokémon art CDNs we front with the same-origin /api/card-img proxy (anti-
+// hotlink + edge cache + SSRF-safe allowlist). MUST stay in exact sync with
+// the server allowlist in src/app/api/card-img/route.ts — exact host match,
+// never a substring. These are the only hosts that emit Pokémon card art:
+// images.scrydex.com (the whole stored catalog), assets.tcgdex.net and
+// images.pokemontcg.io (live-search fallback adapters).
+const POKEMON_IMG_HOSTS: ReadonlySet<string> = new Set([
+  "images.scrydex.com",
+  "assets.tcgdex.net",
+  "images.pokemontcg.io",
+]);
+
+/**
+ * Route a Pokémon card-art URL through our same-origin cached proxy so the
+ * browser never hot-links the upstream CDN (/api/card-img?u=…).
+ *
+ * Pass-through (returned UNCHANGED) for anything that isn't an allowlisted
+ * Pokémon CDN URL: null/empty, relative/same-origin URLs (incl. the One Piece
+ * proxy `/api/one-piece-img/…` — its chain stays untouched), and any other
+ * host (TCGplayer/Cardmarket/Bandai One Piece art). Only an https URL whose
+ * hostname EXACTLY matches a Pokémon CDN host gets proxied, so this is safe to
+ * apply at a game-agnostic chokepoint (CardImage).
+ */
+export function proxiedCardImage(url: string | null | undefined): string | null {
+  if (!url) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Relative / same-origin ("/api/one-piece-img/…") — leave as-is.
+    return url;
+  }
+  if (parsed.protocol !== "https:" || !POKEMON_IMG_HOSTS.has(parsed.hostname)) {
+    return url;
+  }
+  return `/api/card-img?u=${encodeURIComponent(url)}`;
+}
+
 // Set-coded cards (OP/ST/EB/PRB) + P-### promos — the codes Bandai's CDN hosts.
 const ONE_PIECE_CODE = /^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/;
 
