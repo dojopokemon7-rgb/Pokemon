@@ -17,6 +17,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { DojoSelect } from "@/components/DojoSelect";
+import { isMainCollectionName } from "@/lib/utils/main-collection";
 
 // Minimal shape every caller can satisfy (explore tile, search result, or the
 // card-detail header). externalId is the catalog id sent to the collection API.
@@ -40,6 +41,9 @@ export interface AddableCard {
    *  the single Grader dropdown + the live price shown per selection. */
   gradedPrices?: GradedPriceEntry[];
 }
+
+/** Server max per add (AddCardSchema quantity ≤ 999). */
+const MAX_QTY = 999;
 
 const KNOWN_GRADERS = ["PSA", "BGS", "CGC", "SGC", "TAG", "ACE", "AGS"] as const;
 
@@ -102,12 +106,13 @@ export function AddCardSheet({
     ...[...byCompany.keys()].filter((c) => !KNOWN_GRADERS.includes(c as (typeof KNOWN_GRADERS)[number])).sort(),
   ];
   // Grader dropdown options: "Raw" (value "RAW") + each company (value = company).
+  // FEAT-004: Raw is ALWAYS first (its live price shows "—" when there is no raw
+  // price), so a card with graded prices but a null raw price no longer defaults
+  // to PSA 10. The header price for Raw stays null → "—" (never fabricated).
   const graderOptions = [
-    ...(marketPrice != null ? [{ label: "Raw", value: "RAW" }] : []),
+    { label: "Raw", value: "RAW" },
     ...companyOrder.map((c) => ({ label: c, value: c })),
   ];
-  // Guard: a card with neither raw price nor graded prices still offers Raw.
-  if (graderOptions.length === 0) graderOptions.push({ label: "Raw", value: "RAW" });
 
   // Grades for a given grader, numeric-desc, as condition dropdown options.
   function gradesFor(graderVal: string): { label: string; value: string }[] {
@@ -299,7 +304,15 @@ export function AddCardSheet({
               ariaLabel="Collection"
               testId="collection-select"
               value={collectionId}
-              options={[{ label: "Main", value: "" }, ...collections.map((c) => ({ label: c.name, value: c.id }))]}
+              // "" = Main (the server files it under the user's Main). A real
+              // Main row and the nameless "__uncat__" pseudo-entry are dropped
+              // so Main is not listed twice.
+              options={[
+                { label: "Main", value: "" },
+                ...collections
+                  .filter((c) => c.name && !isMainCollectionName(c.name))
+                  .map((c) => ({ label: c.name, value: c.id })),
+              ]}
               onChange={setCollectionId}
             />
           </div>
@@ -309,7 +322,7 @@ export function AddCardSheet({
               <button type="button" aria-label="Decrease quantity" onClick={() => setQty((q) => Math.max(1, q - 1))}
                 style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>−</button>
               <div style={{ width: "34px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "14px", color: "var(--color-dojo-ink)" }}>{qty}</div>
-              <button type="button" aria-label="Increase quantity" onClick={() => setQty((q) => q + 1)}
+              <button type="button" aria-label="Increase quantity" onClick={() => setQty((q) => Math.min(MAX_QTY, q + 1))}
                 style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>+</button>
             </div>
           </div>

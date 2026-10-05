@@ -10,7 +10,8 @@
 | Route | Method(s) | Auth | Zod | Redis | Never-500s? |
 |---|---|---|---|---|---|
 | `/auth/[...all]` | GET, POST | public (is the handler) | Better Auth internal | — | — |
-| `/cards/[id]/ebay-sold` | GET | public | — | soldRows 120s | Yes (`listings: []`) |
+| `/cards/[id]/ebay-sold` | GET, POST | public | — | soldRows 120s | Yes (`listings: []`) |
+| `/cards/[id]/enrich` | POST | public | — | — | Yes (always 200 `{enriched}`) |
 | `/cards/[id]/history` | GET | public | — | — | Yes (`points: []`) |
 | `/cards/[id]/prices` | GET | public | — | — | Yes (`prices: []`) |
 | `/cards/[id]/graded` | GET | public | — | — | Yes (`price: null`) |
@@ -47,6 +48,11 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ## Cards (public, graceful)
 
+### `POST /api/cards/[id]/ebay-sold` and `POST /api/cards/[id]/enrich` — on-view Scrydex pulls
+- Both gated by env `SCRYDEX_ONVIEW_ENABLED=true` (`isScrydexOnViewApproved`, separate from `SCRYDEX_LIVE_CREDITS_APPROVED`). Unset = honest no-op, no Scrydex service called. Always 200, fail-open.
+- `ebay-sold` POST (button-gated "Load recent sales"): `{ pulled:boolean, stored?, reason? }` via `pullAndStoreSoldListings`.
+- `enrich` POST (fired once on detail-page mount): `{ enriched:boolean, reason?: "unknown"|"disabled"|"fresh" }`; pulls missing history (365d) + PSA population, store-once with 7-day freshness.
+
 ### `GET /api/cards/[id]/ebay-sold` — "Recent Sales"
 - `[id]` = **externalId** OR internal **cuid** (resolved to `Card.id` via `findFirst OR`). No query params read.
 - **PART D — pure Postgres read, NO credit gate:** reads the `SoldListing` table (`where { cardId } orderBy soldAt desc nulls-last take 8`) and maps each row to `{ itemId, source, title, price, currency, soldAt (ISO), grade, company, url }`. 200 `{ listings: SoldRecord[], source: "db"|"cache" }`.
@@ -74,6 +80,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - Body: `{ image?: base64 (Vision), text?: pre-extracted OCR, game?: "pokemon"|"onepiece", source?: "tesseract"|"manual" }`. Invalid JSON → 400.
 - Vision unavailable → `200 { success: true, candidates: [], ocrSource: "unavailable", feedbackId: null }` (client-side tesseract signal).
 - 200 `{ success: true, candidates: [{ id, name, set, imageUrl, confidence }], feedbackId, ocrSource: "vision"|"tesseract"|"manual" }`. Top 5; DB prefilter ≤500 rows; errors never 500.
+- Optional `language`: `"all"|"en"|"ja"` (absent = `"all"`; old bodies unchanged). Invalid value → `400 { success: false, error: "invalid-language" }`. Success responses echo `language` and `languageApplied: false` — `Card` has no language column and OCR is not language-restricted, so it is validated and echoed only, never used to filter.
 
 ### `PATCH /api/cards/recognize` — feedback label
 - Body `{ feedbackId, pickedCardId }` → always `200 { success: true }` (best-effort `ScanFeedback.pickedCardId` update).
@@ -82,8 +89,8 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - Body `{ externalIds: string[] }` (cap 20). 200 `{ prices: { [externalId]: number } }` — only successful ids; failures skipped silently. Flow: Redis `price:card:*` 6h → live pokemontcg.io (6s timeout) → `pickPokemonMarketPrice` → cache + `Card.marketPrice`/`lastPricedAt` write.
 
 ### `GET /api/cards/search`
-- Query (zod `SearchQuerySchema`): `game` (required, `pokemon|onepiece`), `query` (required, 1–100), `sort` (`trending|market_desc|market_asc|name_asc|recent`, default `market_desc`), `set?`, `rarity?`, `graded?` (`graded|ungraded`), `minPrice?`, `maxPrice?`.
-- 200 `{ cards: NormalizedCard[], source: "local-db" }` — `NormalizedCard = { id, name, number, setImage, rarity, hp: null, types, imageUrl, marketPrice: number|null }`, `take: 60`. OP imageUrl = first of `onePieceImageChain()`.
+- Query (zod `SearchQuerySchema`): `game` (required, `pokemon|onepiece`), `query` (required, 1–100), `sort?` (`CardSortEnum`; **omitted or `trending` = relevance ranking**, any other key overrides it and keeps the DB order), `set?`, `rarity?`, `graded?` (`graded|ungraded`), `minPrice?`, `maxPrice?`.
+- 200 `{ cards: NormalizedCard[], source: "local-db" }` — `NormalizedCard = { id, name, number, setImage, rarity, hp: null, types, imageUrl, marketPrice: number|null }`, `take: 60` (no pagination). Relevance order: exact `externalId` (`mee-16` = `mee 16`) > exact number+set code > exact name > name prefix > all-token match (name > set > rarity/tags) > name/set-name typo (never for identifier queries); ties by `externalId` asc. OP imageUrl = first of `onePieceImageChain()`.
 - 400 zod issues; 404 `{ source: "local-db" }` when zero local matches ("daily sync may not have reached this set yet"). `Cache-Control: public, max-age=30, swr=300`.
 
 ### `GET /api/cards/trending`
@@ -98,12 +105,12 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 ### `GET /api/collections` → 200 `{ data: Collection[] }` (`createdAt desc`, `no-store`).
 - F-#8: each entry carries `buckets: { main, all, buy, sell, sold }`. UNITS DIFFER: `main`/`all`/`sold` = summed QUANTITIES (`_sum.quantity`); `buy`/`sell` = ROW COUNTS (`_count._all`). A trailing `{ id: "__uncat__", buckets }` pseudo-collection carries the loose (`collectionId=null`) counts. Degradation (rule 7/8): a `groupBy` hiccup → every collection's `buckets` ZEROED (always present, never omitted); a base `findMany` failure → 200 `{ data: [] }`.
 ### `POST /api/collections`
-- Body `{ name, isPrivate? = true, typeTag? = "MIXED" }`. 201 `{ data: Collection }`; 400 zod; 409 duplicate name (`P2002` on `@@unique([userId,name])`).
+- Body `{ name, isPrivate? = true, typeTag? = "MIXED" }`. 201 `{ data: Collection }`; 400 zod; 409 duplicate name (`P2002` on `@@unique([userId,name])`). FEAT-004: 409 `MainCollectionProtectedError` when `name` is "Main" in any case/spacing and the user already has a Main (Main is created lazily by the first add, see below).
 
 ### `PATCH /api/collections/[id]`
-- Body `{ name? }` and/or `{ isPrivate?, typeTag? }` (at least one, else 400). 200 `{ data }`; 404 foreign/nonexistent id (P2025 — no existence leak); 409; 400.
+- Body `{ name? }` and/or `{ isPrivate?, typeTag? }` (at least one, else 400). 200 `{ data }`; 404 foreign/nonexistent id (P2025 — no existence leak); 409 (duplicate name, or FEAT-004 Main protected: Main cannot be renamed or have privacy/tag changed); 400.
 
-### `DELETE /api/collections/[id]` → 200 `{ data: { id } }`; 404. (Cards unfile, not deleted — SetNull.)
+### `DELETE /api/collections/[id]` → 200 `{ data: { id } }`; 404; 409 if the collection is the protected Main (FEAT-004). (Cards unfile, not deleted — SetNull.)
 
 ### `GET /api/want-list` — Query `intent?` (`BUY|SELL|TRADE`; invalid silently ignored → all) + F-#8 `collectionId?`.
 - `collectionId=<id>` → that collection; `collectionId=__account__` → account-level (`null`) rows; ABSENT → all scopes.
@@ -120,19 +127,20 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 ## User collection (the add funnel)
 
 ### `GET /api/users/me/collection`
-- 200 `{ items: [{ id, cardId, quantity, condition, notes, isFoil, purchasePrice, collectionId, addedAt, updatedAt, card: { id, externalId, name, number, rarity, imageUrl, imageUrlHi, marketPrice, set: { id, name } } }] }` ordered `addedAt desc`.
+- 200 `{ items: [{ id, cardId, quantity, condition, notes, isFoil, purchasePrice, collectionId, addedAt, updatedAt, card: { id, externalId, name, number, rarity, imageUrl, imageUrlHi, marketPrice, weeklyChangePct, weeklyChangeAbs, set: { id, name } } }] }` ordered `addedAt desc`. `weeklyChangeAbs/Pct` (FEAT-003) are the stored real Scrydex 7-day change (`null` until a priced pull; portfolio sorts them last) and drive the portfolio "7-day change" sort.
 
 ### `POST /api/users/me/collection` — bulk add (F-15)
-- Body (`AddCollectionRequestSchema`): `{ cards: [{ externalId, name, setName?, imageUrl?, rarity?, types?, marketPrice?, quantity = 1 (1–999), isFoil = false, condition?, purchasePrice?, collectionId? }] }` — 1–50 cards.
+- Body (`AddCollectionRequestSchema`): `{ cards: [{ externalId, name, setName?, imageUrl?, rarity?, types?, marketPrice?, quantity = 1 (1–999), isFoil = false, condition?, purchasePrice?, collectionId? }] }` — 1–50 cards, plus FEAT-004 top-level `collectionId?` and `onExisting? = "increment" | "skip"`.
+- **FEAT-004 destination rules:** items are de-duplicated by `externalId` (first wins; `assignBulkAddOrder` runs over the deduped list, so `addedAt` stays strictly decreasing in selection order). Destination per item = its own `collectionId`, else the top-level `collectionId`, else the user's **Main** (resolved lazily via `getOrCreateMainCollection`; new adds never write `collectionId: null`). A non-owned per-item id is coerced to Main (no leak); a non-owned **top-level** `collectionId` → **404 `{ error: "Not Found" }` with ZERO writes**. `onExisting: "skip"` leaves an existing variant untouched and counts it in `alreadyPresent`.
 - Flow: `assignBulkAddOrder` (selection-order `addedAt` stamps) → per card: upsert `CardSet` (`user-added-<slug>`) → upsert `Card` by `externalId` → find-or-create `UserCollection` matched on the SAME key as the DB index `uc_variant_coalesced` — `(userId, collectionId ?? null, cardId, isFoil, COALESCE(condition,''))` with `isSold=false` (**re-add of the same variant increments quantity**; F-#8: app-side compare uses EXACT normalized `condition`, so raw `null` vs raw `"NM"` vs `"PSA 10"` are distinct lots). A concurrent `P2002` on `uc_variant_coalesced` is caught per-card → re-read + increment (`ok:true`), never a failed card. `purchasePrice` defaults `?? marketPrice ?? card.marketPrice`.
 - **FR-5 add-snapshot:** after each successful add of a **priced** card (`marketPrice ?? card.marketPrice` non-null **and** `> 0`), writes ONE `PricingHistory` point `{ source: "add-snapshot", variant: "normal", condition: "NM", currency: "USD" }` so the portfolio graph has a real datapoint from the moment of add. Best-effort (try/catch — a snapshot failure never fails the add); a null/zero price writes **no** row (NFR-2 — never a fabricated `$0`).
-- 200 `{ added, total, results: [{ externalId, ok: true } | { externalId, ok: false, error }] }`; 400 zod/JSON; 500 only if EVERY card failed.
+- 200 `{ added, alreadyPresent, invalid, total, results: [{ externalId, ok: true, alreadyPresent? } | { externalId, ok: false, error }] }` (`added` = created/incremented lots, `invalid` = failed items); 400 zod/JSON; 404 foreign top-level `collectionId`; 500 only if EVERY item failed. Invalidates `collection`, `dashboard`, `collections` when `added > 0`.
 
 ### `PATCH /api/users/me/collection/[id]` — `[id]` = UserCollection row id, ownership-scoped.
 - Body (`UpdateCollectionItemSchema`): `{ quantity?, purchasePrice?, condition?, collectionId?, isSold?, soldPrice?, soldQuantity?, soldAt? }`. Mark-as-sold splits/updates the lot (preserving `collectionId`); the general-update branch may re-file a lot into another collection.
 - F-#8 (re-file path): a non-null target `collectionId` must be owned by the user → 404 on miss (cross-user attach guard, no existence leak); a re-file/edit that collides with an existing variant in the target collection trips `uc_variant_coalesced` → **409 "That variant is already in the target collection"** (not a raw 500). 200 `{ ok: true, item }`; 400 zod/JSON.
 
-### `DELETE /api/users/me/collection/[id]` — `[id]` = UserCollection row id, ownership-scoped. 200 `{ ok: true }`; 404; 500.
+### `DELETE /api/users/me/collection/[id]` — `[id]` = UserCollection row id, ownership-scoped (`deleteMany where { id, userId }`). 200 `{ ok: true }`; 404 (foreign = nonexistent); 500. Removes only that owned row (the catalog `Card` is untouched). FEAT-004: also invalidates the `collections` cache scope (bucket counts), besides `collection` + `dashboard`.
 
 ---
 

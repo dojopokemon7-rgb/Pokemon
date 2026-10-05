@@ -22,6 +22,9 @@ import {
   type UpdateCollectionSettingsInput,
 } from "@/lib/validators/collection.validator";
 import { isVirtualCollectionId, ALL_VIEW_NAME } from "@/lib/utils/collections-virtual";
+import { isMainCollectionName, MAIN_COLLECTION_NAME } from "@/lib/utils/main-collection";
+import { invalidateUserCaches } from "@/lib/utils/cache";
+import { Prisma } from "@prisma/client";
 
 /** Thrown when a write targets the built-in, non-editable virtual ALL view. */
 export class VirtualCollectionReadonlyError extends Error {
@@ -34,6 +37,53 @@ export class VirtualCollectionReadonlyError extends Error {
 /** Reject any mutation aimed at the reserved virtual ALL view id. */
 function assertNotVirtual(collectionId: string): void {
   if (isVirtualCollectionId(collectionId)) throw new VirtualCollectionReadonlyError();
+}
+
+/** Thrown when a write targets (or would duplicate) the protected Main collection. */
+export class MainCollectionProtectedError extends Error {
+  constructor(message = "Main is the default collection and cannot be renamed, deleted, or edited.") {
+    super(message);
+    this.name = "MainCollectionProtectedError";
+  }
+}
+
+/**
+ * Reject a mutation when the OWNED collection is Main. Scoped `{ id, userId }`:
+ * a foreign/nonexistent id finds no row and falls through to the caller's own
+ * P2025 path (same 404, no id leak).
+ */
+async function assertNotMain(userId: string, collectionId: string): Promise<void> {
+  const row = await prisma.collection.findFirst({
+    where: { id: collectionId, userId },
+    select: { name: true },
+  });
+  if (row && isMainCollectionName(row.name)) throw new MainCollectionProtectedError();
+}
+
+/**
+ * Returns the user's Main collection, creating it on first use. Idempotent:
+ * the lookup is case/space-insensitive (the DB unique is case-sensitive), and a
+ * concurrent create that loses the race (P2002) re-reads the winner's row.
+ */
+export async function getOrCreateMainCollection(userId: string) {
+  const find = async () =>
+    (await prisma.collection.findMany({ where: { userId } })).find((c) => isMainCollectionName(c.name));
+  const existing = await find();
+  if (existing) return existing;
+  try {
+    const created = await prisma.collection.create({
+      data: { userId, name: MAIN_COLLECTION_NAME, isPrivate: true, typeTag: "MIXED" },
+    });
+    // Collection list / dashboard selector now include Main.
+    await invalidateUserCaches(userId, ["collections", "dashboard"]);
+    return created;
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      const raced = await find();
+      if (raced) return raced;
+    }
+    throw e;
+  }
 }
 
 /** Lists the user's collections, newest first. */
@@ -139,10 +189,19 @@ export async function createCollection(userId: string, input: CreateCollectionIn
   if (data.name.trim().toLowerCase() === ALL_VIEW_NAME.toLowerCase()) {
     throw new VirtualCollectionReadonlyError();
   }
+  // "main" in any case is reserved for the protected Main collection: a second
+  // one is a conflict; if Main doesn't exist yet, create it under the canonical name.
+  const claimsMain = isMainCollectionName(data.name);
+  if (claimsMain) {
+    const rows = await prisma.collection.findMany({ where: { userId } });
+    if (rows.some((c) => isMainCollectionName(c.name))) {
+      throw new MainCollectionProtectedError("You already have a Main collection.");
+    }
+  }
   return prisma.collection.create({
     data: {
       userId,
-      name: data.name,
+      name: claimsMain ? MAIN_COLLECTION_NAME : data.name,
       isPrivate: data.isPrivate,
       typeTag: data.typeTag,
     },
@@ -153,6 +212,9 @@ export async function createCollection(userId: string, input: CreateCollectionIn
 export async function renameCollection(userId: string, collectionId: string, name: string) {
   assertNotVirtual(collectionId);
   const validName = CollectionNameSchema.parse(name);
+  await assertNotMain(userId, collectionId);
+  // Nobody may rename another collection INTO "Main" either.
+  if (isMainCollectionName(validName)) throw new MainCollectionProtectedError("“Main” is reserved.");
   // Guard against renaming a real collection INTO the reserved view name.
   if (validName.trim().toLowerCase() === ALL_VIEW_NAME.toLowerCase()) {
     throw new VirtualCollectionReadonlyError();
@@ -166,6 +228,7 @@ export async function renameCollection(userId: string, collectionId: string, nam
 /** Deletes a collection the user owns (never the virtual ALL view). */
 export async function deleteCollection(userId: string, collectionId: string) {
   assertNotVirtual(collectionId);
+  await assertNotMain(userId, collectionId);
   return prisma.collection.delete({
     where: { id: collectionId, userId },
   });
@@ -180,6 +243,7 @@ export async function updateCollectionSettings(
   assertNotVirtual(collectionId);
   // Rejects invalid tags before touching the DB.
   const data = UpdateCollectionSettingsSchema.parse(input);
+  await assertNotMain(userId, collectionId);
   return prisma.collection.update({
     where: { id: collectionId, userId },
     data,

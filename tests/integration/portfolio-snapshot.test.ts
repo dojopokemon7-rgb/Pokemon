@@ -19,6 +19,8 @@ const prismaMock = vi.hoisted(() => ({
   card: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   userCollection: { findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
   pricingHistory: { createMany: vi.fn() },
+  // FEAT-004: adds resolve the user's Main collection.
+  collection: { findMany: vi.fn(), create: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -44,6 +46,7 @@ function postRequest(cards: unknown[]): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.cardSet.upsert.mockResolvedValue({ id: "set_1" });
+  prismaMock.collection.findMany.mockResolvedValue([{ id: "col_main", name: "Main" }]);
   prismaMock.userCollection.findMany.mockResolvedValue([]); // no existing copy
   prismaMock.userCollection.create.mockResolvedValue({ id: "uc_1" });
   prismaMock.userCollection.update.mockResolvedValue({ id: "uc_1" });

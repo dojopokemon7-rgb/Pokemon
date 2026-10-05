@@ -17,6 +17,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { validateScanFile, computeDownscaleSize } from "@/lib/utils/scan-image-file";
+import { readScanLanguage, writeScanLanguage, type ScanLanguage } from "@/lib/utils/scan-language";
 
 interface Candidate {
   id: string;
@@ -46,6 +48,25 @@ export default function ScannerPage() {
   const [warning, setWarning] = useState<string | null>(null);
   const [cameraDenied, setCameraDenied] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
+
+  // Language context (persisted). Sent to the API, which only echoes it.
+  const [language, setLanguage] = useState<ScanLanguage>("all");
+  useEffect(() => setLanguage(readScanLanguage()), []);
+  function changeLanguage(next: ScanLanguage) {
+    setLanguage(next);
+    writeScanLanguage(next);
+  }
+
+  // "Choose photo": object URL of the chosen file (preview) + inline error.
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  useEffect(() => {
+    // Revoke on replace/unmount so chosen photos don't leak in memory.
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   // Manual search fallback state.
   const [manualQuery, setManualQuery] = useState("");
@@ -174,7 +195,7 @@ export default function ScannerPage() {
     const res = await fetch("/api/cards/recognize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image, game: "pokemon" }),
+      body: JSON.stringify({ image, game: "pokemon", language }),
     });
     if (!res.ok) throw new Error("recognize failed");
     const data = await res.json().catch(() => null);
@@ -193,7 +214,7 @@ export default function ScannerPage() {
     const res = await fetch("/api/cards/recognize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, game: "pokemon", source }),
+      body: JSON.stringify({ text, game: "pokemon", source, language }),
     });
     if (!res.ok) throw new Error("recognize failed");
     const data = await res.json().catch(() => null);
@@ -216,27 +237,96 @@ export default function ScannerPage() {
       }
       const warn = qualityWarning(captured.quality);
       if (warn) setWarning(warn); // non-blocking: still attempt recognition
-
-      // Vision-first: send the image; fall back to on-device tesseract when
-      // the server has no Vision key or Vision returned nothing.
-      let result = await recognizeByImage(captured.canvas);
-      if (result == null) {
-        const text = await runTesseract(captured.canvas);
-        result = await recognizeByText(text, "tesseract");
-      }
-
-      const top = result.candidates[0];
-      setFeedbackId(result.feedbackId);
-      if (!top || top.confidence < CONFIDENCE_THRESHOLD) {
-        setCandidates([]);
-        setPhase("not-recognized");
-        return;
-      }
-      setCandidates(result.candidates);
-      setPhase("confirm");
+      await recognizeCanvas(captured.canvas);
     } catch {
       setError("Scanner error, please try again.");
       setPhase("scan");
+    }
+  }
+
+  /** Shared by camera + Choose photo. Vision-first; falls back to on-device
+   *  tesseract when the server has no Vision key or Vision returned nothing. */
+  async function recognizeCanvas(canvas: HTMLCanvasElement) {
+    let result = await recognizeByImage(canvas);
+    if (result == null) {
+      const text = await runTesseract(canvas);
+      result = await recognizeByText(text, "tesseract");
+    }
+    const top = result.candidates[0];
+    setFeedbackId(result.feedbackId);
+    if (!top || top.confidence < CONFIDENCE_THRESHOLD) {
+      setCandidates([]);
+      setPhase("not-recognized");
+      return;
+    }
+    setCandidates(result.candidates);
+    setPhase("confirm");
+  }
+
+  /** Decode honoring EXIF orientation; falls back to <img> (modern browsers
+   *  apply orientation there by default). Throws if undecodable. */
+  async function decodeImage(file: File): Promise<{ src: CanvasImageSource; w: number; h: number; close: () => void }> {
+    if (typeof createImageBitmap === "function") {
+      try {
+        const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+        return { src: bmp, w: bmp.width, h: bmp.height, close: () => bmp.close() };
+      } catch {
+        /* fall through to <img> */
+      }
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      return { src: img, w: img.naturalWidth, h: img.naturalHeight, close: () => {} };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  /** Handle a photo picked from the device. Image data is never logged. */
+  async function handleChosenFile(file: File) {
+    setFileError(null);
+    setError(null);
+    setWarning(null);
+    setAdded(null);
+    try {
+      const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+      const check = validateScanFile(file, head);
+      if (!check.ok) {
+        setFileError(check.message);
+        return;
+      }
+      const decoded = await decodeImage(file).catch(() => null);
+      if (!decoded || !decoded.w || !decoded.h) {
+        setFileError("We couldn't read that image. Choose a different photo.");
+        return;
+      }
+      // Downscale large photos (<=1600px edge); on any failure, use the original size.
+      const size = computeDownscaleSize(decoded.w, decoded.h) ?? { width: decoded.w, height: decoded.h };
+      const canvas = document.createElement("canvas");
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        decoded.close();
+        setFileError("We couldn't process that image. Try a different photo.");
+        return;
+      }
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(decoded.src, 0, 0, size.width, size.height);
+      decoded.close();
+
+      setPreviewUrl(URL.createObjectURL(file)); // effect revokes the previous one
+      setCandidates([]);
+      setPhase("recognizing");
+      await recognizeCanvas(canvas);
+    } catch {
+      setError("Scanner error, please try again.");
+      setPhase("scan");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-picking the same file
     }
   }
 
@@ -310,6 +400,8 @@ export default function ScannerPage() {
     setWarning(null);
     setAdded(null);
     setFeedbackId(null);
+    setPreviewUrl(null); // Retake / Rescan also drops the chosen photo (URL revoked by effect)
+    setFileError(null);
     setPhase("scan");
   }
 
@@ -389,6 +481,72 @@ export default function ScannerPage() {
       ) : phase === "recognizing" ? (
         <button disabled style={{ ...goldBtn, cursor: "default", opacity: 0.7 }}>Scanning…</button>
       ) : null}
+
+      {/* Language context. Honest copy: catalog has no per-card language and
+          photo reading is not language-restricted. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <label htmlFor="scan-language" style={{ fontSize: "13px", fontWeight: 700 }}>Card language</label>
+          <select
+            id="scan-language"
+            aria-describedby="scan-language-help"
+            value={language}
+            onChange={(e) => changeLanguage(e.target.value as ScanLanguage)}
+            className="dojo-input"
+          >
+            <option value="all">All</option>
+            <option value="en">English</option>
+            <option value="ja">Japanese</option>
+          </select>
+          {language !== "all" && (
+            <button
+              type="button"
+              onClick={() => changeLanguage("all")}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}
+            >
+              Reset to All
+            </button>
+          )}
+        </div>
+        <p id="scan-language-help" style={{ color: "var(--color-dojo-body)", fontSize: "12px", margin: 0 }}>
+          Narrows catalog matches only where a card&apos;s language is known. Reading your photo is not limited to this language.
+        </p>
+      </div>
+
+      {/* Choose photo: existing image from the device (hidden input). */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        hidden
+        data-testid="scan-file-input"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void handleChosenFile(f);
+        }}
+      />
+      {phase !== "recognizing" && !previewUrl && (
+        <button type="button" onClick={() => fileInputRef.current?.click()} style={{ ...goldBtn, background: "var(--color-dojo-card)", color: "var(--color-dojo-ink)" }}>
+          Choose photo
+        </button>
+      )}
+      {previewUrl && (
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={previewUrl} alt="Chosen card photo preview" style={{ height: "72px", width: "auto", border: "1px solid var(--color-dojo-stroke)" }} />
+          <button
+            type="button"
+            onClick={resetToScan}
+            disabled={phase === "recognizing"}
+            style={{ ...goldBtn, padding: "10px 14px" }}
+          >
+            Retake
+          </button>
+        </div>
+      )}
+      {fileError && (
+        <p role="alert" style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>{fileError}</p>
+      )}
 
       {warning && (
         <p role="status" style={{ color: "var(--color-dojo-gold)", fontSize: "13px", margin: 0 }}>{warning}</p>

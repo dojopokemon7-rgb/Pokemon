@@ -16,7 +16,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const prismaMock = vi.hoisted(() => ({
-  collection: { findMany: vi.fn() },
+  collection: { findMany: vi.fn(), create: vi.fn() },
   userCollection: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -40,7 +40,7 @@ vi.mock("@/lib/utils/cache", () => ({
   invalidateUserCaches: vi.fn(async () => undefined),
 }));
 
-import { POST as collectionAddPOST } from "@/app/api/users/me/collection/route";
+import { GET as collectionGET, POST as collectionAddPOST } from "@/app/api/users/me/collection/route";
 import { buildCollectionHistories } from "@/lib/services/collection-history.service";
 
 const CARD = { id: "card_1", externalId: "base1-4", marketPrice: 10 };
@@ -63,7 +63,7 @@ beforeEach(() => {
 
 describe("FEAT-002 B — add under chosen collection then dashboard draws it", () => {
   it("files the lot under a non-'Main' OWNED collectionId (AC-17)", async () => {
-    prismaMock.collection.findMany.mockResolvedValueOnce([{ id: OWNED }]);
+    prismaMock.collection.findMany.mockResolvedValue([{ id: OWNED, name: 'Vintage' }, { id: 'col_main', name: 'Main' }]);
     prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
 
@@ -79,8 +79,8 @@ describe("FEAT-002 B — add under chosen collection then dashboard draws it", (
     expect(prismaMock.userCollection.findMany.mock.calls[0][0].where.collectionId).toBe(OWNED);
   });
 
-  it("coerces a FOREIGN collectionId to null (RULE 5 / AC-15)", async () => {
-    prismaMock.collection.findMany.mockResolvedValueOnce([{ id: OWNED }]);
+  it("coerces a FOREIGN collectionId to the user's MAIN (RULE 5 / AC-15)", async () => {
+    prismaMock.collection.findMany.mockResolvedValue([{ id: OWNED, name: 'Vintage' }, { id: 'col_main', name: 'Main' }]);
     prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_2" });
 
@@ -91,8 +91,8 @@ describe("FEAT-002 B — add under chosen collection then dashboard draws it", (
 
     expect(res.status).toBe(200);
     expect(json.added).toBe(1);
-    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBeNull();
-    expect(prismaMock.userCollection.findMany.mock.calls[0][0].where.collectionId).toBeNull();
+    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBe('col_main');
+    expect(prismaMock.userCollection.findMany.mock.calls[0][0].where.collectionId).toBe('col_main');
   });
 
   it("buildCollectionHistories for the owned bucket returns a drawable (>=2-point) series after the add", async () => {
@@ -115,5 +115,16 @@ describe("FEAT-002 B — add under chosen collection then dashboard draws it", (
     const numeric = series.filter((p) => typeof p.value === "number");
     expect(numeric.length).toBeGreaterThanOrEqual(2); // drawable
     expect(numeric.every((p) => p.value === 20)).toBe(true); // 10 × qty 2, never fabricated
+  });
+});
+
+describe("FEAT-003 — collection read exposes stored 7-day change", () => {
+  it("selects weeklyChangeAbs and weeklyChangePct on the card", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
+    const res = await collectionGET(new Request("http://localhost/api/users/me/collection"));
+    expect(res.status).toBe(200);
+    const sel = prismaMock.userCollection.findMany.mock.calls[0][0].select.card.select;
+    expect(sel.weeklyChangeAbs).toBe(true);
+    expect(sel.weeklyChangePct).toBe(true);
   });
 });

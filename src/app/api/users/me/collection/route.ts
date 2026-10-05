@@ -13,6 +13,7 @@ import { prisma } from "@/lib/db";
 import { assignBulkAddOrder } from "@/lib/utils/bulk-add-order";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
+import { getOrCreateMainCollection } from "@/lib/services/collection.service";
 
 export async function GET(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
@@ -72,6 +73,8 @@ export async function GET(request: Request): Promise<NextResponse> {
             // REAL 7-day % change (Scrydex trends.days_7). Null until a priced
             // pull runs — the dashboard renders "—", never a fabricated delta.
             weeklyChangePct: true,
+            // REAL 7-day $ change (same source); drives the portfolio 7-day sort.
+            weeklyChangeAbs: true,
             set: { select: { id: true, name: true } },
           },
         },
@@ -126,13 +129,20 @@ const AddCardSchema = z.object({
   // Price the user actually paid — defaults to the card's current
   // market price if omitted (a reasonable default, not a fabricated one).
   purchasePrice: z.number().nullable().optional(),
-  // F-10: file this copy under a named collection (null/omitted = Main /
-  // uncategorized). The Add sheet's COLLECTION dropdown sets it.
+  // F-10: file this copy under a named collection (omitted = the request's
+  // top-level collectionId, else the user's Main). A per-item id that is not
+  // owned is coerced to Main (no id leak). The Add sheet's dropdown sets it.
   collectionId: z.string().trim().optional(),
 });
 
 const AddCollectionRequestSchema = z.object({
   cards: z.array(AddCardSchema).min(1).max(50),
+  // FEAT-004: destination for every item without its own collectionId. Unlike a
+  // per-item id, a top-level id that is not owned is a hard 404 with ZERO writes.
+  collectionId: z.string().trim().optional(),
+  // "increment" (default, back-compat) bumps an existing lot; "skip" leaves it
+  // untouched and reports it in `alreadyPresent` (multi-select Add).
+  onExisting: z.enum(["increment", "skip"]).default("increment"),
 });
 
 /** Derives an in-set card number the same way prisma/seed.ts does. */
@@ -181,28 +191,29 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const results: Array<{ externalId: string; ok: boolean; error?: string }> = [];
+  const results: Array<{ externalId: string; ok: boolean; alreadyPresent?: boolean; error?: string }> = [];
+  const { onExisting } = parsed.data;
+  const topLevelId = parsed.data.collectionId || undefined;
+
+  // Dedupe by externalId (first wins) so a double-selected card is one lot.
+  const seen = new Set<string>();
+  const cards = parsed.data.cards.filter((c) => !seen.has(c.externalId) && !!seen.add(c.externalId));
 
   // F-15: stamp explicit, strictly-decreasing addedAt values across the
   // batch (keyed by externalId) so the collection list — ordered by
   // `addedAt desc` — shows the batch at the FRONT in selection order,
   // rather than reversed by per-row now() defaults.
   const addedAtByExternalId = new Map(
-    assignBulkAddOrder(parsed.data.cards.map((c) => c.externalId)).map((s) => [
-      s.cardId,
-      s.addedAt,
-    ])
+    assignBulkAddOrder(cards.map((c) => c.externalId)).map((s) => [s.cardId, s.addedAt])
   );
 
-  // Server-side ownership coercion (RULE 5 — ownership by query scoping). A
-  // client can send any collectionId; we must only file a copy under a bucket
-  // the user actually OWNS. A foreign/unknown id is coerced to null (filed
-  // loose) — no 4xx and no id-enumeration leak, identical to "unbucketed".
-  // FAST PATH: if NO item carries a non-empty collectionId, skip the query
-  // entirely (the common "add to Main" case does zero extra DB work).
-  const anyCollectionId = parsed.data.cards.some(
-    (c) => typeof c.collectionId === "string" && c.collectionId.length > 0
-  );
+  // Server-side ownership (RULE 5 — ownership by query scoping). We only file
+  // a copy under a bucket the user actually OWNS.
+  //  - top-level collectionId not owned → 404 before ANY write (identical to
+  //    nonexistent, no id-enumeration leak).
+  //  - per-item collectionId not owned → coerced to Main (no 4xx, no leak).
+  // FAST PATH: with no collectionId anywhere, skip the owned-ids query.
+  const anyCollectionId = !!topLevelId || cards.some((c) => !!c.collectionId);
   const owned = new Set<string>();
   if (anyCollectionId) {
     const rows = await prisma.collection.findMany({
@@ -211,11 +222,25 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
     for (const r of rows) owned.add(r.id);
   }
+  if (topLevelId && !owned.has(topLevelId)) {
+    return NextResponse.json(
+      { error: "Not Found", message: "Collection not found." },
+      { status: 404 }
+    );
+  }
 
-  for (const item of parsed.data.cards) {
-    // Coerce the requested bucket to one the user owns, else null (loose).
-    const effectiveCollectionId =
-      item.collectionId && owned.has(item.collectionId) ? item.collectionId : null;
+  // Main is resolved lazily, once, only when some item has no valid destination.
+  // Legacy collectionId:null rows are untouched; new adds never write null.
+  const requested = (c: (typeof cards)[number]) => c.collectionId || topLevelId;
+  const needsMain = cards.some((c) => {
+    const id = requested(c);
+    return !id || !owned.has(id);
+  });
+  const mainId = needsMain ? (await getOrCreateMainCollection(userId)).id : null;
+
+  for (const item of cards) {
+    const want = requested(item);
+    const effectiveCollectionId = want && owned.has(want) ? want : (mainId as string);
     try {
       const setName = item.setName?.trim() || "Unknown Set";
       const setExternalId = `user-added-${slugifySetName(setName)}`;
@@ -313,6 +338,11 @@ export async function POST(request: Request): Promise<NextResponse> {
         (existing) => norm(existing.condition) === norm(item.condition)
       );
 
+      if (existingItem && onExisting === "skip") {
+        results.push({ externalId: item.externalId, ok: true, alreadyPresent: true });
+        continue;
+      }
+
       if (existingItem) {
         await prisma.userCollection.update({
           where: { id: existingItem.id },
@@ -367,7 +397,10 @@ export async function POST(request: Request): Promise<NextResponse> {
               },
             });
             const match = raced && norm(raced.condition) === norm(item.condition) ? raced : null;
-            if (match) {
+            if (match && onExisting === "skip") {
+              results.push({ externalId: item.externalId, ok: true, alreadyPresent: true });
+              continue;
+            } else if (match) {
               await prisma.userCollection.update({
                 where: { id: match.id },
                 data: { quantity: match.quantity + item.quantity },
@@ -426,8 +459,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
   }
 
-  const addedCount = results.filter((r) => r.ok).length;
-  const allFailed = addedCount === 0;
+  // `added` = lots created/incremented; `alreadyPresent` = skipped by
+  // onExisting:"skip"; `invalid` = items that failed. Only a batch where EVERY
+  // item failed is a 5xx (an all-already-present skip batch is a success).
+  const addedCount = results.filter((r) => r.ok && !r.alreadyPresent).length;
+  const alreadyPresentCount = results.filter((r) => r.alreadyPresent).length;
+  const invalidCount = results.filter((r) => !r.ok).length;
+  const allFailed = invalidCount === results.length;
 
   // Invalidate the per-user caches this add feeds (best-effort, after the DB
   // writes committed): collection:{userId} + dashboard:{userId}. Skip when
@@ -440,6 +478,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     {
       message: allFailed ? (results[0]?.error ?? "Could not add this card.") : undefined,
       added: addedCount,
+      alreadyPresent: alreadyPresentCount,
+      invalid: invalidCount,
       total: results.length,
       results,
     },

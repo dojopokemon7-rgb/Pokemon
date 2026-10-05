@@ -26,7 +26,8 @@ import { type CardDetailsData } from "@/components/CardDetailsPopup";
 import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
 import { useDelayedFlag } from "@/components/useDelayedFlag";
-import { toHistoryToken } from "@/lib/utils/collection-ids";
+import { toHistoryToken, shouldShowUncategorized } from "@/lib/utils/collection-ids";
+import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -511,16 +512,20 @@ export default function DashboardClient({
     }[] = [];
 
     // Loose cards bucket ("Main" if no collection is named Main, else "Uncategorized")
-    const hasNamedMain = collectionList.some((c) => c.name.toLowerCase() === "main");
-    opts.push({
-      id: "__uncat__",
-      name: hasNamedMain ? "Uncategorized" : "Main",
-      color: "#E9B43B", // Gold for Main
-      marketValue: mValMap.get("__uncat__") ?? 0,
-      paid: paidMap.get("__uncat__") ?? 0,
-      realized: realMap.get("__uncat__") ?? 0,
-      cardCount: countMap.get("__uncat__") ?? 0,
-    });
+    // FEAT-004: only present while some (active or sold) lot is unassigned, via
+    // the SAME helper the SSR page uses (defaultCollectionIds stays byte-identical).
+    if (shouldShowUncategorized(collectionData ?? [])) {
+      const hasNamedMain = collectionList.some((c) => isMainCollectionName(c.name));
+      opts.push({
+        id: "__uncat__",
+        name: hasNamedMain ? "Uncategorized" : "Main",
+        color: "#E9B43B", // Gold for Main
+        marketValue: mValMap.get("__uncat__") ?? 0,
+        paid: paidMap.get("__uncat__") ?? 0,
+        realized: realMap.get("__uncat__") ?? 0,
+        cardCount: countMap.get("__uncat__") ?? 0,
+      });
+    }
 
     // "Want to buy" is a want-list bucket, not a portfolio collection — it is
     // no longer injected into the dashboard selector/comparison chart (client

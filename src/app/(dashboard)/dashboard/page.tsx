@@ -24,7 +24,7 @@ import { getServerSession } from "@/lib/utils/get-server-session";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { buildCollectionHistories } from "@/lib/services/collection-history.service";
-import { UNCAT_ID, toHistoryToken } from "@/lib/utils/collection-ids";
+import { UNCAT_ID, toHistoryToken, defaultSelectorIds } from "@/lib/utils/collection-ids";
 import DashboardClient, {
   type CollectionItem,
 } from "./_components/DashboardClient";
@@ -120,7 +120,9 @@ export default async function DashboardPage() {
   // shared helper the client uses, so `initialCollectionIdsQuery` is
   // byte-identical to the client's new `collectionIdsQuery` AND the service
   // actually plots the loose/uncategorized bucket.
-  const defaultCollectionIds = ["__uncat__", ...collections.map((c) => c.id)].map(
+  // FEAT-004: "__uncat__" is included only while some lot is still unassigned;
+  // the client builds its list through the SAME defaultSelectorIds helper.
+  const defaultCollectionIds = defaultSelectorIds(collections.map((c) => c.id), rows).map(
     toHistoryToken
   );
   const initialCollectionIdsQuery = defaultCollectionIds.join(",");

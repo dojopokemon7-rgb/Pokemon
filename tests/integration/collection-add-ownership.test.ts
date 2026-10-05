@@ -1,20 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * FEAT-003 (Part 3, design §3.4) — server-side ownership coercion on the
- * add-to-collection POST. Prisma is MOCKED (no live DB/network).
+ * FEAT-003/004 — server-side ownership on the add-to-collection POST. Prisma is
+ * MOCKED (no live DB/network).
  *
- * Contract pinned here:
- *   - AC-15: a collectionId the user does NOT own (absent from the mocked
- *     collection.findMany) is coerced to null — the copy is filed loose, with
- *     no 4xx and no id-enumeration leak.
- *   - AC-17: an OWNED collectionId is honored verbatim on the create/update.
- *   - fast path: a batch with no collectionId on any item never queries
- *     collection.findMany at all.
+ *   - AC-17: an OWNED collectionId is honored verbatim on create/update.
+ *   - FEAT-004: no collectionId, or a FOREIGN per-item id, files under the
+ *     user's MAIN (never another user's, never a 4xx, no id leak).
+ *   - fast path: with no collectionId anywhere only the Main lookup runs
+ *     (no owned-ids query with a select).
  */
 
 const prismaMock = vi.hoisted(() => ({
-  collection: { findMany: vi.fn() },
+  collection: { findMany: vi.fn(), create: vi.fn() },
   userCollection: {
     findFirst: vi.fn(),
     findMany: vi.fn(),
@@ -43,6 +41,8 @@ import { POST as collectionAddPOST } from "@/app/api/users/me/collection/route";
 import { invalidateUserCaches } from "@/lib/utils/cache";
 
 const CARD = { id: "card_1", externalId: "base1-4", marketPrice: 10 };
+const MAIN = { id: "col_main", name: "Main" };
+const OWNED = { id: "col_owned", name: "Vintage" };
 
 function addBody(cards: unknown[]) {
   return new Request("http://localhost/api/users/me/collection", {
@@ -53,17 +53,16 @@ function addBody(cards: unknown[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  prismaMock.collection.findMany.mockResolvedValue([MAIN, OWNED]);
   prismaMock.cardSet.upsert.mockResolvedValue({ id: "set_1" });
   prismaMock.card.findFirst.mockResolvedValue(CARD);
   prismaMock.card.update.mockResolvedValue(CARD);
   prismaMock.pricingHistory.createMany.mockResolvedValue({});
 });
 
-describe("POST /api/users/me/collection — ownership coercion", () => {
-  it("coerces a foreign (non-owned) collectionId to null on create (AC-15)", async () => {
-    // User owns only col_owned; the request targets col_foreign.
-    prismaMock.collection.findMany.mockResolvedValueOnce([{ id: "col_owned" }]);
-    prismaMock.userCollection.findMany.mockResolvedValueOnce([]); // no existing lot
+describe("POST /api/users/me/collection — ownership + Main default", () => {
+  it("files a FOREIGN per-item collectionId under the user's MAIN, never the foreign id", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
 
     const res = await collectionAddPOST(
@@ -73,30 +72,24 @@ describe("POST /api/users/me/collection — ownership coercion", () => {
 
     expect(res.status).toBe(200);
     expect(json.added).toBe(1);
-    // Filed loose, not under the foreign id.
-    expect(prismaMock.userCollection.create).toHaveBeenCalledTimes(1);
-    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBeNull();
-    // The scoped find also used null, never the foreign id.
-    expect(prismaMock.userCollection.findMany.mock.calls[0][0].where.collectionId).toBeNull();
+    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBe("col_main");
+    expect(prismaMock.userCollection.findMany.mock.calls[0][0].where.collectionId).toBe("col_main");
+    expect(JSON.stringify(json)).not.toContain("col_foreign");
   });
 
   it("files an OWNED collectionId under that id (AC-17)", async () => {
-    prismaMock.collection.findMany.mockResolvedValueOnce([{ id: "col_owned" }]);
     prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
 
     const res = await collectionAddPOST(
       addBody([{ externalId: "base1-4", name: "Alakazam", quantity: 1, collectionId: "col_owned" }])
     );
-    const json = await res.json();
 
-    expect(json.added).toBe(1);
+    expect((await res.json()).added).toBe(1);
     expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBe("col_owned");
   });
 
   it("honors an OWNED collectionId on the increment (update) path (AC-17)", async () => {
-    prismaMock.collection.findMany.mockResolvedValueOnce([{ id: "col_owned" }]);
-    // Existing lot in that bucket → increments instead of creating.
     prismaMock.userCollection.findMany.mockResolvedValueOnce([
       { id: "uc_existing", condition: null, quantity: 1 },
     ]);
@@ -110,23 +103,33 @@ describe("POST /api/users/me/collection — ownership coercion", () => {
     expect(prismaMock.userCollection.update.mock.calls[0][0].data.collectionId).toBe("col_owned");
   });
 
-  it("fast path: no item carries a collectionId → collection.findMany is NEVER called", async () => {
+  it("no collectionId anywhere → files under the user's existing Main (no owned-ids select query)", async () => {
     prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
 
     await collectionAddPOST(addBody([{ externalId: "base1-4", name: "Alakazam", quantity: 1 }]));
 
-    expect(prismaMock.collection.findMany).not.toHaveBeenCalled();
-    // And the loose lot is filed with null.
-    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBeNull();
+    expect(prismaMock.collection.create).not.toHaveBeenCalled(); // Main already existed
+    for (const call of prismaMock.collection.findMany.mock.calls) {
+      expect(call[0].select).toBeUndefined();
+      expect(call[0].where).toEqual({ userId: USER_ID }); // owner-scoped
+    }
+    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBe("col_main");
   });
 
-  // The four TanStack query families the client invalidates on a successful add
-  // (["collection"], ["portfolio-collection"], ["collections"], ["collection", id])
-  // are driven server-side by the per-user cache invalidation this route fires.
-  // Pin that a successful add invalidates the server-cache families that back
-  // them — collection + dashboard + collections — so the chosen collection and
-  // the dashboard chart both refetch (HIGH-1). A no-op add must NOT invalidate.
+  it("lazily creates Main when the user has none", async () => {
+    prismaMock.collection.findMany.mockResolvedValue([OWNED]);
+    prismaMock.collection.create.mockResolvedValue(MAIN);
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
+    prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
+
+    await collectionAddPOST(addBody([{ externalId: "base1-4", name: "Alakazam", quantity: 1 }]));
+
+    expect(prismaMock.collection.create).toHaveBeenCalledTimes(1);
+    expect(prismaMock.userCollection.create.mock.calls[0][0].data.collectionId).toBe("col_main");
+  });
+
+  // Server-cache families behind the client's TanStack invalidation.
   it("a successful add invalidates the collection/dashboard/collections cache families", async () => {
     prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     prismaMock.userCollection.create.mockResolvedValueOnce({ id: "uc_1" });
@@ -144,8 +147,6 @@ describe("POST /api/users/me/collection — ownership coercion", () => {
   });
 
   it("an add that files NOTHING does not invalidate any cache family", async () => {
-    // Card lookup/create throws → the single item fails → addedCount 0 → the
-    // route must skip invalidation entirely (no needless refetch storm).
     prismaMock.card.findFirst.mockResolvedValueOnce(null);
     prismaMock.card.create.mockRejectedValueOnce(new Error("boom"));
 

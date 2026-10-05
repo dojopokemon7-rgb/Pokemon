@@ -10,7 +10,9 @@
  * Query params:
  *   - `game`     Required. `"pokemon"` or `"onepiece"`.
  *   - `query`    Required. Free-text search term.
- *   - `sort`     Optional. Sort key (see CardSortEnum).
+ *   - `sort`     Optional. Omitted or `trending` = RELEVANCE (exact id > exact
+ *                number+set > exact name > prefix > typo > set/rarity; see
+ *                search-rank.ts). Any other key (CardSortEnum) overrides it.
  *   - `set`      Optional (F-06). Filter to one set by name.
  *   - `rarity`   Optional (F-06). Filter by rarity (contains match).
  *   - `graded`   Optional (F-06). `"graded"` | `"ungraded"` (rarity-based).
@@ -33,6 +35,7 @@
  */
 
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireAuth } from "@/lib/utils/auth-guard";
@@ -44,6 +47,9 @@ import {
 } from "@/lib/validators/card.validator";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
+import { parseSearchQuery } from "@/lib/utils/search-query";
+import { rankCards, hasNameHit } from "@/lib/utils/search-rank";
+import { isSearchIndexEnabled, searchIndexIds } from "@/lib/services/card-search-index.service";
 
 /** Flip to `true` to gate search behind a valid Better Auth session. */
 const ENFORCE_AUTH = false;
@@ -63,7 +69,8 @@ const SearchQuerySchema = z.object({
     .trim()
     .min(1, "query must not be empty")
     .max(100, "query is too long"),
-  sort: CardSortEnum.default("market_desc"),
+  // Optional: omitted (or the UI default "trending") = relevance ranking.
+  sort: CardSortEnum.optional(),
   // F-06: optional set filter. Matches on the joined CardSet.name (that's
   // the label the UI shows on each tile and in the filter dropdown).
   set: z.string().trim().min(1).max(100).optional(),
@@ -108,7 +115,9 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query, sort, set, rarity, graded, minPrice, maxPrice } = parsed.data;
+  const { game, query, set, rarity, graded, minPrice, maxPrice } = parsed.data;
+  const sort = parsed.data.sort ?? "trending";
+  const relevance = sort === "trending";
 
   // USER-AGNOSTIC cache (RULE 3 — the catalog result is identical for every
   // user, so NO userId in the key; sharing it is the point). Keyed by the
@@ -117,7 +126,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   const cacheKey = RedisKeys.cardSearchResult({
     game,
     query,
-    sort,
+    // "rel-v2" versions the relevance ranker so old market_desc entries are not served.
+    sort: relevance ? "rel-v2" : sort,
     set,
     rarity,
     graded,
@@ -184,48 +194,120 @@ export async function GET(request: Request): Promise<NextResponse> {
       ]
     : undefined;
 
-  const rows = await prisma.card.findMany({
-    where: {
-      set: {
-        externalId: { startsWith: `${game}-` },
-        // F-06: narrow to a single set (by name) when the filter is active.
-        ...(set ? { name: { equals: set, mode: "insensitive" } } : {}),
-      },
-      // F-06: rarity filter (case-insensitive exact-ish contains match).
-      ...(rarity ? { rarity: { contains: rarity, mode: "insensitive" } } : {}),
-      // F-06: graded → rarity names a grader; ungraded → it doesn't.
-      ...(graded === "graded" ? { OR: gradedMatch } : {}),
-      ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
-      // F-06: price range.
-      ...priceFilter,
-      // Multi-field query match (AND with the filters above).
-      ...(queryOr ? { AND: [{ OR: queryOr }] } : {}),
+  // Shared filter fragment: EVERY candidate query (legacy, pool, typo recall,
+  // index hydration) ANDs this in, so filters are never weakened.
+  const baseWhere: Prisma.CardWhereInput = {
+    set: {
+      externalId: { startsWith: `${game}-` },
+      // F-06: narrow to a single set (by name) when the filter is active.
+      ...(set ? { name: { equals: set, mode: "insensitive" } } : {}),
     },
-    take: RESULT_LIMIT,
-    orderBy: orderByForCardSort(sort),
-    select: {
-      externalId: true,
-      name: true,
-      number: true,
-      rarity: true,
-      types: true,
-      imageUrl: true,
-      imageUrlHi: true,
-      marketPrice: true,
-      // Prefer the raw NM/normal CurrentPrice — the SAME source the
-      // card-detail prices route reads. Many cards have a real NM price row
-      // while Card.marketPrice is still null, so selecting only marketPrice
-      // made priced cards (e.g. One Piece "Perfect Order") show "No price
-      // data". Bounded (take:1, uses current_price @@index([cardId])) — no N+1.
-      currentPrices: {
-        where: { variant: "normal", condition: "NM" },
-        select: { priceMarket: true },
-        take: 1,
-      },
-      set: { select: { name: true } },
-    },
-  });
+    // F-06: rarity filter (case-insensitive exact-ish contains match).
+    ...(rarity ? { rarity: { contains: rarity, mode: "insensitive" } } : {}),
+    // F-06: graded → rarity names a grader; ungraded → it doesn't.
+    ...(graded === "graded" ? { OR: gradedMatch } : {}),
+    ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
+    // F-06: price range.
+    ...priceFilter,
+  };
 
+  const find = (extra: Prisma.CardWhereInput, take: number, orderBy: Prisma.CardOrderByWithRelationInput[]) =>
+    prisma.card.findMany({
+      where: { ...baseWhere, ...extra },
+      take,
+      orderBy,
+      select: {
+        externalId: true,
+        name: true,
+        number: true,
+        rarity: true,
+        types: true,
+        tags: true,
+        imageUrl: true,
+        imageUrlHi: true,
+        marketPrice: true,
+        // Prefer the raw NM/normal CurrentPrice — the SAME source the
+        // card-detail prices route reads. Many cards have a real NM price row
+        // while Card.marketPrice is still null, so selecting only marketPrice
+        // made priced cards (e.g. One Piece "Perfect Order") show "No price
+        // data". Bounded (take:1, uses current_price @@index([cardId])) — no N+1.
+        currentPrices: {
+          where: { variant: "normal", condition: "NM" },
+          select: { priceMarket: true },
+          take: 1,
+        },
+        set: { select: { name: true } },
+      },
+    });
+  type Row = Awaited<ReturnType<typeof find>>[number];
+
+  /** Relevance path: bounded candidate pools, ranked in JS (search-rank.ts). */
+  async function relevantRows(q: string): Promise<Row[]> {
+    const p = parseSearchQuery(q);
+    const byPrice: Prisma.CardOrderByWithRelationInput[] = [
+      { marketPrice: { sort: "desc", nulls: "last" } },
+      { externalId: "asc" },
+    ];
+    const rank = (list: Row[]) => rankCards(p, list.map((r) => ({ ...r, setName: r.set?.name ?? null })));
+    const insens = { mode: "insensitive" as const };
+
+    // Optional Typesense: ids only; rows are hydrated from Postgres with the
+    // SAME filters (Postgres stays authoritative). Any failure → Postgres path.
+    if (isSearchIndexEnabled() && !p.identifierLike) {
+      try {
+        const ids = await searchIndexIds({ game, query: q, set, rarity, minPrice, maxPrice, limit: RESULT_LIMIT });
+        if (ids && ids.length > 0) {
+          const hydrated = await find({ externalId: { in: ids } }, RESULT_LIMIT, byPrice);
+          if (hydrated.length > 0) {
+            const order = new Map(ids.map((id, i) => [id, i]));
+            return hydrated.sort((a, b) => order.get(a.externalId)! - order.get(b.externalId)!);
+          }
+        }
+      } catch {
+        /* fall through to Postgres */
+      }
+    }
+
+    // Stage 1: bounded pool (300). Raw + accent-folded terms.
+    const terms = [...new Set([q.trim(), p.norm, ...p.tokens.filter((t) => t.length >= 2)])];
+    const [a, b] = p.tokens;
+    const or: Prisma.CardWhereInput[] = p.idCandidates.map((id) => ({ externalId: { equals: id, ...insens } }));
+    if (p.identifierLike) {
+      or.push(
+        { AND: [{ number: { contains: b } }, { set: { externalId: { contains: a } } }] },
+        { AND: [{ name: { contains: a, ...insens } }, { number: { contains: b } }] },
+        { name: { contains: p.norm, ...insens } }
+      );
+    } else {
+      for (const n of p.numberCandidates) or.push({ number: { contains: n, ...insens } });
+      for (const t of terms) {
+        or.push({ name: { contains: t, ...insens } }, { set: { name: { contains: t, ...insens } } });
+        or.push({ set: { externalId: { contains: t.toLowerCase() } } });
+      }
+      for (const t of p.tokens) or.push({ tags: { has: t } });
+    }
+    let pool = await find({ AND: [{ OR: or }] }, 300, byPrice);
+    let ranked = rank(pool);
+
+    // Stage 2: typo/accent recall via a 2-char name-prefix pool (600). Never
+    // for identifier queries (they must not fuzzy-match another id).
+    const longest = [...p.tokens].sort((x, y) => y.length - x.length)[0] ?? "";
+    if (!p.identifierLike && longest.length >= 2 && !hasNameHit(p, ranked)) {
+      const extra = await find({ name: { startsWith: longest.slice(0, 2), ...insens } }, 600, byPrice);
+      const seen = new Set(pool.map((r) => r.externalId));
+      pool = [...pool, ...extra.filter((r) => !seen.has(r.externalId))];
+      ranked = rank(pool);
+    }
+    return ranked;
+  }
+
+  let rows: Row[];
+  if (!relevance) {
+    // Explicit sort overrides relevance: the original single query.
+    rows = await find(queryOr ? { AND: [{ OR: queryOr }] } : {}, RESULT_LIMIT, orderByForCardSort(sort));
+  } else {
+    rows = await relevantRows(query);
+  }
   if (rows.length === 0) {
     return NextResponse.json(
       {
@@ -240,7 +322,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   // Match the pre-existing NormalizedCard envelope so no client changes
   // are required. `hp` is null: the schema doesn't store it — that
   // column would need to be added if the UI ever needs HP again.
-  const cards: NormalizedCard[] = rows.map((r) => ({
+  const cards: NormalizedCard[] = rows.slice(0, RESULT_LIMIT).map((r) => ({
     id: r.externalId,
     name: r.name,
     number: r.number ?? "",

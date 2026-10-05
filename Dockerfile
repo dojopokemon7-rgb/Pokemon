@@ -10,8 +10,11 @@ RUN apk add --no-cache libc6-compat
 
 WORKDIR /app
 
-# Copy lockfile and manifests first for layer caching
+# Copy lockfile and manifests first for layer caching.
+# The prisma/ schema must be present before `npm ci` because the postinstall
+# hook runs `prisma generate`, which needs prisma/schema.prisma.
 COPY package.json package-lock.json* ./
+COPY prisma ./prisma
 
 RUN npm ci
 

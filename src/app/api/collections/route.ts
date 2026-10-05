@@ -14,6 +14,7 @@ import {
   createCollection,
   listCollectionsWithBuckets,
   VirtualCollectionReadonlyError,
+  MainCollectionProtectedError,
 } from "@/lib/services/collection.service";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
@@ -72,6 +73,9 @@ export async function POST(request: Request): Promise<NextResponse> {
         { error: "Bad Request", message: "“All Cards” is a reserved built-in view name." },
         { status: 400 }
       );
+    }
+    if (err instanceof MainCollectionProtectedError) {
+      return NextResponse.json({ error: "Conflict", message: err.message }, { status: 409 });
     }
     if (err instanceof ZodError) {
       return NextResponse.json(

@@ -90,6 +90,17 @@ Idempotent everywhere (`upsert` keyed on `externalId`). Sources: Pokémon → po
 ```
 GET /api/cards/search (game, query, sort, set?, rarity?, graded?, minPrice?, maxPrice?)
   → reads ONLY local Postgres (take 60) — external APIs are NEVER hit per keystroke
+  → sort omitted/"trending" = RELEVANCE: parseSearchQuery → bounded candidate pool (300; +600
+    name-prefix recall pool only when no name hit and not identifier-like) → rankCards in JS
+    (search-query.ts / search-rank.ts). Cache key sort = "rel-v2". Explicit sort = legacy single query.
+  → optional SEARCH_ENGINE=typesense (fetch, no dep): card-search-index.service returns ordered
+    externalIds only; rows are hydrated from Postgres with the SAME filters; null/throw/empty →
+    Postgres path (still 200). Identifier-shaped queries never go to the index.
+  → Index is a rebuildable projection: scripts/backfill-search-index.ts (OWNER-RUN, dry-run default,
+    --apply writes). Env: SEARCH_ENGINE, TYPESENSE_URL, TYPESENSE_SEARCH_API_KEY (server, search-only),
+    TYPESENSE_ADMIN_API_KEY (backfill only), TYPESENSE_COLLECTION, TYPESENSE_TIMEOUT_MS.
+  → Deferred (Epic D): collection-scoped sold records need live credit-gated Scrydex /listings calls
+    and provider-rights confirmation; not built.
   → filters: set.externalId startsWith "{game}-", set name equals-insensitive,
     rarity contains, graders regex (PSA|BGS|CGC|SGC|Beckett), price range,
     text = OR(name, number, tags has q, set.name contains, set.externalId contains)
@@ -125,7 +136,12 @@ camera frame → crop/2×/grayscale/contrast → glare check (warning only)
   → ScanFeedback row (ocrText, candidates) → feedbackId
   → user picks → POST /api/users/me/collection + PATCH /api/cards/recognize {feedbackId, pickedCardId}
 ```
+
+Scanner inputs: live camera, or **Choose photo** (JPEG/PNG/WebP, ≤20 MB; client `validateScanFile` checks MIME + magic bytes, decodes with EXIF orientation, downscales to ≤1600px, then feeds the same Vision → Tesseract → text flow; object URLs revoked on retake/unmount; image data never logged). A **Card language** select (All/English/Japanese, `localStorage` `dojo:scan-language`) is sent as `language`; it is echoed only (`languageApplied:false`) because the catalog has no per-card language column.
 The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measured, never guessed.
+
+
+**7-day change provenance (FEAT-003):** `Card.weeklyChangeAbs/Pct` are written only by the Scrydex pricing pull from `trends.days_7` (each independently, only when numeric). There is NO staleness column (`Card.weeklyChangeAt` is deferred, needs an owner DB change), so values reflect the last provider refresh. Search/trending sort them DB-side (`nulls: last`); the portfolio sorts in memory with `sortByWeeklyChange`. Chart/`PricingHistory`/synthetic data is never used for this sort.
 
 ## 5. eBay integration
 
@@ -231,6 +247,9 @@ AuditLog, ScanFeedback: append-only operational tables
 SyncLog: append-only metering/metering table (job, cardId?, credits, status, error, ranAt)
 ```
 
+**Main collection & legacy nulls (FEAT-004).** Each user has one protected `Collection` named "Main" (case/space-insensitive via `isMainCollectionName`), created lazily by `getOrCreateMainCollection` (idempotent; a P2002 race re-reads the winner). It cannot be renamed, deleted or have settings changed (`MainCollectionProtectedError` → 409) and nothing else can claim the name. Adds default to Main. `UserCollection.collectionId = null` rows are LEGACY: they are never rewritten by adds, remain visible under "All collections", and the `__uncat__` "Uncategorized" bucket is shown ONLY while some active or sold lot is still null (`shouldShowUncategorized`; the dashboard SSR page and `DashboardClient` build `defaultCollectionIds` through the same `defaultSelectorIds` helper so the chart query key stays byte-identical). No schema change was made.
+**Null → Main backfill runbook (OWNER-RUN, NOT RUN by agents).** `scripts/backfill-main-collection.ts` (planner: `src/lib/utils/main-backfill.ts`). `npx tsx scripts/backfill-main-collection.ts` = DRY RUN (counts only; default). `--user <id>` limits scope. `--apply` creates Main per user and moves only `where { id, userId, collectionId: null }`, writing `backfill-main-manifest-<timestamp>.json`. `--rollback <file> [--apply]` sets `collectionId` back to null only for manifest ids currently in that user's Main. Rows that would collide with `uc_variant_coalesced` (same user+card+foil+normalized condition already active in Main) are reported as conflicts and left unassigned; sold rows are skipped; want-list rows are untouched. Writes to the configured `DATABASE_URL`.
+**Removal semantics (FEAT-004).** Portfolio select-mode action is "Remove from collection" behind a confirm dialog ("…from your collection only"); it fans out `DELETE /api/users/me/collection/[id]` (owner-scoped, one `UserCollection` row), never touches the catalog, keeps failed ids selected, and invalidates `["portfolio-collection"]`, `["collection"]`, `["collections"]`. Multi-select Add (`/search/multi`) posts `{ collectionId, onExisting: "skip", cards }` and reports added / already-present / invalid.
 **Three id namespaces (NFR-3).** `Card.id` (internal cuid, FK target for `PricingHistory.cardId` / `CurrentPrice.cardId`) vs `Card.externalId` (catalog id — TCGdex `base1-4` for Pokémon, Bandai `OP01-001` for One Piece) vs the additive `Card.scrydexId` (Scrydex-native id like `me55c-4`, cached after `resolveScrydexCard` matches by name+number+set). Never confuse the three.
 
 **Pricing models (enriched baseline):**

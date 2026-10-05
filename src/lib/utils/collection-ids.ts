@@ -16,6 +16,23 @@
 /** UI selector sentinel for the loose/uncategorized bucket. */
 export const UNCAT_ID = "__uncat__";
 
+/** The Uncategorized (loose, collectionId=null) bucket is shown ONLY when some
+ *  active or sold lot is still unassigned. Legacy null rows stay visible under
+ *  "All collections" regardless. */
+export function shouldShowUncategorized(lots: { collectionId?: string | null }[]): boolean {
+  return lots.some((l) => l.collectionId == null);
+}
+
+/** Default (all-selected) selector ids. The dashboard SSR page and
+ *  DashboardClient MUST both build their list through this ONE function so the
+ *  chart query key stays byte-identical. */
+export function defaultSelectorIds(
+  namedIds: string[],
+  lots: { collectionId?: string | null }[]
+): string[] {
+  return [...(shouldShowUncategorized(lots) ? [UNCAT_ID] : []), ...namedIds];
+}
+
 /** Map a UI selector id to the history-service token: the loose-cards bucket
  *  "__uncat__" → the service's "null" (collectionId IS NULL); every other id
  *  (named-collection cuid, or "all") passes through unchanged. */

@@ -94,4 +94,9 @@ scripts/scan-language-split.ts
 scripts/scan-supabase.ts
 scripts/verify-set.ts
 scripts/whoami-db.ts
+
+# Local-only Docker override (wires app to the LOCAL db/redis — must not reach Vercel/prod)
+docker-compose.override.yml
+
+# Full-catalog pull logs (local scratch)
 .full-pull*.log

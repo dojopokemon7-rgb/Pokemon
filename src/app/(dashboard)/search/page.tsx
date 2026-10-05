@@ -1116,7 +1116,9 @@ function SearchPageInner() {
     queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter],
     queryFn: async () => {
       // Compose the optional F-06 filter params only when set.
-      const params = new URLSearchParams({ game, query: initialQ, sort });
+      // "trending" was never a real search sort: omit it so the API ranks by relevance.
+      const params = new URLSearchParams({ game, query: initialQ });
+      if (sort !== "trending") params.set("sort", sort);
       if (setFilter) params.set("set", setFilter);
       if (rarityFilter) params.set("rarity", rarityFilter);
       if (gradedFilter) params.set("graded", gradedFilter);

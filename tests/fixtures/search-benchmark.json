@@ -1,0 +1,43 @@
+{
+  "cards": [
+    { "externalId": "base1-4", "name": "Charizard", "number": "4/102", "setName": "Base", "rarity": "Rare Holo", "tags": [] },
+    { "externalId": "base1-58", "name": "Pikachu", "number": "58/102", "setName": "Base", "rarity": "Common", "tags": [] },
+    { "externalId": "base1-16", "name": "Zapdos", "number": "16/102", "setName": "Base", "rarity": "Rare Holo", "tags": [] },
+    { "externalId": "mee-16", "name": "Basic Fire Energy", "number": "16", "setName": "Mega Evolution Energy", "rarity": "Common", "tags": [] },
+    { "externalId": "mee-17", "name": "Basic Water Energy", "number": "17", "setName": "Mega Evolution Energy", "rarity": "Common", "tags": [] },
+    { "externalId": "mee-116", "name": "Basic Psychic Energy", "number": "116", "setName": "Mega Evolution Energy", "rarity": "Common", "tags": [] },
+    { "externalId": "sv3-125", "name": "Charizard ex", "number": "125/197", "setName": "Obsidian Flames", "rarity": "Double Rare", "tags": [] },
+    { "externalId": "sv3-16", "name": "Charmander", "number": "16/197", "setName": "Obsidian Flames", "rarity": "Common", "tags": [] },
+    { "externalId": "sv1-25", "name": "Pikachu V", "number": "25", "setName": "Scarlet & Violet", "rarity": "Rare Holo V", "tags": [] },
+    { "externalId": "det-1", "name": "Detective Pikachu", "number": "1/18", "setName": "Detective Pikachu", "rarity": "Rare Holo", "tags": [] },
+    { "externalId": "xy1-83", "name": "Flabébé", "number": "83/146", "setName": "XY", "rarity": "Common", "tags": [] },
+    { "externalId": "xy1-84", "name": "Floette", "number": "84/146", "setName": "XY", "rarity": "Uncommon", "tags": [] },
+    { "externalId": "sm1-1", "name": "Pokémon Collector", "number": "1/10", "setName": "Sun & Moon", "rarity": "Uncommon", "tags": [] },
+    { "externalId": "OP01-064", "name": "Trafalgar Law", "number": "OP01-064", "setName": "Romance Dawn", "rarity": "Super Rare", "tags": [] },
+    { "externalId": "OP01-065", "name": "Bepo", "number": "OP01-065", "setName": "Romance Dawn", "rarity": "Common", "tags": [] },
+    { "externalId": "OP01-001", "name": "Roronoa Zoro", "number": "OP01-001", "setName": "Romance Dawn", "rarity": "Leader", "tags": [] },
+    { "externalId": "OP02-064", "name": "Monkey D. Luffy", "number": "OP02-064", "setName": "Paramount War", "rarity": "Common", "tags": [] },
+    { "externalId": "OP02-013", "name": "Portgas D. Ace", "number": "OP02-013", "setName": "Paramount War", "rarity": "Super Rare", "tags": [] }
+  ],
+  "cases": [
+    { "query": "mee-16", "top": "mee-16", "exclude": ["mee-17", "mee-116", "sv3-16", "base1-16"] },
+    { "query": "mee 16", "top": "mee-16", "exclude": ["mee-17", "mee-116", "sv3-16", "base1-16"] },
+    { "query": "MEE  16", "top": "mee-16", "exclude": ["mee-17", "mee-116"] },
+    { "query": "mee-17", "top": "mee-17", "exclude": ["mee-16", "mee-116"] },
+    { "query": "mee-18", "top": null, "exclude": ["mee-16", "mee-17", "mee-116"] },
+    { "query": "OP01-064", "top": "OP01-064", "exclude": ["OP01-065", "OP02-064"] },
+    { "query": "op01-065", "top": "OP01-065", "exclude": ["OP01-064"] },
+    { "query": "op01-066", "top": null, "exclude": ["OP01-064", "OP01-065"] },
+    { "query": "base1-4", "top": "base1-4", "exclude": ["base1-16"] },
+    { "query": "sv3-125", "top": "sv3-125", "exclude": ["sv3-16"] },
+    { "query": "Charizard", "top": "base1-4" },
+    { "query": "charzard", "top": "base1-4" },
+    { "query": "char", "topIn": ["base1-4", "sv3-16", "sv3-125"] },
+    { "query": "pikachu", "top": "base1-58" },
+    { "query": "base set holo", "topIn": ["base1-4", "base1-16"] },
+    { "query": "flabebe", "top": "xy1-83" },
+    { "query": "pokemon collector", "top": "sm1-1" },
+    { "query": "trafalgar law", "top": "OP01-064" },
+    { "query": "zzzzqq", "top": null }
+  ]
+}

@@ -32,10 +32,10 @@ export const CARD_SORT_LABELS: Record<CardSortKey, string> = {
   market_asc: "Price · Low to High",
   name_asc: "Name · A to Z",
   recent: "Recently Added",
-  week_change_desc: "Weekly Change · High to Low",
-  week_change_asc: "Weekly Change · Low to High",
-  week_pct_desc: "Weekly % · High to Low",
-  week_pct_asc: "Weekly % · Low to High",
+  week_change_desc: "7-day change ($) · High to Low",
+  week_change_asc: "7-day change ($) · Low to High",
+  week_pct_desc: "7-day change (%) · High to Low",
+  week_pct_asc: "7-day change (%) · Low to High",
 };
 
 /**
@@ -71,4 +71,43 @@ export function orderByForCardSort(
     default:
       return [{ marketPrice: { sort: "desc", nulls: "last" } }, { name: "asc" }];
   }
+}
+
+export const WEEK_SORT_KEYS = [
+  "week_change_desc",
+  "week_change_asc",
+  "week_pct_desc",
+  "week_pct_asc",
+] as const;
+export type WeekSortKey = (typeof WEEK_SORT_KEYS)[number];
+
+/**
+ * In-memory twin of the DB week_* orderBy, for lists not DB-sorted (the
+ * portfolio). Reads ONLY the stored Card.weeklyChangeAbs/Pct (Scrydex
+ * trends.days_7) via `pick` — never chart/synthetic data. Null, undefined,
+ * non-finite (zero-baseline NaN/Infinity) and `isUsable === false` (stale)
+ * rows go last; ties and nulls keep input order. Returns a new array.
+ * ponytail: no per-row staleness column exists (no Card.weeklyChangeAt), so
+ * callers can't yet pass a real isUsable; upgrade when that column lands.
+ */
+export function sortByWeeklyChange<T>(
+  items: readonly T[],
+  key: WeekSortKey,
+  pick: (item: T) => { weeklyChangeAbs?: number | null; weeklyChangePct?: number | null },
+  isUsable: (item: T) => boolean = () => true
+): T[] {
+  const field = key.startsWith("week_pct") ? "weeklyChangePct" : "weeklyChangeAbs";
+  const dir = key.endsWith("_desc") ? -1 : 1;
+  const val = (item: T): number | null => {
+    if (!isUsable(item)) return null;
+    const v = pick(item)[field];
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  };
+  return items
+    .map((item, i) => ({ item, i, v: val(item) }))
+    .sort((a, b) => {
+      if (a.v === null || b.v === null) return a.v === b.v ? a.i - b.i : a.v === null ? 1 : -1;
+      return (a.v - b.v) * dir || a.i - b.i;
+    })
+    .map((x) => x.item);
 }

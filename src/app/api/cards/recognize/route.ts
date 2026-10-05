@@ -9,6 +9,7 @@ import {
 } from "@/lib/services/scan-allowance.service";
 import { base64ToBytes, validateScanUpload } from "@/lib/utils/scan-upload";
 import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
+import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 
 /**
  * POST /api/cards/recognize
@@ -61,6 +62,17 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const b = body as { text?: unknown; image?: unknown; game?: unknown; source?: unknown } | null;
+  // Optional language context (all|en|ja). Validated and echoed only: `Card`
+  // has no language column and OCR isn't language-restricted, so it is never
+  // applied (languageApplied: false). Absent -> "all" (old bodies unchanged).
+  const parsedLang = ScanLanguageSchema.safeParse(
+    (body as { language?: unknown } | null)?.language
+  );
+  if (!parsedLang.success) {
+    return NextResponse.json({ success: false, error: "invalid-language" }, { status: 400 });
+  }
+  const languageEcho = { language: parsedLang.data, languageApplied: false as const };
+
   const game = b?.game === "onepiece" || b?.game === "pokemon" ? b.game : undefined;
   const image = typeof b?.image === "string" ? b.image : "";
   const text = typeof b?.text === "string" ? b.text.trim() : "";
@@ -143,6 +155,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         ocrSource: "unavailable",
         feedbackId: null,
         scanAllowance: allowanceBefore,
+        ...languageEcho,
       });
     }
 
@@ -197,6 +210,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       feedbackId,
       ocrSource: "vision",
       scanAllowance: reservation.allowance,
+      ...languageEcho,
     });
   }
 
@@ -270,11 +284,11 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
-    return NextResponse.json({ success: true, candidates, feedbackId, ocrSource });
+    return NextResponse.json({ success: true, candidates, feedbackId, ocrSource, ...languageEcho });
   } catch (err) {
     console.error("[cards/recognize] match failed:", err instanceof Error ? err.message : err);
     // Never 500 the scanner — degrade to "no candidates".
-    return NextResponse.json({ success: true, candidates: [], feedbackId: null, ocrSource });
+    return NextResponse.json({ success: true, candidates: [], feedbackId: null, ocrSource, ...languageEcho });
   }
 }
 

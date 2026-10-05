@@ -5,15 +5,17 @@
  *
  * Allows users to select multiple cards via checkboxes and add them to their collection.
  * - Sticky top summary: "{selectedCount} selected" + total market value
- * - Fixed bottom action bar: "ADD TO COLLECTION →" button
- * - Redirects to /collection/add when clicked
+ * - Fixed bottom action bar: count, Clear, destination collection picker
+ *   (default Main) and an explicit Add button (POST with onExisting:"skip").
+ * - "Set details" (secondary) still routes to /collection/add.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState, useMemo, Suspense } from "react";
 import { setPendingCollectionCards } from "@/lib/utils/pending-collection";
+import { isMainCollectionName } from "@/lib/utils/main-collection";
 
 interface CardResult {
   id: string;
@@ -98,10 +100,38 @@ function SearchMultiInner() {
     });
   };
 
-  const selectedCards = useMemo(
-    () => cards.filter((c) => selectedIds.has(c.id)),
-    [cards, selectedIds]
-  );
+  // SELECTION order (Set keeps insertion order), one card per externalId —
+  // the server stamps strictly-decreasing addedAt in this order.
+  const selectedCards = useMemo(() => {
+    const byId = new Map<string, CardResult>();
+    for (const c of cards) if (!byId.has(c.id)) byId.set(c.id, c);
+    return [...selectedIds].flatMap((id) => (byId.has(id) ? [byId.get(id) as CardResult] : []));
+  }, [cards, selectedIds]);
+
+  // Destination picker: ONLY real named /api/collections rows (the nameless
+  // "__uncat__" pseudo-entry is dropped). Main first; when the user has no Main
+  // yet, a "" option stands in for it and the server creates it on first add.
+  const queryClient = useQueryClient();
+  const { data: collections = [] } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ["collections"],
+    queryFn: async () => {
+      const res = await fetch("/api/collections", { credentials: "include" });
+      if (!res.ok) return [];
+      return (await res.json()).data ?? [];
+    },
+  });
+  const destOptions = useMemo(() => {
+    const named = collections.filter((c) => typeof c.name === "string" && c.name);
+    const main = named.find((c) => isMainCollectionName(c.name));
+    const rest = named.filter((c) => c !== main);
+    return [main ?? { id: "", name: "Main" }, ...rest];
+  }, [collections]);
+  const [destOverride, setDestOverride] = useState<string | null>(null);
+  const destId = destOverride ?? destOptions[0].id;
+
+  const [adding, setAdding] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const selectedTotal = useMemo(
     () =>
@@ -112,18 +142,56 @@ function SearchMultiInner() {
     [selectedCards]
   );
 
+  const toPayload = (c: CardResult) => ({
+    externalId: c.id,
+    name: c.name,
+    setName: c.setName ?? c.set ?? undefined,
+    imageUrl: c.imageUrl ?? c.image ?? undefined,
+    marketPrice: c.marketPrice ?? c.price ?? null,
+    quantity: 1,
+    isFoil: false,
+  });
+
+  async function handleAddNow() {
+    if (selectedCards.length === 0 || adding) return;
+    setAdding(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/users/me/collection", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(destId ? { collectionId: destId } : {}),
+          onExisting: "skip",
+          cards: selectedCards.map(toPayload),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      const added = json.added ?? 0;
+      const alreadyPresent = json.alreadyPresent ?? 0;
+      if (!res.ok || added + alreadyPresent === 0) {
+        // Selection is RETAINED so the user can retry.
+        throw new Error(json.message ?? json.error ?? "Could not add these cards.");
+      }
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      queryClient.invalidateQueries({ queryKey: ["collections"] });
+      setStatus(`${added} added, ${alreadyPresent} already in collection, ${json.invalid ?? 0} invalid`);
+      // Keep only the items that failed selected; clear the rest.
+      const failed = (json.results ?? []).filter((r: { ok: boolean }) => !r.ok).map((r: { externalId: string }) => r.externalId);
+      setSelectedIds(new Set(failed));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setAdding(false);
+    }
+  }
+
   const handleAdd = () => {
     if (selectedIds.size === 0) return;
-    const cardsToAdd = selectedCards.map((c) => ({
-      externalId: c.id,
-      name: c.name,
-      setName: c.setName ?? c.set ?? undefined,
-      imageUrl: c.imageUrl ?? c.image ?? undefined,
-      marketPrice: c.marketPrice ?? c.price ?? null,
-      quantity: 1,
-      isFoil: false,
-    }));
-    setPendingCollectionCards(cardsToAdd);
+    setPendingCollectionCards(selectedCards.map(toPayload));
     router.push("/collection/add");
   };
 
@@ -189,6 +257,16 @@ function SearchMultiInner() {
         </button>
       </div>
 
+      {/* Result of the last Add (always mounted so screen readers announce it). */}
+      <div role="status" aria-live="polite" style={{ fontSize: "12px", color: "var(--color-dojo-mint)", marginBottom: status ? "12px" : 0 }}>
+        {status}
+      </div>
+      {error && (
+        <div role="alert" style={{ border: "1px solid var(--color-dojo-vermilion)", padding: "10px 12px", marginBottom: "12px", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>
+          {error}
+        </div>
+      )}
+
       {/* List View */}
       <div style={{ display: "flex", flexDirection: "column" }}>
         {isFetching ? (
@@ -200,7 +278,7 @@ function SearchMultiInner() {
             No cards found.
           </div>
         ) : (
-          cards.map((card) => {
+          cards.map((card, idx) => {
             const isSelected = selectedIds.has(card.id);
             const price = card.marketPrice ?? card.price ?? 0;
             const setName = card.setName ?? card.set ?? "";
@@ -209,8 +287,18 @@ function SearchMultiInner() {
 
             return (
               <div
-                key={card.id}
+                key={`${card.id}-${idx}`}
+                role="checkbox"
+                aria-checked={isSelected}
+                aria-label={`Select ${card.name}`}
+                tabIndex={0}
                 onClick={() => toggleSelect(card.id)}
+                onKeyDown={(e) => {
+                  if (e.key === " " || e.key === "Enter") {
+                    e.preventDefault();
+                    toggleSelect(card.id);
+                  }
+                }}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -398,15 +486,48 @@ function SearchMultiInner() {
               </div>
             </div>
 
-            <div style={{ marginLeft: "auto" }}>
-              <button
-                onClick={handleAdd}
-                disabled={selectedIds.size === 0}
-                className="dojo-btn dojo-btn-primary"
-                style={{ padding: "10px 16px", fontSize: "11px", width: "auto" }}
-              >
-                ADD TO COLLECTION →
-              </button>
+            <div style={{ marginLeft: "auto", display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end" }}>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(new Set())}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}
+                >
+                  Clear
+                </button>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "10px", color: "var(--color-dojo-faint)" }}>
+                  <span>Add to</span>
+                  <select
+                    aria-label="Destination collection"
+                    value={destId}
+                    onChange={(e) => setDestOverride(e.target.value)}
+                    className="dojo-input"
+                    style={{ height: "32px", maxWidth: "130px", fontSize: "12px" }}
+                  >
+                    {destOptions.map((c) => (
+                      <option key={c.id || "main"} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-body)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}
+                >
+                  Set details
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddNow}
+                  disabled={adding || selectedIds.size === 0}
+                  className="dojo-btn dojo-btn-primary"
+                  style={{ padding: "10px 16px", fontSize: "11px", width: "auto" }}
+                >
+                  {adding ? "Adding…" : `Add ${selectedIds.size} card${selectedIds.size !== 1 ? "s" : ""}`}
+                </button>
+              </div>
             </div>
           </div>
         </div>

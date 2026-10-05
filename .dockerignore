@@ -42,3 +42,25 @@ docker-compose*.yml
 README.md
 SETUP.md
 *.md
+
+# Large dirs that must NEVER enter the build context (they ballooned it to
+# ~390MB and added minutes to every build). None are needed to build/run the app.
+.worktrees
+.reference
+dojo-design
+dojo prototype
+.kilo
+.kiro
+.agents
+.github
+test-results
+e2e
+tests
+infra
+docs
+public/card-photos-original
+
+# Logs / scratch
+*.log
+cookies.txt
+tsconfig.tsbuildinfo

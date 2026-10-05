@@ -31,8 +31,9 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
       );
     }
 
-    // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
-    await invalidateUserCaches(userId, ["collection", "dashboard"]);
+    // Invalidate collection:{userId} + dashboard:{userId} + collections:{userId}
+    // (the per-collection bucket counts change on a remove). Best-effort.
+    await invalidateUserCaches(userId, ["collection", "dashboard", "collections"]);
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (error) {
     console.error("[api/users/me/collection/[id]] Error deleting collection item:", error);

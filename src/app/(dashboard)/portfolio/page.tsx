@@ -21,6 +21,8 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
 import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
+import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
+import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
 
 // ── Real collection item shape ──
 interface CollectionItem {
@@ -677,15 +679,23 @@ export default function PortfolioPage() {
       const results = await Promise.allSettled(
         ids.map((id) => fetch(`/api/users/me/collection/${id}`, { method: "DELETE" }))
       );
-      const failed = results.filter((r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok));
-      if (failed.length) throw new Error(`${failed.length} of ${ids.length} deletes failed`);
+      // Which ids FAILED (network error or non-2xx) — they stay selected.
+      const failedIds = ids.filter((_, i) => {
+        const r = results[i];
+        return r.status === "rejected" || !r.value.ok;
+      });
+      return { removed: ids.length - failedIds.length, failedIds };
     },
-    onSuccess: () => {
+    onSuccess: ({ removed, failedIds }) => {
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       queryClient.invalidateQueries({ queryKey: ["collection"] });
-      setSelectedIds(new Set());
-      setSelectMode(false);
-      setConfirmOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["collections"] });
+      setSelectedIds(new Set(failedIds));
+      if (failedIds.length === 0) {
+        setSelectMode(false);
+        setConfirmOpen(false);
+      }
+      if (removed > 0) setToast(`Removed ${removed} from your collection`);
     },
   });
 
@@ -722,10 +732,13 @@ export default function PortfolioPage() {
 
   const collOptions = useMemo(() => {
     const opts = [{ id: "all", name: "All collections" }];
-    for (const c of collMeta ?? []) opts.push({ id: c.id, name: c.name });
-    opts.push({ id: "__uncat__", name: "Uncategorized" });
+    // GET /api/collections also returns the nameless "__uncat__" pseudo-entry;
+    // skip it here and re-add it below ONLY while unassigned lots exist.
+    for (const c of collMeta ?? []) if (c.id !== UNCAT_ID) opts.push({ id: c.id, name: c.name });
+    // FEAT-004: hidden when empty; legacy null rows remain visible under "All collections".
+    if (shouldShowUncategorized(rawItems)) opts.push({ id: UNCAT_ID, name: "Uncategorized" });
     return opts;
-  }, [collMeta]);
+  }, [collMeta, rawItems]);
 
   const wantAsItems: CollectionItem[] = useMemo(
     () =>
@@ -996,9 +1009,9 @@ export default function PortfolioPage() {
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", color: "var(--color-dojo-ink)" }}>
             {selectedIds.size} selected
           </span>
-          <button type="button" onClick={() => setConfirmOpen(true)}
+          <button type="button" onClick={() => { bulkDelete.reset(); setConfirmOpen(true); }}
             style={{ marginLeft: "auto", padding: "8px 16px", cursor: "pointer", border: "1px solid var(--color-dojo-vermilion)", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
-            Delete Selected
+            Remove from collection
           </button>
         </div>
       )}
@@ -1083,18 +1096,18 @@ export default function PortfolioPage() {
         />
       )}
 
-      {/* ── Double-confirm delete modal ── */}
+      {/* ── Confirm remove modal (nothing is removed before this confirm) ── */}
       {confirmOpen && (
         <>
           <div onClick={() => !bulkDelete.isPending && setConfirmOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,0.6)" }} />
-          <div role="dialog" aria-modal="true" aria-label="Confirm delete" style={{ position: "fixed", inset: 0, zIndex: 91, display: "flex", alignItems: "center", justifyContent: "center", padding: "22px", pointerEvents: "none" }}>
+          <div role="dialog" aria-modal="true" aria-label="Remove from collection" style={{ position: "fixed", inset: 0, zIndex: 91, display: "flex", alignItems: "center", justifyContent: "center", padding: "22px", pointerEvents: "none" }}>
             <div style={{ pointerEvents: "auto", width: "100%", maxWidth: "340px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "20px" }}>
-              <h2 className="dojo-heading" style={{ fontSize: "18px", margin: "0 0 10px" }}>Delete cards?</h2>
+              <h2 className="dojo-heading" style={{ fontSize: "18px", margin: "0 0 10px" }}>Remove from collection?</h2>
               <p className="dojo-body" style={{ margin: "0 0 18px", fontSize: "13px", lineHeight: 1.5 }}>
-                Are you sure you want to delete {selectedIds.size} card{selectedIds.size !== 1 ? "s" : ""}? This cannot be undone.
+                This removes {selectedIds.size} card{selectedIds.size !== 1 ? "s" : ""} from your collection only. The catalog is not changed and nothing else is deleted.
               </p>
-              {bulkDelete.isError && (
-                <p style={{ margin: "0 0 12px", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>Some deletes failed. Please try again.</p>
+              {(bulkDelete.isError || (bulkDelete.data?.failedIds.length ?? 0) > 0) && (
+                <p style={{ margin: "0 0 12px", fontSize: "12px", color: "var(--color-dojo-vermilion)" }}>Some cards could not be removed. They stay selected; please try again.</p>
               )}
               <div style={{ display: "flex", gap: "10px" }}>
                 <button type="button" disabled={bulkDelete.isPending} onClick={() => setConfirmOpen(false)}
@@ -1103,7 +1116,7 @@ export default function PortfolioPage() {
                 </button>
                 <button type="button" disabled={bulkDelete.isPending} onClick={() => bulkDelete.mutate([...selectedIds])}
                   style={{ flex: 1, height: "44px", cursor: "pointer", border: "1px solid var(--color-dojo-vermilion)", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
-                  {bulkDelete.isPending ? "Deleting…" : "Yes, Delete"}
+                  {bulkDelete.isPending ? "Removing…" : "Yes, Remove"}
                 </button>
               </div>
             </div>

@@ -1,0 +1,135 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+/** Epic A — /api/cards/search relevance. Prisma, cache and the index adapter are MOCKED. */
+
+const prismaMock = vi.hoisted(() => ({ card: { findMany: vi.fn() } }));
+vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
+
+const cacheMock = vi.hoisted(() => ({
+  cacheGetJson: vi.fn(async (_k: string): Promise<unknown> => null),
+  cacheSetJson: vi.fn(async (..._a: unknown[]) => undefined),
+}));
+vi.mock("@/lib/utils/cache", () => cacheMock);
+
+const indexMock = vi.hoisted(() => ({
+  isSearchIndexEnabled: vi.fn(() => false),
+  searchIndexIds: vi.fn(async (..._a: unknown[]): Promise<string[] | null> => null),
+}));
+vi.mock("@/lib/services/card-search-index.service", () => indexMock);
+
+import { GET } from "@/app/api/cards/search/route";
+
+const row = (externalId: string, name: string, number = "1", setName = "Base", marketPrice: number | null = 1) => ({
+  externalId, name, number, rarity: "Rare", types: [], tags: [], imageUrl: "u", imageUrlHi: null,
+  marketPrice, currentPrices: [], set: { name: setName },
+});
+
+const call = (qs: string) => GET(new Request(`http://localhost/api/cards/search?${qs}`));
+const wheres = () => prismaMock.card.findMany.mock.calls.map((c) => (c[0] as { where: Record<string, unknown> }).where);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  cacheMock.cacheGetJson.mockResolvedValue(null);
+  indexMock.isSearchIndexEnabled.mockReturnValue(false);
+  prismaMock.card.findMany.mockResolvedValue([row("base1-4", "Charizard", "4/102")]);
+});
+
+describe("GET /api/cards/search", () => {
+  it("keeps the response shape and 400/404 behavior", async () => {
+    const ok = await call("game=pokemon&query=charizard");
+    expect(ok.status).toBe(200);
+    const body = await ok.json();
+    expect(body.source).toBe("local-db");
+    expect(body.cards[0]).toMatchObject({ id: "base1-4", name: "Charizard", setImage: "Base", hp: null });
+    expect((await call("game=pokemon")).status).toBe(400);
+    expect((await call("game=pokemon&query=x&sort=bogus")).status).toBe(400);
+    prismaMock.card.findMany.mockResolvedValue([]);
+    expect((await call("game=pokemon&query=zzzzqq")).status).toBe(404);
+  });
+
+  it("caps at 60 results", async () => {
+    prismaMock.card.findMany.mockResolvedValue(
+      Array.from({ length: 100 }, (_, i) => row(`s-${String(i).padStart(3, "0")}`, "Dog"))
+    );
+    const body = await (await call("game=pokemon&query=dog")).json();
+    expect(body.cards).toHaveLength(60);
+  });
+
+  it("ranks exact id first and never returns a different id for identifier queries", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("mee-17", "B", "17"), row("mee-16", "A", "16")]);
+    const body = await (await call("game=pokemon&query=mee%2016")).json();
+    expect(body.cards.map((c: { id: string }) => c.id)).toEqual(["mee-16"]);
+    const miss = await call("game=pokemon&query=mee-18");
+    expect(miss.status).toBe(404);
+  });
+
+  it("applies filters to every Prisma query, including typo recall", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // no name hit → stage 2 runs
+    await call("game=pokemon&query=charzard&set=Base&rarity=Rare&graded=ungraded&minPrice=1&maxPrice=9");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2); // stage 1 + stage 2 recall
+    for (const w of ws) {
+      expect(w.set).toMatchObject({ name: { equals: "Base" } });
+      expect(w.rarity).toBeDefined();
+      expect(w.NOT).toBeDefined();
+      expect(w.marketPrice).toEqual({ gte: 1, lte: 9 });
+    }
+  });
+
+  it("omitted sort and sort=trending use relevance; explicit sort keeps DB order", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("b-1", "Pikachu V"), row("a-1", "Pikachu")]);
+    for (const qs of ["game=pokemon&query=pikachu", "game=pokemon&query=pikachu&sort=trending"]) {
+      const body = await (await call(qs)).json();
+      expect(body.cards.map((c: { id: string }) => c.id)).toEqual(["a-1", "b-1"]);
+    }
+    prismaMock.card.findMany.mockClear();
+    const body = await (await call("game=pokemon&query=pikachu&sort=market_asc")).json();
+    expect(body.cards.map((c: { id: string }) => c.id)).toEqual(["b-1", "a-1"]);
+    expect(prismaMock.card.findMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.card.findMany.mock.calls[0][0].orderBy[0]).toEqual({ marketPrice: { sort: "asc", nulls: "last" } });
+  });
+
+  it("uses a different cache key for relevance vs explicit sort", async () => {
+    await call("game=pokemon&query=charizard");
+    await call("game=pokemon&query=charizard&sort=market_desc");
+    const [k1, k2] = cacheMock.cacheSetJson.mock.calls.map((c) => c[0] as string);
+    expect(k1).toContain("sort=rel-v2");
+    expect(k2).toContain("sort=market_desc");
+  });
+
+  it("re-validates cached payloads and treats malformed ones as a miss", async () => {
+    cacheMock.cacheGetJson.mockResolvedValue({ cards: [{ bad: true }], source: "local-db" });
+    const res = await call("game=pokemon&query=charizard");
+    expect(res.status).toBe(200);
+    expect(prismaMock.card.findMany).toHaveBeenCalled();
+  });
+});
+
+describe("Typesense flag", () => {
+  it("is never called when disabled (default)", async () => {
+    await call("game=pokemon&query=charizard");
+    expect(indexMock.searchIndexIds).not.toHaveBeenCalled();
+  });
+
+  it("hydrates from Postgres in index order with the same filters", async () => {
+    indexMock.isSearchIndexEnabled.mockReturnValue(true);
+    indexMock.searchIndexIds.mockResolvedValue(["b-1", "a-1"]);
+    prismaMock.card.findMany.mockResolvedValue([row("a-1", "A"), row("b-1", "B")]);
+    const body = await (await call("game=pokemon&query=thing&set=Base")).json();
+    expect(body.cards.map((c: { id: string }) => c.id)).toEqual(["b-1", "a-1"]);
+    const w = wheres()[0];
+    expect(w.externalId).toEqual({ in: ["b-1", "a-1"] });
+    expect(w.set).toMatchObject({ name: { equals: "Base" } });
+  });
+
+  it.each([
+    ["returns null", () => indexMock.searchIndexIds.mockResolvedValue(null)],
+    ["throws", () => indexMock.searchIndexIds.mockRejectedValue(new Error("down"))],
+  ])("falls back to Postgres with 200 when the adapter %s", async (_n, arrange) => {
+    indexMock.isSearchIndexEnabled.mockReturnValue(true);
+    arrange();
+    const res = await call("game=pokemon&query=charizard");
+    expect(res.status).toBe(200);
+    expect((await res.json()).cards[0].id).toBe("base1-4");
+  });
+});
