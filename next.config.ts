@@ -61,24 +61,21 @@ const nextConfig: NextConfig = {
       // the Vercel ingress path). This global `/:path*` entry closes that
       // gap for every response.
       //
-      // CSP is shipped as Content-Security-Policy-REPORT-ONLY (not enforcing)
-      // on purpose. Two real client-side loads reach ORIGINS not covered by a
-      // `'self'`-only policy, and we cannot confirm them in a browser here:
+      // CSP is ENFORCING (Content-Security-Policy). Every origin the app
+      // genuinely loads is allowlisted per-directive below; nothing else is
+      // permitted. Two real client-side loads shaped the directive set:
       //   1. The scanner's on-device OCR fallback (F-14) dynamically imports
       //      tesseract.js, which — with no corePath/langPath override (see
-      //      scanner/page.tsx runTesseract) — fetches its WASM core and the
-      //      `eng` traineddata from https://cdn.jsdelivr.net at runtime. That
-      //      needs connect-src/script-src for jsdelivr + worker-src blob:,
-      //      none of which are in the directive set below.
+      //      scanner/page.tsx runTesseract, `ocr(canvas, "eng")`) — pulls its
+      //      worker script, WASM core, and `eng` traineddata from
+      //      https://cdn.jsdelivr.net at runtime, and compiles WASM in a blob
+      //      Web Worker. That is why jsdelivr is on script-src + connect-src,
+      //      why script-src carries 'wasm-unsafe-eval' (WASM compile), and why
+      //      worker-src is 'self' blob:. These are the MINIMUM additions that
+      //      keep the OCR fallback working under an enforcing policy.
       //   2. Next.js injects inline runtime bootstrap + styles, so
       //      script-src/style-src keep 'unsafe-inline' (tightening to a nonce
       //      is a deliberate future task — do NOT attempt nonces here).
-      // Report-Only lets the browser REPORT what the policy WOULD block
-      // without breaking the scanner or anything else, so the directives can
-      // be verified against real traffic before flipping to enforcing. To
-      // enforce later: rename the key to "Content-Security-Policy", add
-      // `https://cdn.jsdelivr.net` to connect-src + script-src and
-      // `worker-src 'self' blob:`, then confirm the scanner still OCRs.
       {
         source: "/:path*",
         headers: [
@@ -98,7 +95,7 @@ const nextConfig: NextConfig = {
             value: "camera=(self), microphone=(), geolocation=()",
           },
           {
-            key: "Content-Security-Policy-Report-Only",
+            key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
               // img-src: every host the browser loads card art from directly.
@@ -111,12 +108,16 @@ const nextConfig: NextConfig = {
               //   static.cardmarket.com. data:/blob: cover the scanner canvas.
               "img-src 'self' data: blob: https://*.supabase.co https://images.scrydex.com https://assets.tcgdex.net https://images.pokemontcg.io https://tcgplayer-cdn.tcgplayer.com https://static.cardmarket.com",
               // 'unsafe-inline' required by Next.js inline runtime/styles.
-              "script-src 'self' 'unsafe-inline'",
+              // 'wasm-unsafe-eval' lets tesseract.js compile its WASM core.
+              // cdn.jsdelivr.net hosts the tesseract.js worker script.
+              "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net",
               "style-src 'self' 'unsafe-inline'",
-              // All client fetches hit same-origin /api/* (sec-audit-2 #14).
-              // NOTE: tesseract.js jsdelivr fetch is the one exception — see
-              // the Report-Only rationale above.
-              "connect-src 'self'",
+              // App fetches hit same-origin /api/* (sec-audit-2 #14); the ONE
+              // cross-origin fetch is tesseract.js pulling its WASM core +
+              // `eng` traineddata from cdn.jsdelivr.net (scanner OCR fallback).
+              "connect-src 'self' https://cdn.jsdelivr.net",
+              // tesseract.js runs OCR in a blob-URL Web Worker.
+              "worker-src 'self' blob:",
               "frame-ancestors 'none'",
               "base-uri 'self'",
               "form-action 'self'",
