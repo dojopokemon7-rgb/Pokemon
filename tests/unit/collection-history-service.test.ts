@@ -185,6 +185,34 @@ describe("buildCollectionHistories — addedAt timeline anchor (A1)", () => {
     const histories = await buildCollectionHistories(USER_ID, ["null"], "1M");
     expect(histories["null"]).toEqual([]);
   });
+
+  it("(6) a lot added mid-day on a PAST day yields >=2 valued points over ALL (anchor-dedup regression)", async () => {
+    // Regression for the portfolio/dashboard "Not enough history to chart yet"
+    // bug: a lot added ~18h ago lands on YESTERDAY's calendar day but AFTER
+    // that day's grid instant (grid instants carry the window-start
+    // time-of-day). The ownership gate (collection-series.ts `t < addedAt`)
+    // nulls that day's grid point, so only TODAY's grid instant / the `now`
+    // endpoint is >= addedAt — one valued point. The old anchor-dedup dropped
+    // the addedAt anchor because its calendar day was "covered" by the grid,
+    // collapsing the series to a single point (< 2 drawable → empty chart).
+    // The anchor must now be kept, giving >= 2 valued points so the chart draws.
+    const addedAt = new Date(Date.now() - 18 * 60 * 60 * 1000); // ~18h ago, past day, mid-day
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 2, addedAt, soldAt: null, isSold: false },
+    ]);
+    // Real prices spanning before and after addedAt so carry-forward values it.
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: new Date(addedAt.getTime() - 2 * 60 * 60 * 1000), priceMarket: 8 },
+      { cardId: "card_1", recordedAt: new Date(addedAt.getTime() + 1 * 60 * 60 * 1000), priceMarket: 11 },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["null"], "ALL");
+
+    const series = histories["null"];
+    const numeric = series.filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2); // FAILS pre-fix (collapses to 1)
+    expect(numeric.every((p) => p.value === 16 || p.value === 22)).toBe(true); // 8×2 or 11×2, never fabricated
+  });
 });
 
 // AC-21/AC-22 — the chart's ONLY data source is real stored PricingHistory.

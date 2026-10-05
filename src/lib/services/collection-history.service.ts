@@ -110,48 +110,66 @@ export async function buildCollectionHistories(
     // Daily timeline from the window start to now (inclusive).
     const startMs = startDate.getTime();
     const nowMs = now.getTime();
-    const dayKey = (t: number) => new Date(t).toISOString().slice(0, 10);
 
     const timeline: number[] = [];
-    const gridDays = new Set<string>();
+    // Daily grid instants (startMs + k·DAY_MS), ascending. Each carries the
+    // window-start time-of-day, NOT local/UTC midnight.
+    const gridSteps: number[] = [];
     for (let t = startMs; t <= nowMs; t += DAY_MS) {
       timeline.push(t);
-      gridDays.add(dayKey(t));
+      gridSteps.push(t);
     }
-    // The `now`/today day is deliberately NOT treated as "covered" for anchor
-    // dedup: a lot added earlier TODAY needs its anchor as a distinct intraday
-    // point (its only grid neighbour is the final `now` endpoint). Earlier grid
-    // days ARE covered, so a past-day anchor is dropped as a duplicate date.
-    gridDays.delete(dayKey(nowMs));
+    // The series always ends exactly at `now` (it may differ from the last grid
+    // step by < 1 day). Track whether that endpoint is an EXTRA valued instant
+    // (distinct from the last grid step) so the anchor-dedup counts it too.
+    const nowIsExtra = gridSteps[gridSteps.length - 1] !== nowMs;
 
-    // Inject each lot's acquisition instant as a timeline anchor. Without this
-    // a freshly-added lot (addedAt ≈ now) fails the `t >= addedAt` ownership
-    // gate at every earlier daily point, leaving only the final `now` point —
-    // < 2 drawable points, so the chart renders empty. Clamp each addedAt into
-    // the window [startMs, nowMs] so no point lands left of the window, and skip
-    // a lot already sold before the window opened. An anchor whose CALENDAR DAY
-    // already has a daily-grid point is redundant (the grid point already values
-    // that day) and would otherwise emit a second same-day series point whose
-    // ms differs by the sub-second drift between the stored addedAt and the grid
-    // clock — a duplicate chart date. Drop those; keep only anchors that open a
-    // new day (e.g. a lot added TODAY, whose only grid neighbour is the `now`
-    // endpoint pushed below — that extra same-day point is what gives a
-    // freshly-added lot its 2nd drawable point).
-    // ponytail: O(lots) extra anchor points — fine at per-user lot counts; if a
-    // user ever holds thousands of lots, bucket anchors by day before merging.
+    // Inject each lot's acquisition instant as a timeline anchor. The ownership
+    // gate (collection-series.ts `if (t < lot.addedAt) continue`) nulls every
+    // timeline instant BEFORE `addedAt`, so a lot can only be valued at instants
+    // >= addedAt. Those are a trailing suffix of the ascending grid plus the
+    // `now` endpoint. The chart needs >= 2 drawable (non-null) points to render.
+    //
+    // Keep the addedAt anchor ONLY when the grid+endpoint would otherwise give
+    // the lot FEWER than 2 valued instants — i.e. when fewer than 2 grid
+    // instants are >= addedAt (counting the extra `now` endpoint). This covers:
+    //   • a lot added ~now (its day's grid instant ≈ now is the sole >= addedAt
+    //     grid point) — the anchor is its distinct 2nd point;
+    //   • a lot added mid-day on a PAST day (its own day's grid instant carries
+    //     the start-of-window time-of-day and is < addedAt, so it is nulled;
+    //     only the following day's grid instant / `now` is >= addedAt) — the
+    //     anchor supplies the valued point on its own day, giving 2 total.
+    // A lot held across many whole grid days already has >= 2 valued grid
+    // instants, so its clamped near-startMs anchor is a redundant duplicate and
+    // is dropped. This generalizes the old "today" special-case to every past
+    // day — fixing past-day mid-day adds for portfolio "all", the dashboard's
+    // per-collection series, and the single-collection view in this one builder.
+    //
+    // Also clamp each addedAt into [startMs, nowMs] so no point lands left of
+    // the window, and skip a lot already sold before the window opened.
+    // ponytail: O(lots · log grid) via the binary count below — fine at per-user
+    // lot counts; if a user ever holds thousands of lots, bucket anchors by day.
     for (const l of lots) {
       if (l.isSold && l.soldAt && l.soldAt.getTime() < startMs) continue;
       const added = l.addedAt.getTime();
       if (!Number.isFinite(added)) continue;
+      // Count grid steps >= added (ascending → a trailing suffix). binary search
+      // for the first index whose instant is >= added; suffix length = count.
+      let lo = 0;
+      let hi = gridSteps.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (gridSteps[mid] >= added) hi = mid;
+        else lo = mid + 1;
+      }
+      let valuedGrid = gridSteps.length - lo;
+      if (nowIsExtra && nowMs >= added) valuedGrid += 1; // the `now` endpoint
+      if (valuedGrid >= 2) continue; // grid alone already gives >= 2 valued points
       const anchor = Math.min(Math.max(added, startMs), nowMs);
-      if (gridDays.has(dayKey(anchor))) continue; // day already covered by the grid
       timeline.push(anchor);
     }
 
-    // The `now` endpoint: ensure the series ends exactly at now (it may differ
-    // from the last grid step by < 1 day). This is intentionally NOT a
-    // grid day for anchor-dedup purposes — a lot added today still gets its
-    // anchor as a distinct same-day point.
+    // Ensure the series ends exactly at `now`.
     if (timeline[timeline.length - 1] !== nowMs) timeline.push(nowMs);
 
     timeline.sort((a, b) => a - b);

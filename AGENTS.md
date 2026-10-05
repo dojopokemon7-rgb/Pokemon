@@ -143,7 +143,7 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 |---|---|
 | NotificationsPanel | UI-only empty state; future `GET /api/notifications` is a data-only change |
 | Population report | REWRITTEN (scrydex-migration): PSA English only (Scrydex `include=pop_reports`), BGS unavailable; `getStoredPopulationReport` returns null until a real manual refresh — NO fabricated/reference data (the old REFERENCE_POPULATION was removed) |
-| Dashboard chart data | Synthetic shapes (deterministic PRNG); real `PricingHistory` exists only for 10 harness cards |
+| Dashboard chart data | Real-history-only (scrydex-migration removed `generateMockChartData`): dashboard + portfolio charts are built from real `PricingHistory` via `buildCollectionHistories` (no synthetic PRNG); seeded `PricingHistory` exists only for 10 harness cards |
 | Chart accuracy gate | Validates against a MOCKED Collectr reference in `scripts/compare-chart-accuracy.ts` |
 | Graded metadata | Stored in `UserCollection.condition` ("PSA 10") + `Card.rarity`; dedicated grade columns are the planned migration |
 | `/admin/transactions` | Mock ledger mixing real users + synthetic rows, clearly banner-labeled |
