@@ -31,6 +31,23 @@ const prismaMock = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
+// Credit gate — toggled per test. `pullAndStoreScrydexPrice` now soft-gates at
+// its TOP via `isScrydexLiveApproved` (sec-audit FIX A: close the ungated
+// unauthenticated graded credit-spend path). Default APPROVED so the existing
+// pull/gate/capture tests exercise the live path; the FIX A block flips it off.
+const gateMock = vi.hoisted(() => ({ approved: true }));
+vi.mock("@/lib/services/scrydex-credit-gate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/services/scrydex-credit-gate")>();
+  return {
+    ...actual,
+    isScrydexLiveApproved: vi.fn(async () => gateMock.approved),
+    assertScrydexCreditsApproved: vi.fn(async (op, count = 1) => {
+      if (gateMock.approved) return;
+      throw new actual.ScrydexCreditsNotApproved(op, actual.estimateCredits(op, count));
+    }),
+  };
+});
+
 // Mock the thin client so we control what a "pull" resolves to.
 const scrydexMock = vi.hoisted(() => ({
   resolveScrydexCard: vi.fn(),
@@ -86,6 +103,7 @@ const RAW = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  gateMock.approved = true; // default: credits approved (restored per test)
   // Default: no prior SyncLog → gate is open.
   prismaMock.syncLog.findFirst.mockResolvedValue(null);
   prismaMock.pricingHistory.count.mockResolvedValue(1); // not a first pull by default
@@ -436,5 +454,42 @@ describe("pullAndStoreScrydexPrice — NO fabricated history (Req 7.2/7.3)", () 
     expect(
       snapshotArg.data.some((p: { source: string }) => p.source === "scrydex-trend")
     ).toBe(false);
+  });
+});
+
+describe("pullAndStoreScrydexPrice — credit gate (FIX A, sec-audit)", () => {
+  // The ONLY credit-spending pull that used to lack a gate. With live credits
+  // NOT approved it must be a clean no-op (fail-open, RULE 7): the no-op shape,
+  // NO Scrydex fetch, NO price rows, NO SyncLog — so the unauthenticated graded
+  // GET and portfolio refresh can't walk the catalog spending credits.
+  it("returns the no-op shape and does NOT fetch Scrydex when credits are NOT approved", async () => {
+    gateMock.approved = false;
+    // Even with a wide-open freshness gate + a resolvable card, nothing fires.
+    prismaMock.syncLog.findFirst.mockResolvedValue(null);
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+    scrydexMock.fetchScrydexCardById.mockResolvedValue(RESOLVED.card);
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    const result = await pullAndStoreScrydexPrice(CARD);
+
+    expect(result).toEqual({ pulled: false, credits: 0, card: null });
+    expect(scrydexMock.fetchScrydexCardById).not.toHaveBeenCalled();
+    expect(scrydexMock.resolveScrydexCard).not.toHaveBeenCalled();
+    // Gate is BEFORE the freshness check — not even the SyncLog read happens.
+    expect(prismaMock.syncLog.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.pricingHistory.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.syncLog.create).not.toHaveBeenCalled();
+  });
+
+  it("still no-ops under opts.force when credits are NOT approved (gate precedes force)", async () => {
+    gateMock.approved = false;
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+    scrydexMock.fetchScrydexCardById.mockResolvedValue(RESOLVED.card);
+
+    const result = await pullAndStoreScrydexPrice(CARD, { force: true });
+
+    expect(result).toEqual({ pulled: false, credits: 0, card: null });
+    expect(scrydexMock.resolveScrydexCard).not.toHaveBeenCalled();
+    expect(scrydexMock.fetchScrydexCardById).not.toHaveBeenCalled();
   });
 });

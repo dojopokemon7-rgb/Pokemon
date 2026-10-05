@@ -38,6 +38,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
@@ -55,6 +56,23 @@ interface SoldRecord {
   company: string | null;
   url: string | null;
 }
+
+// RULE 4: the exact shape this route caches (an array of SoldRecord). Used ONLY
+// to re-validate the Redis blob on READ — a stale OLD-shape blob fails this and
+// is treated as a miss (fall through to the live Postgres read), never served.
+const SoldRowsCacheSchema = z.array(
+  z.object({
+    itemId: z.string(),
+    source: z.string().nullable(),
+    title: z.string().nullable(),
+    price: z.number().nullable(),
+    currency: z.string().nullable(),
+    soldAt: z.string().nullable(),
+    grade: z.string().nullable(),
+    company: z.string().nullable(),
+    url: z.string().nullable(),
+  })
+);
 
 export async function GET(
   _request: Request,
@@ -75,9 +93,13 @@ export async function GET(
   const cacheKey = RedisKeys.soldRows(card.id);
 
   // Short-TTL read-through (best-effort, fail-open → re-read Postgres on miss).
-  const cached = await cacheGetJson<SoldRecord[]>(cacheKey);
-  if (cached) {
-    return NextResponse.json({ listings: cached, source: "cache" }, { status: 200 });
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  if (rawCached != null) {
+    // RULE 4: re-parse on read; a stale OLD-shape blob is treated as a miss.
+    const parsed = SoldRowsCacheSchema.safeParse(rawCached);
+    if (parsed.success) {
+      return NextResponse.json({ listings: parsed.data, source: "cache" }, { status: 200 });
+    }
   }
 
   // Pure Postgres read — newest sales first, nulls last, capped at 8.

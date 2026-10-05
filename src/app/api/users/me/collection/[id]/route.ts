@@ -72,7 +72,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const parsed = UpdateCollectionItemSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Bad Request", message: parsed.error.message }, { status: 400 });
+    // Issues-summary (same form other routes use) instead of the full
+    // `.message` — avoids echoing a verbose internal schema dump.
+    const message = parsed.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    return NextResponse.json({ error: "Bad Request", message }, { status: 400 });
   }
 
   try {

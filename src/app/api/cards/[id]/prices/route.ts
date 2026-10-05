@@ -1,7 +1,16 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
+
+// RULE 4: the exact shape this route caches. Used ONLY to re-validate the Redis
+// blob on READ — a stale OLD-shape blob fails this and is treated as a miss
+// (fall through to the live Prisma read), never served.
+const PricesCacheSchema = z.object({
+  prices: z.array(z.unknown()),
+  weeklyChangePct: z.number().nullable(),
+});
 
 export async function GET(
   _request: Request,
@@ -13,9 +22,13 @@ export async function GET(
   // the catalog external id). No Scrydex call here, so no credit impact. A
   // Redis fault falls through to the live Prisma read.
   const cacheKey = RedisKeys.cardPrices(externalId);
-  const cached = await cacheGetJson<{ prices: unknown[]; weeklyChangePct: number | null }>(cacheKey);
-  if (cached) {
-    return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  if (rawCached != null) {
+    const parsed = PricesCacheSchema.safeParse(rawCached);
+    if (parsed.success) {
+      return NextResponse.json(parsed.data, { headers: { "Cache-Control": "no-store" } });
+    }
+    // parse miss (stale OLD-shape blob) → fall through to the live read.
   }
 
   try {

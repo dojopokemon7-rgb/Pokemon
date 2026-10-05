@@ -15,6 +15,21 @@ import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
 import { getOrCreateMainCollection } from "@/lib/services/collection.service";
 
+// RULE 4: the exact shape the GET caches (`{ items }`). Used ONLY to re-validate
+// the Redis blob on READ — a parse failure = stale shape = treat as a miss.
+// Permissive on individual fields (nullable/optional) but structural: it must be
+// an object with an `items` array of objects carrying a nested `card`.
+const CollectionCacheSchema = z.object({
+  items: z.array(
+    z.object({
+      id: z.string(),
+      cardId: z.string(),
+      quantity: z.number(),
+      card: z.object({ id: z.string(), externalId: z.string() }).passthrough(),
+    }).passthrough()
+  ),
+});
+
 export async function GET(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
   if (guard.unauthorized) return guard.unauthorized;
@@ -26,8 +41,13 @@ export async function GET(request: Request): Promise<NextResponse> {
   // falls through to the live findMany below (NOT a 500). INVALIDATED BY:
   // add (POST below) / sell / update / delete collection item.
   const cacheKey = RedisKeys.userCollection(userId);
-  const cached = await cacheGetJson<{ items: unknown[] }>(cacheKey);
-  if (cached) return NextResponse.json(cached, { status: 200 });
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  if (rawCached != null) {
+    // RULE 4: re-parse the cached blob with the output schema; a stale OLD-shape
+    // blob is treated as a MISS (fall through to the live query), never served.
+    const parsed = CollectionCacheSchema.safeParse(rawCached);
+    if (parsed.success) return NextResponse.json(parsed.data, { status: 200 });
+  }
 
   try {
     // Explicit `select`: `include: { set: true }` was pulling every

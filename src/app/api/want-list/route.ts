@@ -14,6 +14,14 @@ import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
+import { z } from "zod";
+
+// RULE 4: the exact shape the GET caches (`{ data }`). Used ONLY to re-validate
+// the Redis blob on READ — a stale OLD-shape blob fails this and is treated as a
+// miss (fall through to the live list), never served.
+const WantListCacheSchema = z.object({
+  data: z.array(z.object({ id: z.string() }).passthrough()),
+});
 
 export async function GET(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
@@ -41,9 +49,13 @@ export async function GET(request: Request): Promise<NextResponse> {
   // INVALIDATED BY: want-list add (POST below) / move / remove (whole family).
   const scopeToken = collParam === null ? "all" : collParam;
   const cacheKey = `${RedisKeys.wantList(userId, intent)}:${scopeToken}`;
-  const cached = await cacheGetJson<{ data: unknown[] }>(cacheKey);
-  if (cached) {
-    return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  if (rawCached != null) {
+    // RULE 4: re-parse on read; parse failure = stale shape = treat as a miss.
+    const parsed = WantListCacheSchema.safeParse(rawCached);
+    if (parsed.success) {
+      return NextResponse.json(parsed.data, { headers: { "Cache-Control": "no-store" } });
+    }
   }
 
   // Defensive: a DB hiccup should degrade to an empty list, not a 500 that

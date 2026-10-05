@@ -12,12 +12,22 @@
  */
 
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import {
   getStoredPopulationReport,
   BGS_POPULATION_SUPPORTED,
 } from "@/lib/services/population.service";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
+
+// RULE 4: the exact shape this route caches. Used ONLY to re-validate the Redis
+// blob on READ — a stale OLD-shape blob fails this and is treated as a miss
+// (fall through to the live stored read), never served. `report` is a real
+// object when present (only non-null reports are ever cached).
+const PopulationCacheSchema = z.object({
+  report: z.object({}).passthrough(),
+  bgsSupported: z.boolean(),
+});
 
 export async function GET(
   _request: Request,
@@ -30,9 +40,13 @@ export async function GET(
   // Scrydex fetch, so caching it has no credit impact. A Redis fault falls
   // through to the live stored read below.
   const cacheKey = RedisKeys.cardPopulation(id);
-  const cached = await cacheGetJson<{ report: unknown; bgsSupported: boolean }>(cacheKey);
-  if (cached) {
-    return NextResponse.json(cached, { headers: { "Cache-Control": "private, max-age=86400" } });
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  if (rawCached != null) {
+    const parsed = PopulationCacheSchema.safeParse(rawCached);
+    if (parsed.success) {
+      return NextResponse.json(parsed.data, { headers: { "Cache-Control": "private, max-age=86400" } });
+    }
+    // parse miss (stale OLD-shape blob) → fall through to the live stored read.
   }
 
   try {

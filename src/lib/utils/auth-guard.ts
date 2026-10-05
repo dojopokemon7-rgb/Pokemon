@@ -36,6 +36,7 @@
  */
 
 import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 /**
@@ -127,15 +128,15 @@ export async function requireAdmin(request: Request): Promise<AuthGuardResult> {
   const guard = await requireAuth(request);
   if (guard.unauthorized) return guard;
 
-  // `isAdmin` is on the session directly via Better Auth's
-  // `user.additionalFields` (src/lib/auth.ts), so this used to do a
-  // second Prisma `findUnique` on every admin API call and no longer
-  // needs to. Session data is cookie-cached for 5 minutes — after
-  // which Better Auth re-validates from the DB — so a revoked admin
-  // loses API access within 5 minutes of the change. Same window as
-  // the RSC layouts, kept consistent.
-  const isAdmin = (guard.session.user as { isAdmin?: boolean }).isAdmin;
-  if (!isAdmin) {
+  // Re-read `isAdmin` FRESH from the DB — never trust the cookie-cached
+  // session claim (cached up to 5 min). The admin RSC layout already does
+  // this, so the admin API must match for real-time revocation: a demoted
+  // admin loses API access immediately, not up to 5 minutes later.
+  const dbUser = await prisma.user.findUnique({
+    where: { id: guard.session.user.id },
+    select: { isAdmin: true },
+  });
+  if (!dbUser?.isAdmin) {
     return {
       unauthorized: NextResponse.json(
         { error: "Forbidden", message: "Admin privileges required." },

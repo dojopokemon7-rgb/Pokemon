@@ -16,10 +16,17 @@ import {
   VirtualCollectionReadonlyError,
   MainCollectionProtectedError,
 } from "@/lib/services/collection.service";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
+
+// RULE 4: the exact shape the GET caches (`{ data }`, each a collection with
+// derived buckets). Used ONLY to re-validate the Redis blob on READ — a stale
+// OLD-shape blob fails this and is treated as a miss (fall through to live).
+const CollectionsCacheSchema = z.object({
+  data: z.array(z.object({ id: z.string(), name: z.string() }).passthrough()),
+});
 
 export async function GET(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
@@ -32,9 +39,13 @@ export async function GET(request: Request): Promise<NextResponse> {
   // is a BROWSER directive, independent of this server-side Redis cache.
   // INVALIDATED BY: collection create (POST below) / rename / delete.
   const cacheKey = RedisKeys.collections(userId);
-  const cached = await cacheGetJson<{ data: unknown[] }>(cacheKey);
-  if (cached) {
-    return NextResponse.json(cached, { headers: { "Cache-Control": "no-store" } });
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  if (rawCached != null) {
+    // RULE 4: re-parse on read; parse failure = stale shape = treat as a miss.
+    const parsed = CollectionsCacheSchema.safeParse(rawCached);
+    if (parsed.success) {
+      return NextResponse.json(parsed.data, { headers: { "Cache-Control": "no-store" } });
+    }
   }
 
   // F-#8: the list now carries each collection's five derived buckets. A base

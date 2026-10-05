@@ -84,10 +84,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const body = await request.json().catch(() => null);
+    const body = (await request.json().catch(() => null)) as {
+      metadata?: { topic?: unknown };
+      notification?: { notificationId?: unknown };
+    } | null;
+    // Log only non-PII event metadata (topic + correlation id) — NEVER the raw
+    // body, which can carry an eBay userId (PII). We store no per-user eBay
+    // data, so there is nothing to act on beyond acknowledging receipt.
+    const topic = typeof body?.metadata?.topic === "string" ? body.metadata.topic : "unknown";
+    const notificationId =
+      typeof body?.notification?.notificationId === "string"
+        ? body.notification.notificationId
+        : "unknown";
     console.log(
-      "[ebay-mp-deletion] Received account deletion notification:",
-      JSON.stringify(body)?.slice(0, 500)
+      `[ebay-mp-deletion] Received account deletion notification (topic=${topic}, id=${notificationId})`
     );
     return NextResponse.json({ received: true }, { status: 200 });
   } catch (err) {

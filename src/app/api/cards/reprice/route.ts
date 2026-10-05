@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { redis, RedisKeys } from "@/lib/redis";
+import { requireAuth } from "@/lib/utils/auth-guard";
 import { pickPokemonMarketPrice, type PokemonPricePayload } from "@/lib/utils/card-price";
 
 /**
@@ -44,6 +45,13 @@ async function fetchLivePrice(externalId: string): Promise<number | null> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // Auth required: this fans out up to MAX_IDS live pokemontcg.io fetches and
+  // writes the SHARED Card.marketPrice. The client only ever fires it post-
+  // render as a logged-in user, so gating it removes the unauthenticated
+  // upstream fan-out + shared-write trigger (sec-audit-1 #3).
+  const guard = await requireAuth(request);
+  if (guard.unauthorized) return guard.unauthorized;
+
   let body: unknown;
   try {
     body = await request.json();

@@ -33,6 +33,7 @@ import {
 import { redis, RedisKeys } from "@/lib/redis";
 import {
   assertScrydexCreditsApproved,
+  isScrydexLiveApproved,
   SCRYDEX_CREDIT_COST,
 } from "./scrydex-credit-gate";
 
@@ -85,6 +86,18 @@ export async function pullAndStoreScrydexPrice(
   card: ScrydexPullCard,
   opts?: { force?: boolean }
 ): Promise<{ pulled: boolean; credits: number; card: ScrydexCard | null }> {
+  // --- 0. Credit gate (SOFT) ----------------------------------------------
+  // This is a live 1-credit path (fetchScrydexCardById). Unlike history /
+  // population / listings (which `assertScrydexCreditsApproved` at the top),
+  // this function is reachable from the UNAUTHENTICATED GET /cards/[id]/graded
+  // and from portfolio/refresh. Gate it the SOFT way (not the throwing assert)
+  // so denial is a clean fail-open no-op (RULE 7) — the graded route then
+  // serves its stored/curated fallback and refresh counts 0 — instead of an
+  // exception. DENY by default (env/redis approval only).
+  if (!(await isScrydexLiveApproved())) {
+    return { pulled: false, credits: 0, card: null };
+  }
+
   // --- 1. Freshness gate ---------------------------------------------------
   // When the gate short-circuits we have NOT fetched a ScrydexCard this call,
   // so we return `card: null`. Callers that need the resolved card on a fresh
