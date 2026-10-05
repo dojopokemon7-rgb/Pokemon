@@ -27,6 +27,7 @@ import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/componen
 import { Skeleton } from "@/components/Skeleton";
 import { useDelayedFlag } from "@/components/useDelayedFlag";
 import { toHistoryToken, shouldShowUncategorized } from "@/lib/utils/collection-ids";
+import { computeOverallChange } from "@/lib/utils/overall-change";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { HeaderLeftSlot } from "../../header-slot";
 
@@ -669,26 +670,17 @@ export default function DashboardClient({
       .slice(0, 5)
       .map(toRow);
 
-    const OVERALL_PCT_BY_RANGE: Record<RangeId, number> = {
-      "1D": 0.4,
-      "7D": 2.1,
-      "1M": 9.6,
-      "3M": 14.3,
-      "6M": 22.7,
-      "MAX": 41.8,
-    };
-    const overallPct = OVERALL_PCT_BY_RANGE[activeRange];
-    const overallDelta = marketValue * (overallPct / 100);
-
-    return { marketValue, paid, realized, unrealized, mostValuable, collections, gainers, losers, overallPct, overallDelta };
-  }, [collectionData, activeRange, collOptions]);
+    // NOTE: the headline overall % / delta is NOT computed here. It is a REAL
+    // value derived from the drawn chart series (see `headlineChange` below),
+    // never a hardcoded per-range constant (AGENTS.md RULE 2).
+    return { marketValue, paid, realized, unrealized, mostValuable, collections, gainers, losers };
+  }, [collectionData, collOptions]);
 
   // Focused / active stat metrics for the top card (matching Image 1)
   const activeStat = useMemo(() => {
     if (focusedId && activeSelectedIds.has(focusedId)) {
       const opt = collOptions.find((o) => o.id === focusedId);
       if (opt) {
-        const overallDelta = opt.marketValue * (stats.overallPct / 100);
         return {
           name: opt.name,
           color: opt.color,
@@ -696,7 +688,6 @@ export default function DashboardClient({
           paid: opt.paid,
           realized: opt.realized,
           cardCount: opt.cardCount,
-          overallDelta,
         };
       }
     }
@@ -712,7 +703,6 @@ export default function DashboardClient({
       rVal += opt.realized;
       count += opt.cardCount;
     }
-    const overallDelta = mVal * (stats.overallPct / 100);
     const isSingle = activeSelectedOptions.length === 1;
     return {
       name: isSingle ? activeSelectedOptions[0].name : `${activeSelectedOptions.length} COLLECTIONS`,
@@ -721,9 +711,8 @@ export default function DashboardClient({
       paid: pVal,
       realized: rVal,
       cardCount: count,
-      overallDelta,
     };
-  }, [focusedId, activeSelectedIds, collOptions, activeSelectedOptions, stats.overallPct]);
+  }, [focusedId, activeSelectedIds, collOptions, activeSelectedOptions]);
 
   // Translate each UI bucket id to the history-service token ("__uncat__" →
   // "null") so the loose/Main bucket actually filters collectionId IS NULL
@@ -808,6 +797,21 @@ export default function DashboardClient({
       };
     });
   }, [activeSelectedOptions, realHistoriesData]);
+
+  // REAL headline overall change (AGENTS.md RULE 2 — replaces the old hardcoded
+  // OVERALL_PCT_BY_RANGE). Derived from the SAME chart series the user sees:
+  //  - combined headline → aggregate of ALL selected collections' series,
+  //  - focused-collection stat → that one collection's series only,
+  // so the "+$X · +Y%" badge agrees with the drawn curve. When the scope has
+  // fewer than 2 real valued points (not enough history), delta/pct are null →
+  // the badge renders "—", never a fabricated number or a misleading 0%.
+  const headlineChange = useMemo(() => {
+    const scoped =
+      focusedId && activeSelectedIds.has(focusedId)
+        ? chartSeriesList.filter((s) => s.id === focusedId)
+        : chartSeriesList;
+    return computeOverallChange(scoped);
+  }, [chartSeriesList, focusedId, activeSelectedIds]);
 
   // Active tab card rows
   const getActiveRows = () => {
@@ -983,9 +987,22 @@ export default function DashboardClient({
                 {hidden ? `$ ${mask}${mask}` : fmt(activeStat.marketValue)}
               </div>
               <div style={{ paddingBottom: "4px" }}>
-                <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-jade)" }}>
-                  ▲ {hidden ? mask : `+${fmt(activeStat.overallDelta)}`} · {stats.overallPct}%
-                </span>
+                {/* REAL overall change (null → honest "—", never fabricated). */}
+                {headlineChange.delta == null || headlineChange.pct == null ? (
+                  <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+                    —
+                  </span>
+                ) : (
+                  (() => {
+                    const up = headlineChange.delta >= 0;
+                    const sign = up ? "+" : "−";
+                    return (
+                      <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
+                        {up ? "▲" : "▼"} {hidden ? mask : `${sign}${fmt(Math.abs(headlineChange.delta))}`} · {sign}{Math.abs(headlineChange.pct).toFixed(1)}%
+                      </span>
+                    );
+                  })()
+                )}
               </div>
             </div>
 
