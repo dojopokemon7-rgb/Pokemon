@@ -33,7 +33,12 @@ export const maxDuration = 300;
 
 function authorised(request: NextRequest): boolean {
   const expected = process.env.CRON_SECRET;
-  if (!expected) return true; // local dev / unconfigured — allow
+  if (!expected) {
+    // Fail-CLOSED in production: a missing CRON_SECRET must NOT allow an
+    // unauthenticated, credit-spending sync to be triggered by anyone. Only
+    // allow the unconfigured pass-through in non-production (local dev).
+    return process.env.NODE_ENV !== "production";
+  }
 
   const header = request.headers.get("authorization") ?? "";
   const bearer = header.startsWith("Bearer ")
