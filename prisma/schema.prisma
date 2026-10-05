@@ -156,6 +156,12 @@ model CardSet {
   // Search's F-06 set filter matches `set: { name: { equals, insensitive } }`
   // and the filter dropdown lists set names; index the column those hit.
   @@index([name])
+  // A pg_trgm GIN trigram index `card_set_name_trgm_idx` on name
+  // (migration 20250106000000_pg_trgm_search_indexes) accelerates the search
+  // route's `set: { name: { contains, insensitive } }` substring match — the
+  // btree above only serves the `equals` filter / ORDER BY, not `ILIKE '%x%'`.
+  // Raw-SQL migration (not the postgresqlExtensions preview feature); apply via
+  // `prisma migrate deploy`. Not expressible in Prisma schema → not an @@index.
   @@map("card_set")
 }
 
@@ -222,6 +228,14 @@ model Card {
   // index is the structure Postgres uses for array membership; without it
   // the `has` predicate is a sequential scan of the whole catalog.
   @@index([tags], type: Gin)
+  // pg_trgm GIN trigram indexes `card_name_trgm_idx` (name) and
+  // `card_number_trgm_idx` (number), migration 20250106000000_pg_trgm_search_indexes,
+  // accelerate the search route's `{ name: { contains } }` and
+  // `{ number: { contains } }` substring (`ILIKE '%term%'`) matches. The btree
+  // @@index([name]) above is KEPT (it serves ORDER BY name / exact equality,
+  // which trigram does not) — these are additive. Raw-SQL migration (not the
+  // postgresqlExtensions preview feature); apply via `prisma migrate deploy`.
+  // Trigram ops classes aren't expressible in Prisma schema → not an @@index.
   @@map("card")
 }
 
