@@ -607,6 +607,31 @@ export default function PortfolioPage() {
     onError: (err: Error) => setToast(err.message),
   });
 
+  // Explicit, user-triggered 24h batched price refresh for ACTIVE holdings.
+  // NOT auto-fired on mount (that would spend credits uncontrolled) — only on
+  // the "Refresh prices" button click. The endpoint is double-gated (credit
+  // approval + per-card 24h freshness), so a click within 24h costs nothing.
+  // On success we refetch the collection families so fresh prices render.
+  const refreshPrices = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/users/me/portfolio/refresh", {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Could not refresh prices.");
+      return res.json() as Promise<{ refreshed: number; skipped: number; failed?: number; reason?: string }>;
+    },
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
+      queryClient.invalidateQueries({ queryKey: ["collection"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio-history"] });
+      if (r.reason === "disabled") setToast("Price refresh is currently unavailable");
+      else if (r.refreshed > 0) setToast(`Refreshed ${r.refreshed} price${r.refreshed !== 1 ? "s" : ""}`);
+      else setToast("Prices are already up to date");
+    },
+    onError: (err: Error) => setToast(err.message),
+  });
+
   const revertSold = useMutation({
     mutationFn: async (id: string) => {
       const res = await fetch(`/api/users/me/collection/${id}`, {
@@ -980,6 +1005,18 @@ export default function PortfolioPage() {
         <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
           {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
         </span>
+
+        {canSelect && (
+          <button
+            type="button"
+            onClick={() => refreshPrices.mutate()}
+            disabled={refreshPrices.isPending}
+            title="Refresh prices for your active cards"
+            style={{ ...dropdownBtn, ...(refreshPrices.isPending ? { opacity: 0.5, cursor: "not-allowed" } : null) }}
+          >
+            {refreshPrices.isPending ? "Refreshing…" : "Refresh prices"}
+          </button>
+        )}
 
         {canSelect && (
           <button
