@@ -16,7 +16,7 @@
     "test:e2e": "playwright test",
     "test:chart-accuracy": "tsx scripts/compare-chart-accuracy.ts",
     "verify": "npm run lint && npm run test:unit && npm run test:integration && npm run test:chart-accuracy && npm run test:e2e",
-    "audit": "npm audit --audit-level=critical",
+    "audit": "npm audit --audit-level=high",
     "audit:fix": "npm audit fix",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
