@@ -183,7 +183,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - 200 `{ ok: true, summary: { startedAt, finishedAt, durationMs, setsConsidered, setsProcessed, cardsUpserted, perSet: [{ game, sourceSetId, setName, cardsUpserted, durationMs, skipped?, error? }], errors } }`; zero-processed is still ok. 500 `{ ok: false, error }` on fatal.
 
 ### `GET /api/health` — Docker healthcheck
-- 200 `{ status: "ok", timestamp, services: { app: "ok", redis: "ok" } }`; Redis unreachable → **503** `{ status: "degraded", services: { redis: "unreachable" } }` (the only place Redis affects status).
+- Readiness gates on **Postgres only** (the source of truth). 200 `{ status: "ok", timestamp, services: { app: "ok", postgres: "ok", redis: "ok" } }` when both reachable. Redis is cache-only/optional (RULE 1) and NEVER gates readiness → Redis unreachable is **still 200** `{ status: "degraded", services: { postgres: "ok", redis: "unreachable" } }`. Postgres unreachable → **503** `{ status: "error", services: { postgres: "unreachable" } }`.
 
 ### `GET /api/one-piece-img/[cardId]` — Bandai CDN same-origin proxy
 - `[cardId]` must match `/^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/` (whitelist — prevents open proxy) else 400.

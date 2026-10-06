@@ -322,5 +322,5 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 ## 12. Deploy topology
 
 - **Vercel**: cron 02:00 UTC hits `/api/cron/sync-cards` with `Authorization: Bearer $CRON_SECRET`; preview URLs trusted via `*.vercel.app`.
-- **Docker**: multi-stage build of `output:"standalone"`; compose adds Redis; healthcheck `/api/health` (503 when Redis unreachable — the ONLY place Redis affects status).
+- **Docker**: multi-stage build of `output:"standalone"`; compose adds Redis; healthcheck `/api/health` gates on **Postgres** (503 only when Postgres is unreachable). Redis is cache-only/optional (RULE 1) — a Redis outage yields HTTP 200 `status:"degraded"`, never 503.
 - **E2E/Docker asset fix**: `scripts/assemble-standalone.mjs` copies `.next/static` + `public` into the standalone tree (Next doesn't).
