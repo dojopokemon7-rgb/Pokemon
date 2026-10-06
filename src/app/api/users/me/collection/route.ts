@@ -153,7 +153,8 @@ const AddCardSchema = z.object({
   condition: z.string().trim().optional(),
   // Price the user actually paid — defaults to the card's current
   // market price if omitted (a reasonable default, not a fabricated one).
-  purchasePrice: z.number().nullable().optional(),
+  // Must be a real, nonnegative, finite amount (reject -5 / NaN / Infinity).
+  purchasePrice: z.number().finite().nonnegative().nullable().optional(),
   // F-10: file this copy under a named collection (omitted = the request's
   // top-level collectionId, else the user's Main). A per-item id that is not
   // owned is coerced to Main (no id leak). The Add sheet's dropdown sets it.

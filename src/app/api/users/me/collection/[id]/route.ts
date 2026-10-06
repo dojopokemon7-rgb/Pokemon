@@ -46,14 +46,17 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
 
 const UpdateCollectionItemSchema = z.object({
   quantity: z.number().int().min(1).optional(),
-  purchasePrice: z.number().nullable().optional(),
+  // Nonnegative, finite money only (reject -5 / NaN / Infinity).
+  purchasePrice: z.number().finite().nonnegative().nullable().optional(),
   condition: z.string().trim().nullable().optional(),
   collectionId: z.string().trim().nullable().optional(),
   // Collectr Mark as Sold feature
   isSold: z.boolean().optional(),
-  soldPrice: z.number().nullable().optional(),
+  soldPrice: z.number().finite().nonnegative().nullable().optional(),
   soldQuantity: z.number().int().min(1).optional(),
-  soldAt: z.string().optional(),
+  // Coerce to a Date and reject a malformed string (z.coerce.date rejects an
+  // unparseable value). Yields a Date, so downstream uses it directly.
+  soldAt: z.coerce.date().optional(),
 });
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -105,7 +108,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           { status: 400 }
         );
       }
-      const saleDate = soldAt ? new Date(soldAt) : new Date();
+      const saleDate = soldAt ?? new Date(); // soldAt is already a coerced Date
       const qtyToSell = soldQuantity ?? existing.quantity;
 
       if (qtyToSell < existing.quantity) {
@@ -190,7 +193,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           ...(condition !== undefined ? { condition } : {}),
           ...(collectionId !== undefined ? { collectionId } : {}),
           ...(soldPrice !== undefined ? { soldPrice } : {}),
-          ...(soldAt !== undefined ? { soldAt: new Date(soldAt) } : {}),
+          ...(soldAt !== undefined ? { soldAt } : {}), // already a coerced Date
         },
       });
 
