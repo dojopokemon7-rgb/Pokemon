@@ -414,14 +414,12 @@ export default function ScannerPage() {
   return (
     <div
       style={{
-        // minHeight (not a hard height) + overflow-y:auto so the page SCROLLS
-        // on short viewports. The old `height:100dvh; overflow:hidden` clipped
-        // everything below the camera frame — on mobile the scan RESULTS (and
-        // the "Choose photo" button) rendered off-screen and were unreachable
-        // (desktop's taller viewport hid the bug). WebkitOverflowScrolling for
-        // momentum scroll on iOS Safari.
-        position: "relative", minHeight: "100dvh", overflowY: "auto",
-        WebkitOverflowScrolling: "touch",
+        // Flow naturally and size to content — the SCROLL lives on the
+        // full-bleed wrapper in dashboard-client-shell.tsx (minHeight:100dvh +
+        // overflowY:auto). This inner div must NOT also be a 100dvh scroller or
+        // the two nested scroll regions fight on mobile; it just lays out the
+        // camera + results in a column and lets the wrapper scroll them.
+        position: "relative",
         padding: "24px 22px", color: "var(--color-dojo-ink)",
         display: "flex", flexDirection: "column", gap: "16px",
       }}

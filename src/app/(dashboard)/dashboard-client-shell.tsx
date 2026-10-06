@@ -139,15 +139,19 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   };
 
   // Defect 5: the scanner is an immersive, locked camera view — no app
-  // header, no bottom tab bar, and no scrolling. Render it full-bleed in
-  // its own locked frame (the page provides its own close "X"). Still
-  // width-constrained to the phone frame on desktop for consistency.
+  // header, no bottom tab bar. Render it full-bleed in its own frame (the page
+  // provides its own close "X"). Still width-constrained to the phone frame on
+  // desktop for consistency. SCROLL: minHeight (not a hard height) + overflowY
+  // auto — the scan RESULTS render BELOW the camera frame; on short mobile
+  // viewports a `height:100dvh; overflow:hidden` wrapper clipped them off-screen
+  // and unreachable (the bug: works on laptop's tall viewport, not on mobile).
   if (pathname === "/scanner" || pathname.startsWith("/scanner/")) {
     return (
       <div
         style={{
-          height: "100dvh",
-          overflow: "hidden",
+          minHeight: "100dvh",
+          overflowY: "auto",
+          WebkitOverflowScrolling: "touch",
           backgroundColor: "var(--color-dojo-app)",
           maxWidth: SCANNER_MAX_WIDTH,
           marginInline: "auto",
