@@ -24,12 +24,16 @@
  *   by-id endpoint — resolveScrydexCard() searches by name and matches on
  *   number+set to find the native id, which the caller caches on Card.scrydexId.
  *
- * VISION ENDPOINT: UNRESOLVED as of 2026-10-02 (see FEAT-001 probe findings).
- *   None of the candidate POST paths returned a usable match, so identifyCard
- *   returns null and recognize/route.ts falls back to on-device Tesseract.
- *   (That fallback is verified to exist in recognize/route.ts.) When a Vision
- *   path is confirmed, wire it here + Zod-parse the body + name the path in a
- *   load-bearing comment. Never fabricate a match.
+ * VISION ENDPOINT: CONFIRMED WORKING (verified 2026-10-06 with a live probe).
+ *   `POST /vision/v1/cards/identify` (multipart, X-Api-Key + X-Team-ID) returns
+ *   HTTP 200 with { data: { analysis, matches:[{ score, card:{ id, name, … } }] } }
+ *   — e.g. a Charizard image resolved to card id "sv3pt5-199" at score ~1.24.
+ *   identifyCard() below posts to this path and Zod-parses the body; the top
+ *   match's `card.id` is the Scrydex catalog id recognize/route.ts consumes.
+ *   On no-match / error it returns null and the route falls back to on-device
+ *   Tesseract (still verified in recognize/route.ts). Never fabricate a match.
+ *   (Supersedes the earlier 2026-10-02 "UNRESOLVED" note — that probe predated
+ *   the correct documented path now in use.)
  */
 import { z } from "zod";
 import { Game } from "@prisma/client";
