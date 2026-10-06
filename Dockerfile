@@ -51,14 +51,21 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Copy the standalone build output
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+# Copy the standalone build output, owned by the non-root runtime user so Next
+# can write its runtime caches (ISR/prerender under .next/cache). Without
+# `--chown`, the copied tree is root-owned and the `nextjs` user hits
+# `EACCES: mkdir '/app/.next/cache'` on first render.
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 # Prisma client binary needs the schema for migrations (optional here, but good practice)
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
+
+# Pre-create the Next.js cache dir owned by the runtime user so ISR/prerender
+# cache writes never hit EACCES (the standalone output omits this dir).
+RUN mkdir -p .next/cache && chown -R nextjs:nodejs .next
 
 USER nextjs
 
