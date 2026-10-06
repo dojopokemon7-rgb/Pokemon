@@ -23,6 +23,7 @@
 
 import { prisma } from "@/lib/db";
 import { CARDS, CHART_HARNESS_SOURCE } from "./compare-chart-accuracy";
+import { assertSafeToWrite } from "./_guard";
 
 /**
  * Marks rows this script owns, so re-runs can clean up only their own.
@@ -89,6 +90,7 @@ async function ensureCard(externalId: string, label: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  assertSafeToWrite();
   console.log(`\n🌱 Seeding PricingHistory for ${CARDS.length} cards (source="${SEED_SOURCE}")…\n`);
 
   let cardsTouched = 0;

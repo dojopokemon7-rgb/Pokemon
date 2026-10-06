@@ -27,6 +27,7 @@
 import { prisma } from "@/lib/db";
 import { fetchPokemonMarketPrice } from "@/lib/services/pokemon-price.service";
 import { CARDS } from "./compare-chart-accuracy";
+import { assertSafeToWrite } from "./_guard";
 
 /** Marks rows this script owns (real API snapshots). */
 const SNAPSHOT_SOURCE = "pokemon-tcg-api";
@@ -42,6 +43,7 @@ function utcMidnightToday(): Date {
 }
 
 async function main(): Promise<void> {
+  assertSafeToWrite();
   const day = utcMidnightToday();
   const dayLabel = day.toISOString().slice(0, 10);
   const targets = CARDS.filter((c) => isPokemonId(c.externalId));

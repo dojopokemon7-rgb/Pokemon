@@ -26,6 +26,7 @@
 
 import { prisma } from "@/lib/db";
 import { pickPokemonMarketPrice } from "@/lib/utils/card-price";
+import { assertSafeToWrite } from "./_guard";
 
 const POKEMON_BASE = "https://api.pokemontcg.io/v2";
 const APITCG_BASE = "https://api.apitcg.com";
@@ -260,6 +261,7 @@ export async function backfillPrices(log = true): Promise<BackfillPricesResult> 
 
 // Run standalone unless imported (seed imports backfillPrices).
 if (process.argv[1] && process.argv[1].endsWith("backfill-prices.ts")) {
+  assertSafeToWrite(); // guard only the standalone run — the exported fn stays reusable by the seed
   backfillPrices()
     .catch((err) => {
       console.error("backfill-prices failed:", err);
