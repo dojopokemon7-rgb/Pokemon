@@ -149,13 +149,19 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     return (
       <div
         style={{
-          minHeight: "100dvh",
+          // `position: fixed; inset: 0` is REQUIRED: globals.css locks
+          // `body { overflow: hidden }`, so a normal-flow child can't scroll —
+          // its overflow is clipped by body with no scroll region. Pinning this
+          // wrapper to the viewport with fixed + its OWN overflowY:auto creates
+          // an INDEPENDENT scroll region that escapes the body lock, so the scan
+          // results below the camera are reachable on short mobile viewports.
+          position: "fixed",
+          inset: 0,
           overflowY: "auto",
           WebkitOverflowScrolling: "touch",
           backgroundColor: "var(--color-dojo-app)",
           maxWidth: SCANNER_MAX_WIDTH,
           marginInline: "auto",
-          position: "relative",
           borderInline: "1px solid var(--color-dojo-divider)",
         }}
       >
