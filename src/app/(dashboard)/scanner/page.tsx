@@ -414,7 +414,14 @@ export default function ScannerPage() {
   return (
     <div
       style={{
-        position: "relative", height: "100dvh", overflow: "hidden",
+        // minHeight (not a hard height) + overflow-y:auto so the page SCROLLS
+        // on short viewports. The old `height:100dvh; overflow:hidden` clipped
+        // everything below the camera frame — on mobile the scan RESULTS (and
+        // the "Choose photo" button) rendered off-screen and were unreachable
+        // (desktop's taller viewport hid the bug). WebkitOverflowScrolling for
+        // momentum scroll on iOS Safari.
+        position: "relative", minHeight: "100dvh", overflowY: "auto",
+        WebkitOverflowScrolling: "touch",
         padding: "24px 22px", color: "var(--color-dojo-ink)",
         display: "flex", flexDirection: "column", gap: "16px",
       }}
