@@ -120,7 +120,13 @@ const nextConfig: NextConfig = {
               "worker-src 'self' blob:",
               "frame-ancestors 'none'",
               "base-uri 'self'",
-              "form-action 'self'",
+              // form-action must allow Google's OAuth endpoints: the Google
+              // sign-in flow submits/redirects a form to accounts.google.com,
+              // which a bare `form-action 'self'` BLOCKED — breaking Google
+              // login on mobile (the /api/auth/callback/google navigation
+              // failed with ERR_FAILED). 'self' covers our own email/password
+              // + credential forms; the Google origins cover social sign-in.
+              "form-action 'self' https://accounts.google.com https://*.google.com",
               "object-src 'none'",
             ].join("; "),
           },
