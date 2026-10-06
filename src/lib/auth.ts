@@ -37,6 +37,7 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError } from "better-auth/api";
 import { prisma } from "@/lib/db";
 import { isSignupAllowed } from "@/lib/utils/signup-allowlist";
+import { chooseResetDelivery } from "@/lib/utils/reset-email";
 
 // =============================================================
 // SMS Dispatch Function (plug-and-play)
@@ -216,28 +217,76 @@ export const auth = betterAuth({
     // ----------------------------------------------------------
     // Forgot / Reset Password
     // ----------------------------------------------------------
-    // Mirrors the sendSmsOtp plug-and-play pattern above: no real
-    // email provider is wired up yet, so the reset link is logged
-    // to the server console in local dev. Swap the TODO block below
-    // for a real email provider (Resend, SendGrid, SES, etc.) when
-    // one is available — no other code changes are required.
+    // Mirrors the sendSmsOtp plug-and-play pattern above. The delivery mode
+    // is decided by chooseResetDelivery:
+    //   - a provider is "configured" when EITHER Resend (RESEND_API_KEY +
+    //     EMAIL_FROM) OR a generic REST provider (EMAIL_PROVIDER_API_KEY +
+    //     EMAIL_PROVIDER_BASE_URL + EMAIL_FROM) env vars are present;
+    //   - with a provider → send a real email via the Resend REST API (no
+    //     new dependency — plain fetch);
+    //   - no provider in local dev → log the link to the console so the
+    //     reset flow stays testable;
+    //   - no provider in prod → log a clear server error. We do NOT silently
+    //     resolve: a user who asked for a reset must not wait forever on a
+    //     mail that never ships.
+    // The reset link is a secret (it grants a password reset), so it is
+    // NEVER logged outside development.
     sendResetPassword: async ({ user, url }) => {
-      // TODO (Week 4-style swap): integrate a real email provider here
-      // (Resend, SendGrid, SES, etc.), e.g.:
-      //   await sendEmail({ to: user.email, subject: "Reset your password",
-      //     text: `Click the link to reset your password: ${url}` });
-      //
-      // No provider is configured yet, so the reset link is logged to
-      // the server console instead — copy it from the terminal to test
-      // the reset flow locally. The link is a secret (it grants a
-      // password reset), so NEVER log it outside development.
-      if (process.env.NODE_ENV === "development") {
-        console.log(
-          `\n[Better Auth — RESET PASSWORD DEV MODE]\n` +
-            `  📧 Email : ${user.email}\n` +
-            `  🔗 Link  : ${url}\n` +
-            `  ⚠️  No email provider configured — copy this link to test the reset flow.\n`
-        );
+      const resendKey = process.env.RESEND_API_KEY;
+      const genericKey = process.env.EMAIL_PROVIDER_API_KEY;
+      const genericBase = process.env.EMAIL_PROVIDER_BASE_URL;
+      const from = process.env.EMAIL_FROM;
+
+      const hasProvider = Boolean(
+        (resendKey && from) || (genericKey && genericBase && from)
+      );
+
+      switch (chooseResetDelivery({ hasProvider, nodeEnv: process.env.NODE_ENV })) {
+        case "send": {
+          // Resend REST API — a POST to /emails with a Bearer key. The
+          // generic EMAIL_PROVIDER_* shape also lands here; both are
+          // Resend-compatible JSON, so one call covers both.
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${resendKey ?? genericKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from,
+              to: user.email,
+              subject: "Reset your password",
+              text: `Click the link to reset your password:\n\n${url}\n\nIf you did not request this, you can safely ignore this email.`,
+            }),
+          });
+          if (!res.ok) {
+            // Surface the failure — don't let a reset request look like it
+            // succeeded when the provider rejected it.
+            throw new Error(
+              `[Better Auth] Password reset email failed to send (HTTP ${res.status}).`
+            );
+          }
+          return;
+        }
+        case "dev-log": {
+          console.log(
+            `\n[Better Auth — RESET PASSWORD DEV MODE]\n` +
+              `  📧 Email : ${user.email}\n` +
+              `  🔗 Link  : ${url}\n` +
+              `  ⚠️  No email provider configured — copy this link to test the reset flow.\n`
+          );
+          return;
+        }
+        case "prod-unconfigured": {
+          // NEVER log the url here — this is production. Fail loudly in the
+          // server logs instead of silently swallowing the request.
+          console.error(
+            "[Better Auth] Password reset requested but no email provider is " +
+              "configured. Set RESEND_API_KEY + EMAIL_FROM (or EMAIL_PROVIDER_API_KEY " +
+              "+ EMAIL_PROVIDER_BASE_URL + EMAIL_FROM) to deliver reset emails."
+          );
+          return;
+        }
       }
     },
   },

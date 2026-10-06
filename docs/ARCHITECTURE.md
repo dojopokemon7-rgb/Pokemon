@@ -299,6 +299,7 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `PSA_API_KEY` | no | absent → curated graded table |
 | `TCGCOLLECTOR_API_KEY`, `TCGCOLLECTOR_API_BASE`, `CARDMARKET_APP_TOKEN` | no | clean One Piece images |
 | `SMS_PROVIDER_*` | no | OTP plugin disabled MVP |
+| `RESEND_API_KEY` + `EMAIL_FROM` (or `EMAIL_PROVIDER_API_KEY` + `EMAIL_PROVIDER_BASE_URL` + `EMAIL_FROM`) | prod (password reset) | configured → reset links emailed via Resend REST; dev w/o provider logs link; prod w/o provider logs a clear error (never silent) |
 | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` | no | client base URL / future uploads |
 | `ADMIN_INITIAL_PASSWORD` | for create-admin script | |
 
