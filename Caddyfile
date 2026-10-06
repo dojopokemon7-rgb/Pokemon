@@ -6,17 +6,49 @@
 #   Port 80 only — no TLS. Routes all traffic to Next.js app.
 #
 # PRODUCTION (Week 4+):
-#   Replace `:80` with your domain, e.g.:
-#     your-domain.com {
-#       reverse_proxy app:3000
-#     }
-#   Caddy will automatically provision and renew TLS certificates
-#   via Let's Encrypt when a real domain is used.
+#   Set DOMAIN in .env (e.g. DOMAIN=your-domain.com). The {$DOMAIN} site block
+#   below then terminates TLS on 443 with Caddy's automatic HTTPS (Let's
+#   Encrypt provisioning + renewal) and reverse-proxies to the app.
+#   Leaving DOMAIN unset falls back to the `:80` local behaviour (dev).
 #
 # =============================================================
 
+# -------------------------------------------------------------
+# LOCAL DEV — plain HTTP on :80, no TLS. Unchanged.
+# -------------------------------------------------------------
 :80 {
     # Proxy all requests to the Next.js app container
+    reverse_proxy app:3000 {
+        # Forward original host header so Next.js sees the real host
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Compress responses
+    encode gzip
+
+    # Basic security headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+}
+
+# -------------------------------------------------------------
+# PRODUCTION — TLS on 443 via {$DOMAIN}. Caddy provisions and renews
+# certificates automatically (automatic HTTPS) when DOMAIN is a real host.
+# Same reverse_proxy + header forwarding + security headers as :80 above.
+# -------------------------------------------------------------
+{$DOMAIN} {
     reverse_proxy app:3000 {
         # Forward original host header so Next.js sees the real host
         header_up Host {host}
