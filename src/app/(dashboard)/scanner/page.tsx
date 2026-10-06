@@ -563,17 +563,21 @@ export default function ScannerPage() {
         <p role="status" style={{ color: "var(--color-dojo-jade)", fontSize: "13px", margin: 0 }}>{added}</p>
       )}
 
-      {/* Confirmation: top-5 candidates ("Is this your card?"). */}
+      {/* Confirmation: top-5 candidates. Each row is a single-tap "add" action.
+          UX: the row carries an explicit "+ Add" affordance + a clear
+          instruction so users know ONE tap adds it (previously the row looked
+          like read-only info, so people tapped twice / didn't know to tap). */}
       {phase === "confirm" && !added && (
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto" }}>
           <p style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-            Is this your card?
+            Tap your card to add it
           </p>
-          {candidates.map((c) => (
+          {candidates.map((c, i) => (
             <button
               key={c.id}
               onClick={() => addCard(c)}
-              style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
+              aria-label={`Add ${c.name} to your portfolio`}
+              style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: i === 0 ? "1px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
             >
               {/* Candidate thumbnail (initials fallback when no image). */}
               <div style={{ flex: "none", width: "40px", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
@@ -592,6 +596,22 @@ export default function ScannerPage() {
                   {c.set ? `${c.set} · ` : ""}{Math.round(c.confidence * 100)}% match
                 </p>
               </div>
+              {/* Explicit add affordance so the tap target reads as an action,
+                  not read-only info. Gold on the best match (first row). */}
+              <span
+                aria-hidden="true"
+                style={{
+                  flex: "none", display: "inline-flex", alignItems: "center", gap: "4px",
+                  padding: "7px 12px",
+                  background: i === 0 ? "var(--color-dojo-gold)" : "transparent",
+                  color: i === 0 ? "var(--color-dojo-app)" : "var(--color-dojo-gold)",
+                  border: i === 0 ? "none" : "1px solid var(--color-dojo-gold)",
+                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px",
+                  letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap",
+                }}
+              >
+                + Add
+              </span>
             </button>
           ))}
           {/* Not your card? Search manually. */}
