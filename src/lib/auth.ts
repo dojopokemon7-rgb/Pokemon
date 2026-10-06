@@ -34,7 +34,9 @@
 
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
+import { APIError } from "better-auth/api";
 import { prisma } from "@/lib/db";
+import { isSignupAllowed } from "@/lib/utils/signup-allowlist";
 
 // =============================================================
 // SMS Dispatch Function (plug-and-play)
@@ -127,6 +129,18 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
+        // Signup allowlist gate (env-driven). `before` fires for BOTH
+        // email/password AND Google OAuth NEW-user rows, so there is no
+        // OAuth bypass. It gates CREATION only — existing users signing in
+        // again never hit this path. SIGNUP_ALLOWLIST unset/empty ⇒ signup
+        // stays OPEN (see isSignupAllowed), so dev/CI/e2e are unaffected.
+        before: async (user) => {
+          if (!isSignupAllowed(user.email, process.env.SIGNUP_ALLOWLIST)) {
+            throw new APIError("FORBIDDEN", {
+              message: "Sign-ups are restricted. This email is not on the allowlist.",
+            });
+          }
+        },
         after: async (user) => {
           try {
             await prisma.collection.upsert({

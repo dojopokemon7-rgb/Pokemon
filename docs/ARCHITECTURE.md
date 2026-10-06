@@ -287,6 +287,7 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `REDIS_URL` | runtime only | `redis://localhost:6379` dev / `redis://redis:6379` compose; never read at build |
 | `BETTER_AUTH_SECRET` | yes | 32+ random chars |
 | `BETTER_AUTH_URL` | yes | MUST match serving origin/port (cookie scoping; e2e uses :3001) |
+| `SIGNUP_ALLOWLIST` | no | gates NEW signups (email/pw + Google) via `user.create.before`; comma-separated exact emails and/or `@domain`; empty/unset = open |
 | `GOOGLE_CLIENT_ID/SECRET` | prod | `test` fallbacks keep routes alive in dev |
 | `CRON_SECRET` | prod! | unset = sync route unauthenticated (local dev only) |
 | `POKEMON_TCG_API_KEY` | no | raises rate limit to 20k/day |
