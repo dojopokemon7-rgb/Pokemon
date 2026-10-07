@@ -100,3 +100,10 @@ docker-compose.override.yml
 
 # Full-catalog pull logs (local scratch)
 .full-pull*.log
+
+# All local env files EXCEPT the committed template (.env.example must stay tracked)
+.env*
+!.env.example
+
+# Local test/report scratch output (coverage already covered above)
+reports/

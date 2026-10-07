@@ -21,5 +21,21 @@ export default defineConfig({
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
     exclude: ["e2e/**", "node_modules/**", ".next/**"],
+    // Coverage maps which application code (src/) has NO test behind it —
+    // the concrete "what's untested" signal for vibe-coded risk. Scoped to
+    // src so the % reflects app code, not test files or generated output.
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.test.{ts,tsx}",
+        "src/**/*.d.ts",
+        // UI pages/layouts are exercised by Playwright E2E, not Vitest —
+        // excluding them keeps this report focused on logic coverage.
+        "src/app/**/layout.tsx",
+        "src/app/**/page.tsx",
+      ],
+    },
   },
 });
