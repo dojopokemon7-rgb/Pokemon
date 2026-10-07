@@ -163,11 +163,15 @@ test.describe("F-19 Graded Add Flow", () => {
     await firstCard.click(); // navigate to the detail page
 
     // Graded prices render as a chip grid: a "PSA" group heading followed by
-    // grade buttons like "10 $61.58K". Scope to the PSA group, then assert its
-    // grade-10 chip carries a $ price (never blank / "—").
+    // grade buttons like "10 $61.58K". Scope to the PSA chip GROUP — the div
+    // that has BOTH the exact "PSA" heading AND the grade-10 chip button. The
+    // extra `has: button /^10/` filter disambiguates from the Population
+    // report's "PSA English" toggle (also exact text "PSA", but no grade
+    // button), which otherwise wins `.last()`.
     const psaGroup = page
       .locator("div")
       .filter({ has: page.getByText("PSA", { exact: true }) })
+      .filter({ has: page.getByRole("button", { name: /^10\b/ }) })
       .last();
     await expect(psaGroup).toBeVisible({ timeout: 30_000 });
     const psa10 = psaGroup.getByRole("button", { name: /^10\b/ });
@@ -193,9 +197,12 @@ test.describe("F-19 Graded Add Flow", () => {
 
     // Same chip-grid contract: the PSA group's grade-10 chip must STILL show a
     // non-blank $ price even when Scrydex has no live value (curated fallback).
+    // Scope to the chip GROUP (has "PSA" heading AND the grade-10 button) so the
+    // Population "PSA English" toggle can't satisfy `.last()`.
     const psaGroup = page
       .locator("div")
       .filter({ has: page.getByText("PSA", { exact: true }) })
+      .filter({ has: page.getByRole("button", { name: /^10\b/ }) })
       .last();
     await expect(psaGroup).toBeVisible({ timeout: 30_000 });
     const psa10 = psaGroup.getByRole("button", { name: /^10\b/ });

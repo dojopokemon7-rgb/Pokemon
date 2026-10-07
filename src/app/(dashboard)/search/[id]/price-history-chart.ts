@@ -136,6 +136,23 @@ export function buildChips(
     byCompany.get(company)!.set(grade, rowPrice(r));
   }
 
+  // FR-6: the card-detail PSA 10 (and PSA 9) chips come from the live/fallback
+  // graded ROUTE (chipPrice["PSA|10"] / ["PSA|9"]), not only from a stored
+  // graded current-price row. Seed a PSA group from any PSA|<grade> key present
+  // in chipPrice so the PSA 10/9 chip ALWAYS surfaces (never a blank row) even
+  // when the catalog has no graded current-price row yet. The price itself is
+  // whatever the route resolved (real or curated fallback) — nothing fabricated
+  // here; a `${company}|${grade}` chip id already matches the chipPrice lookup.
+  for (const key of Object.keys(chipPrice)) {
+    const [company, grade] = key.split("|");
+    if (!company || !grade || company === "raw") continue; // "raw" is not graded
+    if (chipPrice[key] == null) continue; // no price → no fabricated chip
+    if (!byCompany.has(company)) byCompany.set(company, new Map());
+    if (!byCompany.get(company)!.has(grade)) {
+      byCompany.get(company)!.set(grade, chipPrice[key]);
+    }
+  }
+
   // Companies: PSA-first via CHIP_COMPANY_ORDER, then any others sorted.
   const companies = [
     ...CHIP_COMPANY_ORDER.filter((c) => byCompany.has(c)),

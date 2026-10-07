@@ -101,6 +101,20 @@ export function AddCardSheet({
     if (!byCompany.has(co)) byCompany.set(co, new Map());
     byCompany.get(co)!.set(g.grade, g.price ?? null);
   }
+
+  // When the caller pre-selects a graded condition (e.g. a search tile passing
+  // initialCondition="PSA 10") but has no stored gradedPrices for that grader,
+  // seed the grader+grade so it is OFFERED in the dropdown and pre-selected.
+  // Its live price stays null → "—" (honest: no stored price here; the Explore
+  // tile only knows the raw price). This keeps the grader list card-accurate
+  // while still exposing the grader the user intends to add.
+  const initParsed = parseGraded(initialCondition);
+  if (initParsed) {
+    const co = initParsed.grader;
+    const gr = initParsed.grade || "10";
+    if (!byCompany.has(co)) byCompany.set(co, new Map());
+    if (!byCompany.get(co)!.has(gr)) byCompany.get(co)!.set(gr, null);
+  }
   const companyOrder = [
     ...KNOWN_GRADERS.filter((c) => byCompany.has(c)),
     ...[...byCompany.keys()].filter((c) => !KNOWN_GRADERS.includes(c as (typeof KNOWN_GRADERS)[number])).sort(),
@@ -122,7 +136,7 @@ export function AddCardSheet({
     return list.map((g) => ({ label: GRADE_LABEL[g] ?? g, value: `Grade ${g}` }));
   }
 
-  const parsed = parseGraded(initialCondition);
+  const parsed = initParsed;
   const initialGrader =
     parsed && byCompany.has(parsed.grader) ? parsed.grader : graderOptions[0].value;
   const [grader, setGrader] = useState<string>(initialGrader);

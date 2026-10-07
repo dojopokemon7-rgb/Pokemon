@@ -37,6 +37,7 @@ import { AreaChart } from "@/components/AreaChart";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
+import { gradedPrice } from "@/lib/utils/graded-price";
 import {
   buildChips,
   buildChartMatrix,
@@ -424,8 +425,9 @@ function CardDetailInner() {
   // from its /prices row (numeric). The two live /graded queries OVERRIDE the
   // PSA|10 / PSA|9 entries where present. Never fabricated.
   const chipPrice = useMemo(() => {
+    const rawPrice = fetchedPrice ?? (priceParam > 0 ? priceParam : null);
     const map: Record<string, number | null> = {
-      raw: fetchedPrice ?? (priceParam > 0 ? priceParam : null),
+      raw: rawPrice,
     };
     for (const r of currentPrices as CurrentPriceRow[]) {
       if ((r.type ?? "raw") !== "graded") continue;
@@ -434,8 +436,22 @@ function CardDetailInner() {
       if (!company || !grade) continue;
       map[`${company}|${grade}`] = r.priceMarket ?? r.priceLow ?? null;
     }
-    if (gradedData?.price != null) map["PSA|10"] = gradedData.price;
-    if (graded9Data?.price != null) map["PSA|9"] = graded9Data.price;
+    // FR-6: the PSA 10 / PSA 9 rows must ALWAYS carry a non-blank price. Prefer
+    // the live graded-route value; when the route has none (Scrydex miss), fall
+    // back to the curated/multiplier estimate from the raw market price so the
+    // UI never regresses to a blank graded row. Nothing is fabricated — the
+    // fallback is the same curated resolver the server route uses. Only applied
+    // when a raw price exists (no raw price → honest "—").
+    if (gradedData?.price != null) {
+      map["PSA|10"] = gradedData.price;
+    } else if (rawPrice != null) {
+      map["PSA|10"] = gradedPrice(rawPrice, 10);
+    }
+    if (graded9Data?.price != null) {
+      map["PSA|9"] = graded9Data.price;
+    } else if (rawPrice != null) {
+      map["PSA|9"] = gradedPrice(rawPrice, 9);
+    }
     return map;
   }, [currentPrices, fetchedPrice, priceParam, gradedData, graded9Data]);
 
