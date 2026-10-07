@@ -732,6 +732,7 @@ function CardDetailInner() {
                 data={matrix.data}
                 series={matrix.series}
                 height={280}
+                ariaLabel="Price history chart"
               />
             </div>
           )}

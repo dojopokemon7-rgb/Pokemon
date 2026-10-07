@@ -54,6 +54,14 @@ export interface AreaChartProps {
   height?: number;
   /** Show horizontal gridlines. Default true. */
   showGrid?: boolean;
+  /**
+   * Accessible name for the chart. When set, the chart's outer container is
+   * exposed as role="img" with this label, so screen readers announce the
+   * otherwise-nameless <svg> (regression fix: the design-system port dropped
+   * the old role="img"/aria-label). Optional — unlabeled charts render as
+   * before (no role), so existing call sites are unaffected.
+   */
+  ariaLabel?: string;
 }
 
 // Design-token → app-token map (verified against src/app/globals.css @theme):
@@ -130,6 +138,7 @@ export function AreaChart({
   height = 220,
   showGrid = true,
   trendColor = true,
+  ariaLabel,
 }: AreaChartProps) {
   const [hover, setHover] = useState<number | null>(null);
   const w = 560;
@@ -178,7 +187,11 @@ export function AreaChart({
       ),
     }));
     return (
-      <div style={{ width: "100%", maxWidth: w, fontFamily: FONT_BODY }}>
+      <div
+        style={{ width: "100%", maxWidth: w, fontFamily: FONT_BODY }}
+        role={ariaLabel ? "img" : undefined}
+        aria-label={ariaLabel}
+      >
         <div style={{ position: "relative" }}>
           <svg
             viewBox={`0 0 ${w} ${h}`}
@@ -329,7 +342,11 @@ export function AreaChart({
   const area = `${line} L ${w} ${h} L 0 ${h} Z`;
 
   return (
-    <div style={{ width: "100%", maxWidth: w, fontFamily: FONT_BODY }}>
+    <div
+      style={{ width: "100%", maxWidth: w, fontFamily: FONT_BODY }}
+      role={ariaLabel ? "img" : undefined}
+      aria-label={ariaLabel}
+    >
       <div style={{ position: "relative" }}>
         <svg
           viewBox={`0 0 ${w} ${h}`}

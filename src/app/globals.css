@@ -31,8 +31,13 @@
   --color-dojo-overlay:     #1E1E1E;
 
   /* --- Text Hierarchy ---
-     Reference: heading .9 · body .5 · faint .3 (white alpha). */
+     Reference: heading .9 · subheading .7 · body .5 · faint .3 (white alpha). */
   --color-dojo-ink:         rgba(255, 255, 255, 0.90);
+  /* .7 step from the reference ramp (--text-subheading). Added for WCAG AA:
+     some small text (e.g. the 9px .dojo-divider-text "OR") fails the
+     Lighthouse color-contrast audit at .5/.3 on the near-black app surface;
+     .7 ≈ 7.8:1 clears 4.5:1 while staying on the reference ramp. */
+  --color-dojo-subheading:  rgba(255, 255, 255, 0.70);
   --color-dojo-body:        rgba(255, 255, 255, 0.50);
   --color-dojo-faint:       rgba(255, 255, 255, 0.30);
 
@@ -59,6 +64,7 @@
 
   /* --- Text Hierarchy --- */
   --color-dojo-ink:         rgba(255, 255, 255, 0.90);
+  --color-dojo-subheading:  rgba(255, 255, 255, 0.70);
   --color-dojo-body:        rgba(255, 255, 255, 0.50);
   --color-dojo-faint:       rgba(255, 255, 255, 0.30);
 
@@ -268,7 +274,11 @@ body {
   font-stretch: 112%;
   font-size: 9px;
   letter-spacing: 0.18em;
-  color: var(--color-dojo-faint);
+  /* WCAG AA 4.5:1 — Lighthouse color-contrast audit on /login flagged this
+     9px bold "OR" at 2.64:1 (faint .3 on #0D0D0D). Bumped faint(.3) →
+     subheading(.7) up the reference ramp (~7.8:1); .5 would still miss 4.5:1
+     for small/normal-threshold text. */
+  color: var(--color-dojo-subheading);
 }
 
 /* --- Back chevron row --- */

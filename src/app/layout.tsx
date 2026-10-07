@@ -62,7 +62,9 @@ export const viewport: Viewport = {
   themeColor: "#0D0D0D",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
+  // No maximumScale — pinch-zoom must stay enabled. Capping it at 1
+  // (effectively user-scalable=no) fails WCAG 1.4.4 / Lighthouse's
+  // "[user-scalable=no] or maximum-scale<5" accessibility audit.
   viewportFit: "cover",
 };
 

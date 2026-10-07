@@ -59,7 +59,14 @@ export default function AuthLayout({
         on the footer just added a fixed gap after the buttons instead
         of pinning it to the bottom — that was the actual bug.
       */}
-      <div
+      {/*
+        `<main>` (not a plain div) so every (auth) page exposes the single
+        required main landmark — fixes Lighthouse's "document does not have
+        a main landmark" audit on /login (and all auth pages) in one place.
+        A <main> with these inline styles renders identically to the former
+        <div>, so there is zero layout/spacing/visual change.
+      */}
+      <main
         style={{
           width: "100%",
           maxWidth: "390px",
@@ -71,7 +78,7 @@ export default function AuthLayout({
         }}
       >
         {children}
-      </div>
+      </main>
     </div>
   );
 }
