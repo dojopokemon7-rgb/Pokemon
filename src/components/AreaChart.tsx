@@ -23,6 +23,7 @@
  */
 
 import { useState, useMemo } from "react";
+import { formatCurrency } from "@/lib/utils/format";
 
 // Types ported verbatim from the design system's AreaChart.d.ts (same folder
 // as AreaChart.jsx). Exported so the two app chart sites type their props.
@@ -227,6 +228,9 @@ export function AreaChart({
               );
             })}
             {data.map((_, i) => (
+              // Point selection: onMouseEnter drives desktop hover; the added
+              // pointer/focus/click handlers let a mobile tap() (which has no
+              // hover semantics) and keyboard focus select the same point.
               <rect
                 key={i}
                 x={(i / (data.length - 1)) * w - w / data.length / 2}
@@ -234,7 +238,11 @@ export function AreaChart({
                 width={w / data.length}
                 height={h}
                 fill="transparent"
+                tabIndex={0}
                 onMouseEnter={() => setHover(i)}
+                onPointerDown={() => setHover(i)}
+                onClick={() => setHover(i)}
+                onFocus={() => setHover(i)}
                 style={{ cursor: "crosshair" }}
               />
             ))}
@@ -264,6 +272,7 @@ export function AreaChart({
           </svg>
           {hover !== null && (
             <div
+              data-testid="chart-tooltip"
               style={{
                 position: "absolute",
                 left: `${(seriesData[0].coords[hover][0] / w) * 100}%`,
@@ -295,7 +304,7 @@ export function AreaChart({
                   }}
                 >
                   <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
-                  {s.label || s.valueKey}: {(data[hover][s.valueKey] as number).toLocaleString()}
+                  {s.label || s.valueKey}: {formatCurrency(data[hover][s.valueKey] as number)}
                 </div>
               ))}
             </div>
@@ -368,6 +377,9 @@ export function AreaChart({
           <path d={area} fill={`url(#${gidBase})`} />
           <path d={line} fill="none" stroke={trendCol} strokeWidth={2} />
           {coords.map((c, i) => (
+            // Point selection: onMouseEnter drives desktop hover; the added
+            // pointer/focus/click handlers let a mobile tap() (which has no
+            // hover semantics) and keyboard focus select the same point.
             <rect
               key={i}
               x={c[0] - w / coords.length / 2}
@@ -375,7 +387,11 @@ export function AreaChart({
               width={w / coords.length}
               height={h}
               fill="transparent"
+              tabIndex={0}
               onMouseEnter={() => setHover(i)}
+              onPointerDown={() => setHover(i)}
+              onClick={() => setHover(i)}
+              onFocus={() => setHover(i)}
               style={{ cursor: "crosshair" }}
             />
           ))}
@@ -403,6 +419,7 @@ export function AreaChart({
         </svg>
         {hover !== null && (
           <div
+            data-testid="chart-tooltip"
             style={{
               position: "absolute",
               left: `${(coords[hover][0] / w) * 100}%`,
@@ -420,7 +437,7 @@ export function AreaChart({
               {data[hover][labelKey]}
             </div>
             <div style={{ fontSize: 16, fontWeight: 800, fontStretch: "87%", color: TEXT_HEADING }}>
-              {(data[hover][valueKey] as number).toLocaleString()}
+              {formatCurrency(data[hover][valueKey] as number)}
             </div>
           </div>
         )}

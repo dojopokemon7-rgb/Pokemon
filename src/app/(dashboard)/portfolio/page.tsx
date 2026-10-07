@@ -982,7 +982,7 @@ export default function PortfolioPage() {
             <AreaChart data={chartData} valueKey="value" height={240} ariaLabel="Portfolio comparison chart" />
           </div>
         ) : (
-          <div style={{ marginTop: "16px", padding: "26px 15px", textAlign: "center", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+          <div data-testid="empty-chart" style={{ marginTop: "16px", padding: "26px 15px", textAlign: "center", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
             Not enough history to chart yet
           </div>
         )}

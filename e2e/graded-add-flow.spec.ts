@@ -18,9 +18,10 @@ import { GRADED_EXTERNAL_ID, GRADED_NAME } from "./fixtures/seed-graded-card";
  *
  * Selector contract:
  *   - The graded modal exposes data-testid="graded-add-modal".
- *   - Grader is a RAW/PSA radiogroup; the condition control is a CUSTOM
- *     listbox (data-testid="condition-select") whose rows are role="option"
- *     — there is no native <select> in the Add sheet.
+ *   - Grader is a CUSTOM listbox (data-testid="grader-select") and the
+ *     condition control is a CUSTOM listbox (data-testid="condition-select"),
+ *     each with role="option" rows — there is no native <select> or
+ *     radiogroup in the Add sheet.
  *   - Submitting is the "ADD TO PORTFOLIO" button inside the modal.
  *   - On success a toast (role="status") appears, and the card is in the
  *     collection with graded `condition` metadata (e.g. "PSA 10").
@@ -77,9 +78,12 @@ test.describe("F-19 Graded Add Flow", () => {
     const gradedModal = page.getByTestId("graded-add-modal");
     await expect(gradedModal).toBeVisible();
 
-    // It offers the RAW/PSA grader pills (a graded card opens on PSA) and a
-    // custom condition listbox (no native <select>).
-    await expect(gradedModal.getByRole("radio", { name: "PSA" })).toBeVisible();
+    // The grader is a custom DojoSelect listbox (grader-select), not a native
+    // radiogroup; open it and confirm the PSA option is offered. The condition
+    // control is the same custom-listbox pattern (condition-select).
+    await expect(gradedModal.getByTestId("grader-select")).toBeVisible();
+    await gradedModal.getByTestId("grader-select").click();
+    await expect(gradedModal.getByRole("option", { name: "PSA" })).toBeVisible();
     await expect(gradedModal.getByTestId("condition-select")).toBeVisible();
   });
 
@@ -93,9 +97,10 @@ test.describe("F-19 Graded Add Flow", () => {
     const gradedModal = page.getByTestId("graded-add-modal");
     await expect(gradedModal).toBeVisible();
 
-    // Select PSA grader, then pick "Gem Mint 10" from the custom listbox →
-    // persists "PSA 10".
-    await gradedModal.getByRole("radio", { name: "PSA" }).click();
+    // Select PSA from the grader listbox, then pick "Gem Mint 10" from the
+    // condition listbox → persists "PSA 10".
+    await gradedModal.getByTestId("grader-select").click();
+    await gradedModal.getByRole("option", { name: "PSA" }).click();
     await gradedModal.getByTestId("condition-select").click();
     await gradedModal.getByRole("option", { name: "Gem Mint 10" }).click();
 
@@ -157,11 +162,17 @@ test.describe("F-19 Graded Add Flow", () => {
     await expect(firstCard).toBeVisible({ timeout: 30_000 });
     await firstCard.click(); // navigate to the detail page
 
-    const psaLabel = page.getByText("PSA 10 (GEM - MT)");
-    await expect(psaLabel).toBeVisible({ timeout: 30_000 });
-    // The PSA 10 row carries a non-blank USD price (never a blank / "—").
-    const psaRow = psaLabel.locator("xpath=ancestor::*[1]");
-    await expect(psaRow.getByText(/\$\s?[\d,]+/).first()).toBeVisible();
+    // Graded prices render as a chip grid: a "PSA" group heading followed by
+    // grade buttons like "10 $61.58K". Scope to the PSA group, then assert its
+    // grade-10 chip carries a $ price (never blank / "—").
+    const psaGroup = page
+      .locator("div")
+      .filter({ has: page.getByText("PSA", { exact: true }) })
+      .last();
+    await expect(psaGroup).toBeVisible({ timeout: 30_000 });
+    const psa10 = psaGroup.getByRole("button", { name: /^10\b/ });
+    await expect(psa10).toBeVisible();
+    await expect(psa10.getByText(/\$\s?[\d,]/)).toBeVisible();
   });
 
   test("the card detail PSA 10 row shows a fallback graded price when Scrydex has none", async ({ page }) => {
@@ -180,9 +191,15 @@ test.describe("F-19 Graded Add Flow", () => {
     await expect(firstCard).toBeVisible({ timeout: 30_000 });
     await firstCard.click();
 
-    const psaLabel = page.getByText("PSA 10 (GEM - MT)");
-    await expect(psaLabel).toBeVisible({ timeout: 30_000 });
-    const psaRow = psaLabel.locator("xpath=ancestor::*[1]");
-    await expect(psaRow.getByText(/\$\s?[\d,]+/).first()).toBeVisible();
+    // Same chip-grid contract: the PSA group's grade-10 chip must STILL show a
+    // non-blank $ price even when Scrydex has no live value (curated fallback).
+    const psaGroup = page
+      .locator("div")
+      .filter({ has: page.getByText("PSA", { exact: true }) })
+      .last();
+    await expect(psaGroup).toBeVisible({ timeout: 30_000 });
+    const psa10 = psaGroup.getByRole("button", { name: /^10\b/ });
+    await expect(psa10).toBeVisible();
+    await expect(psa10.getByText(/\$\s?[\d,]/)).toBeVisible();
   });
 });

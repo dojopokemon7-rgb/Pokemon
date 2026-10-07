@@ -6,7 +6,7 @@ import { test, expect } from "@playwright/test";
  * Flow: rear-camera preview with a card-shaped framing outline → tap Scan →
  * the captured image is POSTed to /api/cards/recognize (mocked here), which
  * would OCR it with Google Cloud Vision server-side and run the multi-signal
- * matching engine → "Is this your card?" confirmation list of the TOP 5
+ * matching engine → "Tap your card to add it" confirmation list of the TOP 5
  * matches (image + name + set + confidence) → tap a candidate to add it.
  *
  * Runs under the `camera` project (fake media stream). The recognize API is
@@ -43,9 +43,13 @@ test("scanner recognizes a card and offers the top candidates to add", async ({ 
 
   await page.getByRole("button", { name: /^scan$/i }).click();
 
-  // Confirmation screen lists the matched candidate as a tappable row…
-  await expect(page.getByText(/is this your card/i)).toBeVisible();
-  await expect(page.getByText(/charizard/i).first()).toBeVisible();
+  // Confirmation screen lists the matched candidate as a tappable row. The
+  // confirm-phase marker is the "Tap your card to add it" heading, and each
+  // candidate is an "Add <name> to your portfolio" button.
+  await expect(page.getByText(/tap your card to add it/i)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /add charizard to your portfolio/i }).first()
+  ).toBeVisible();
   // …with a percentage confidence shown.
   await expect(page.getByText(/%\s*match/i).first()).toBeVisible();
   // …and a manual-search escape hatch.
@@ -90,6 +94,8 @@ test("scanner falls back to on-device Tesseract and still offers candidates", as
   // Even on the Tesseract fallback path, the confirmation screen lists a
   // tappable candidate — the scanner is not blocked by Vision being
   // unresolved.
-  await expect(page.getByText(/is this your card/i)).toBeVisible();
-  await expect(page.getByText(/charizard/i).first()).toBeVisible();
+  await expect(page.getByText(/tap your card to add it/i)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /add charizard to your portfolio/i }).first()
+  ).toBeVisible();
 });

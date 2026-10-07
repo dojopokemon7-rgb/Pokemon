@@ -142,10 +142,13 @@ function CollectionForm({
 
 export function CollectionsSection() {
   const qc = useQueryClient();
-  const { data: collections = [], isLoading } = useQuery({
+  const { data: rawCollections = [], isLoading } = useQuery({
     queryKey: ["collections"],
     queryFn: fetchCollections,
   });
+  // Drop stale/garbage rows with no name — a nameless collection is invalid
+  // data and would render "undefined — expand for options" (real leftover bug).
+  const collections = rawCollections.filter((c) => c.name?.trim());
 
   const [adding, setAdding] = useState(false);
   // Which row is expanded (shows the Delete option), and which collection
@@ -161,12 +164,25 @@ export function CollectionsSection() {
   async function handleCreate(v: FormValues) {
     setBusy(true);
     try {
-      await fetch("/api/collections", {
+      const res = await fetch("/api/collections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify(v),
       });
+      // Read-after-write race: the GET reads the remote DB behind a Redis
+      // cache, so an immediate refetch can return the pre-create list. Seed
+      // the ["collections"] cache from the 201 body so the new row paints
+      // without a round-trip, then still invalidate for eventual consistency.
+      if (res.ok) {
+        const json = await res.json().catch(() => null);
+        const created = json?.data as Collection | undefined;
+        if (created?.id && created.name) {
+          qc.setQueryData<Collection[]>(["collections"], (old = []) =>
+            old.some((c) => c.id === created.id) ? old : [...old, created]
+          );
+        }
+      }
       setAdding(false);
       await refresh();
     } finally {
