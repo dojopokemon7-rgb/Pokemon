@@ -85,7 +85,7 @@ export function UserGrowthChart({ points }: { points: DailyCount[] }) {
       note="Cumulative total users (last 90 days, UTC)"
       hasData={hasData}
     >
-      <AreaChart data={data} valueKey="value" height={200} trendColor={false} showYAxis={false} />
+      <AreaChart data={data} valueKey="value" height={200} trendColor={false} showYAxis={false} valueFormat="count" />
     </ChartCard>
   );
 }
@@ -103,7 +103,7 @@ export function CardsAddedChart({ points }: { points: DailyCount[] }) {
       note="Collection adds per day (last 90 days, UTC)"
       hasData={hasData}
     >
-      <AreaChart data={data} valueKey="value" height={200} trendColor={false} showYAxis={false} />
+      <AreaChart data={data} valueKey="value" height={200} trendColor={false} showYAxis={false} valueFormat="count" />
     </ChartCard>
   );
 }

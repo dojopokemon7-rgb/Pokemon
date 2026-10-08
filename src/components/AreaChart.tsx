@@ -90,6 +90,18 @@ export interface AreaChartProps {
    * "$…K" label would misrepresent the data.
    */
   showYAxis?: boolean;
+  /**
+   * How tooltip values are formatted. "currency" (default) renders USD via
+   * formatCurrency, correct for price charts. "count" renders a plain integer,
+   * for non-money series like scan counts — otherwise "5 scans" shows as "$5".
+   * Additive: existing price charts omit it and stay currency-formatted.
+   */
+  valueFormat?: "currency" | "count";
+}
+
+// Format a plotted value for the tooltip per the chart's valueFormat.
+function formatValue(v: number, fmt: "currency" | "count"): string {
+  return fmt === "count" ? Math.round(v).toLocaleString() : formatCurrency(v);
 }
 
 // Design-token → app-token map (verified against src/app/globals.css @theme):
@@ -168,6 +180,7 @@ export function AreaChart({
   trendColor = true,
   ariaLabel,
   showYAxis = true,
+  valueFormat = "currency",
 }: AreaChartProps) {
   const [hover, setHover] = useState<number | null>(null);
   const w = 560;
@@ -189,7 +202,13 @@ export function AreaChart({
     Number.isFinite(min) &&
     max !== min;
   const yLabels = showYLabels
-    ? Y_AXIS_FRACTIONS.map((f) => ({ f, text: formatCurrencyCompact(valueAtFraction(f, max, min)) }))
+    ? Y_AXIS_FRACTIONS.map((f) => ({
+        f,
+        text:
+          valueFormat === "count"
+            ? Math.round(valueAtFraction(f, max, min)).toLocaleString()
+            : formatCurrencyCompact(valueAtFraction(f, max, min)),
+      }))
     : [];
 
   const gidBase = useMemo(() => "ac-" + Math.random().toString(36).slice(2, 9), []);
@@ -351,7 +370,7 @@ export function AreaChart({
                   }}
                 >
                   <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
-                  {s.label || s.valueKey}: {formatCurrency(data[hover][s.valueKey] as number)}
+                  {s.label || s.valueKey}: {formatValue(data[hover][s.valueKey] as number, valueFormat)}
                 </div>
               ))}
             </div>
@@ -512,7 +531,7 @@ export function AreaChart({
               {data[hover][labelKey]}
             </div>
             <div style={{ fontSize: 16, fontWeight: 800, fontStretch: "87%", color: TEXT_HEADING }}>
-              {formatCurrency(data[hover][valueKey] as number)}
+              {formatValue(data[hover][valueKey] as number, valueFormat)}
             </div>
           </div>
         )}

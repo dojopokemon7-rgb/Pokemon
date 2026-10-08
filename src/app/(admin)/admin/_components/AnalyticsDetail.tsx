@@ -312,6 +312,7 @@ function ScanUsageChart({
       ]}
       height={220}
       showYAxis={false}
+      valueFormat="count"
       ariaLabel="Successful versus failed scans per day"
     />
   );
