@@ -19,6 +19,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { validateScanFile, computeDownscaleSize } from "@/lib/utils/scan-image-file";
 import { readScanLanguage, writeScanLanguage, type ScanLanguage } from "@/lib/utils/scan-language";
+import {
+  assessScanQuality,
+  statsFromImageData,
+  type ScanQualityReason,
+  type ScanQualityStats,
+} from "@/lib/utils/scan-image-quality";
 
 interface Candidate {
   id: string;
@@ -110,10 +116,10 @@ export default function ScannerPage() {
 
   /**
    * Capture → auto-crop to the card outline → 2x upscale → grayscale +
-   * contrast. Returns the processed canvas plus a brightness-variance signal
-   * used to warn about glare / too-dark shots.
+   * contrast. Returns the processed canvas plus the quality stats fed to the
+   * pre-upload gate (brightness, contrast spread, sharpness, size).
    */
-  function captureProcessedCanvas(): { canvas: HTMLCanvasElement; quality: QualitySignal } | null {
+  function captureProcessedCanvas(): { canvas: HTMLCanvasElement; stats: ScanQualityStats } | null {
     const video = videoRef.current;
     if (!video) return null;
     const vw = video.videoWidth || 320;
@@ -140,41 +146,40 @@ export default function ScannerPage() {
       /* proceed with a blank canvas (synthetic/not-ready source) */
     }
 
-    // Grayscale + contrast; collect brightness stats for the glare check.
+    // Compute the quality-gate stats on the RAW drawn frame BEFORE the
+    // contrast stretch (so brightness/contrast/sharpness reflect the real
+    // capture, not the OCR-boosted pixels).
     const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const stats = statsFromImageData(img);
+
+    // Grayscale + contrast in place to boost small set/number text for OCR.
     const d = img.data;
     const contrast = 1.4;
     const intercept = 128 * (1 - contrast);
-    let sum = 0;
-    let sumSq = 0;
-    const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) {
       const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       const v = Math.max(0, Math.min(255, contrast * gray + intercept));
       d[i] = d[i + 1] = d[i + 2] = v;
-      sum += gray;
-      sumSq += gray * gray;
     }
     ctx.putImageData(img, 0, 0);
 
-    const mean = sum / n;
-    const variance = sumSq / n - mean * mean;
-    return { canvas, quality: { mean, variance } };
+    return { canvas, stats };
   }
 
-  /** Returns a warning string if the capture looks unusable, else null. */
-  function qualityWarning(q: QualitySignal): string | null {
-    // Very low variance = flat image (blank / severe glare washout or a dark
-    // frame). Very high mean with low variance = blown-out glare. Thresholds
-    // are heuristic — tuned to flag obviously-bad shots, not borderline ones.
-    // ponytail: fixed thresholds, no per-device calibration; a proper
-    // auto-exposure probe would adapt, but this catches the common cases.
-    if (q.variance < 120) {
-      return q.mean > 200
-        ? "Too much glare — tilt the card or move away from the light."
-        : "Too dark or blurry — move closer and steady the card.";
+  /** Maps a quality-gate rejection reason to friendly retake copy. */
+  function qualityMessage(reason: ScanQualityReason): string {
+    switch (reason) {
+      case "too-small":
+        return "Hold the card closer so it fills the frame.";
+      case "dark":
+        return "Too dark — add light and steady the card.";
+      case "glare":
+        return "Too much glare — tilt the card or move away from the light.";
+      case "low-contrast":
+        return "Center the card against a plain background and try again.";
+      case "blurry":
+        return "Looks blurry — hold steady and tap Scan again.";
     }
-    return null;
   }
 
   /** On-device OCR fallback (tesseract.js). Test seam: window.__mockOcrText. */
@@ -235,8 +240,14 @@ export default function ScannerPage() {
         setPhase("scan");
         return;
       }
-      const warn = qualityWarning(captured.quality);
-      if (warn) setWarning(warn); // non-blocking: still attempt recognition
+      // Pre-upload quality gate: BLOCKING. A doomed frame never reaches the
+      // Vision API, saving Scrydex credits + the lifetime scan allowance.
+      const q = assessScanQuality(captured.stats);
+      if (!q.ok && q.reason) {
+        setWarning(qualityMessage(q.reason));
+        setPhase("scan");
+        return;
+      }
       await recognizeCanvas(captured.canvas);
     } catch {
       setError("Scanner error, please try again.");
@@ -317,6 +328,15 @@ export default function ScannerPage() {
       ctx.imageSmoothingQuality = "high";
       ctx.drawImage(decoded.src, 0, 0, size.width, size.height);
       decoded.close();
+
+      // Same pre-upload quality gate as the camera path (parity). Blocks a
+      // doomed chosen photo before it burns a Vision call.
+      const q = assessScanQuality(statsFromImageData(ctx.getImageData(0, 0, canvas.width, canvas.height)));
+      if (!q.ok && q.reason) {
+        setFileError(qualityMessage(q.reason));
+        setPhase("scan");
+        return;
+      }
 
       setPreviewUrl(URL.createObjectURL(file)); // effect revokes the previous one
       setCandidates([]);
@@ -658,9 +678,4 @@ export default function ScannerPage() {
       )}
     </div>
   );
-}
-
-interface QualitySignal {
-  mean: number;
-  variance: number;
 }
