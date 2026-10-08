@@ -2,72 +2,47 @@
 # Caddyfile — TCG Collection PWA
 # =============================================================
 #
-# LOCAL DEVELOPMENT:
-#   Port 80 only — no TLS. Routes all traffic to Next.js app.
+# ONE site block, driven by the DOMAIN env var via Caddy's env-default syntax
+# `{$DOMAIN::80}`:
 #
-# PRODUCTION (Week 4+):
-#   Set DOMAIN in .env (e.g. DOMAIN=your-domain.com). The {$DOMAIN} site block
-#   below then terminates TLS on 443 with Caddy's automatic HTTPS (Let's
-#   Encrypt provisioning + renewal) and reverse-proxies to the app.
-#   Leaving DOMAIN unset falls back to the `:80` local behaviour (dev).
+#   - DOMAIN UNSET  (local dev / CI): the address resolves to `:80` → plain
+#     HTTP on port 80, no TLS. (The empty default after the first `:` is the
+#     port-only form `:80`.)
+#   - DOMAIN=your-domain.com (production): the address is the hostname →
+#     Caddy's automatic HTTPS provisions + renews a Let's Encrypt cert and
+#     serves on 443.
 #
+# WHY ONE BLOCK: a previous two-block layout had a second site block written as
+# `{$DOMAIN} { ... }`. When DOMAIN was empty that rendered as a block with NO
+# address key, which Caddy parses as a GLOBAL options block — and a global block
+# must be first in the file. Coming second, it made Caddy fail to start
+# ("server block without any key is global configuration") and crash-loop,
+# taking down the whole reverse proxy. The single `{$DOMAIN::80}` form is the
+# idiomatic fix: it is always a valid site address, empty DOMAIN or not.
 # =============================================================
 
-# -------------------------------------------------------------
-# LOCAL DEV — plain HTTP on :80, no TLS. Unchanged.
-# -------------------------------------------------------------
-:80 {
-    # Proxy all requests to the Next.js app container
+{$DOMAIN::80} {
+    # Proxy all requests to the Next.js app container.
     reverse_proxy app:3000 {
-        # Forward original host header so Next.js sees the real host
+        # Forward the original host so Next.js sees the real host. (Caddy
+        # already forwards X-Forwarded-For / X-Forwarded-Proto by default, so
+        # only the host override is needed here.)
         header_up Host {host}
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
     }
 
-    # Compress responses
+    # Compress responses.
     encode gzip
 
-    # Basic security headers
+    # Basic security headers (the app also sets a full CSP + headers itself;
+    # these are a proxy-level backstop).
     header {
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"
         Referrer-Policy "strict-origin-when-cross-origin"
     }
 
-    # Logging
-    log {
-        output stdout
-        format console
-    }
-}
-
-# -------------------------------------------------------------
-# PRODUCTION — TLS on 443 via {$DOMAIN}. Caddy provisions and renews
-# certificates automatically (automatic HTTPS) when DOMAIN is a real host.
-# Same reverse_proxy + header forwarding + security headers as :80 above.
-# -------------------------------------------------------------
-{$DOMAIN} {
-    reverse_proxy app:3000 {
-        # Forward original host header so Next.js sees the real host
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
-
-    # Compress responses
-    encode gzip
-
-    # Basic security headers
-    header {
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "SAMEORIGIN"
-        Referrer-Policy "strict-origin-when-cross-origin"
-    }
-
-    # Logging
+    # Logging.
     log {
         output stdout
         format console
