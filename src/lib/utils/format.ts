@@ -27,6 +27,27 @@ export function formatCurrency(value: number | null | undefined): string {
   return CURRENCY_FMT.format(value);
 }
 
+const CURRENCY_COMPACT_FMT = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  notation: "compact",
+  maximumFractionDigits: 2,
+});
+
+/**
+ * Compact USD — shared lift of the card-detail page's former `fmtUSDCompact`
+ * (grade chip labels + chart Y-axis labels). Below $1000 use the full USD
+ * formatter so small raw prices stay exact (e.g. 650 → "$650.00"); at/above
+ * $1000 use Intl compact notation (e.g. 1000 → "$1K", 61580 → "$61.58K").
+ * Output MUST match the old fmtUSDCompact byte-for-byte so chip labels are
+ * unchanged. A page.tsx may only export framework symbols, so the shared
+ * AreaChart imports it from here (AGENTS.md rule 11, DRY).
+ */
+export function formatCurrencyCompact(n: number): string {
+  if (n < 1000) return CURRENCY_FMT.format(n);
+  return CURRENCY_COMPACT_FMT.format(n);
+}
+
 export function formatDate(value: Date | string | null | undefined): string {
   if (!value) return "—";
   const d = value instanceof Date ? value : new Date(value);

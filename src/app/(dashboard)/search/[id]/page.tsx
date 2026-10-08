@@ -38,6 +38,7 @@ import { AddCardSheet } from "@/components/AddCardSheet";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { gradedPrice } from "@/lib/utils/graded-price";
+import { formatCurrencyCompact } from "@/lib/utils/format";
 import {
   buildChips,
   buildChartMatrix,
@@ -85,19 +86,16 @@ function ShareIcon() {
 
 // Range tabs filter the REAL history points by a trailing date window
 // (RANGE_DAYS = days back from the newest point; MAX = all points).
-const RANGE_TABS = [["1M", "1M"], ["3M", "3M"], ["12M", "1Y"], ["MAX", "ALL"]] as const;
-const RANGE_DAYS: Record<string, number> = { "1M": 31, "3M": 93, "1Y": 366, "ALL": Infinity };
+const RANGE_TABS = [["1M", "1M"], ["3M", "3M"], ["6M", "6M"], ["1Y", "1Y"], ["MAX", "ALL"]] as const;
+const RANGE_DAYS: Record<string, number> = { "1M": 31, "3M": 93, "6M": 183, "1Y": 366, "ALL": Infinity };
 
 function fmtUSD(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-// Compact USD for the grade chip labels (e.g. 7930 → "$7.93K"); plain
-// fmtUSD under $1000 so small raw prices stay exact.
-function fmtUSDCompact(n: number): string {
-  if (n < 1000) return fmtUSD(n);
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 }).format(n);
-}
+// Compact USD for the grade chip labels (e.g. 7930 → "$7.93K") — now the shared
+// util (same formatter the chart Y-axis labels use); plain fmtUSD under $1000.
+const fmtUSDCompact = formatCurrencyCompact;
 
 // NOTE: CurrentPriceRow, HistoryResponse, Chip, buildChips, buildChartMatrix,
 // sortByGradeDesc, gradeSortKey, and fmtChartDate now live in the sibling pure

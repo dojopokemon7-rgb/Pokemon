@@ -23,7 +23,19 @@
  */
 
 import { useState, useMemo } from "react";
-import { formatCurrency } from "@/lib/utils/format";
+import { formatCurrency, formatCurrencyCompact } from "@/lib/utils/format";
+
+// Value at a Y gridline drawn fraction `f` from the TOP. scaleCoords maps
+// y = h - ((v - min)/range)*h, so a gridline at y = h*f sits at
+// VALUE = max - f*(max - min): f=0 → max (top), f=1 → min (bottom). The
+// Y-axis labels (showYAxis) print these so the plot reads against real values.
+export function valueAtFraction(f: number, max: number, min: number): number {
+  return max - f * (max - min);
+}
+
+// Y-axis gridline fractions from the top: edges (0 = max, 1 = min) plus the
+// three interior gridlines the chart already draws.
+const Y_AXIS_FRACTIONS = [0, 0.25, 0.5, 0.75, 1];
 
 // Types ported verbatim from the design system's AreaChart.d.ts (same folder
 // as AreaChart.jsx). Exported so the two app chart sites type their props.
@@ -63,6 +75,13 @@ export interface AreaChartProps {
    * before (no role), so existing call sites are unaffected.
    */
   ariaLabel?: string;
+  /**
+   * Show numeric value labels on the horizontal gridlines (compact USD).
+   * Default true — additive, so existing call sites get labels automatically.
+   * Set false for non-currency COUNT axes (e.g. admin analytics) where a
+   * "$…K" label would misrepresent the data.
+   */
+  showYAxis?: boolean;
 }
 
 // Design-token → app-token map (verified against src/app/globals.css @theme):
@@ -140,6 +159,7 @@ export function AreaChart({
   showGrid = true,
   trendColor = true,
   ariaLabel,
+  showYAxis = true,
 }: AreaChartProps) {
   const [hover, setHover] = useState<number | null>(null);
   const w = 560;
@@ -149,6 +169,20 @@ export function AreaChart({
   const allValues = keys.flatMap((k) => data.map((d) => d[k] as number));
   const max = Math.max(...allValues);
   const min = Math.min(0, Math.min(...allValues));
+
+  // Y-axis labels: additive overlay on the existing gridlines. Guard the
+  // degenerate cases — <2 points or a flat/non-finite range would print a
+  // column of identical (misleading) numbers or divide by zero — and render
+  // nothing then, matching the chart's honest-flat-baseline behavior.
+  const showYLabels =
+    showYAxis &&
+    data.length >= 2 &&
+    Number.isFinite(max) &&
+    Number.isFinite(min) &&
+    max !== min;
+  const yLabels = showYLabels
+    ? Y_AXIS_FRACTIONS.map((f) => ({ f, text: formatCurrencyCompact(valueAtFraction(f, max, min)) }))
+    : [];
 
   const gidBase = useMemo(() => "ac-" + Math.random().toString(36).slice(2, 9), []);
 
@@ -309,6 +343,23 @@ export function AreaChart({
               ))}
             </div>
           )}
+          {yLabels.map(({ f, text }) => (
+            <span
+              key={f}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: `${f * 100}%`,
+                transform: "translateY(-50%)",
+                fontSize: 11,
+                color: TEXT_FAINT,
+                whiteSpace: "nowrap",
+                pointerEvents: "none",
+              }}
+            >
+              {text}
+            </span>
+          ))}
         </div>
         <div style={{ position: "relative", height: 14, marginTop: 8 }}>
           {axisTicks.map((t, i) => (
@@ -441,6 +492,23 @@ export function AreaChart({
             </div>
           </div>
         )}
+        {yLabels.map(({ f, text }) => (
+          <span
+            key={f}
+            style={{
+              position: "absolute",
+              left: 0,
+              top: `${f * 100}%`,
+              transform: "translateY(-50%)",
+              fontSize: 11,
+              color: TEXT_FAINT,
+              whiteSpace: "nowrap",
+              pointerEvents: "none",
+            }}
+          >
+            {text}
+          </span>
+        ))}
       </div>
       <div style={{ position: "relative", height: 14, marginTop: 8 }}>
         {axisTicks.map((t, i) => (
