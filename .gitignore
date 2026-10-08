@@ -107,3 +107,7 @@ docker-compose.override.yml
 
 # Local test/report scratch output (coverage already covered above)
 reports/
+
+# k6 load-test run artifacts (keep the reusable script, ignore the outputs)
+scripts/loadtest/k6-output.txt
+scripts/loadtest/summary.json
