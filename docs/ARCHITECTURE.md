@@ -120,6 +120,7 @@ The `card.service.searchCards` fallback chain (pokemontcg.io → tcgdex → scry
   3. **Persist** — one `PricingHistory` row (`source="scrydex"`, headline RAW NM) + **full current-price capture (C1):** every `variants[].prices[]` entry becomes its own `CurrentPrice` row (all raw conditions + all graded company/grade incl half `8.5` / qualified `9Q`), keyed `[cardId, source, currency, variant, condition, company, grade, type]` (`type` = `raw`|`graded`; raw rows keep `company`/`grade` NULL, graded rows use the stable `condition="GRADED"` sentinel). Because Prisma can't target a nullable column in a compound-unique `where`, the writer REPLACES the card's SCRYDEX set atomically — `deleteMany(where: source=SCRYDEX)` + `createMany` inside a `$transaction` (idempotent: the 24h gate guarantees one complete fresh set per pull). Runs for graded-only cards too (outside the `if (raw)` block). Both-null entries skipped (never a fabricated `$0`). The RAW-NM headline / `Card.marketPrice` / weekly-change / cost-basis logic is unchanged.
   4. **Real history (documented endpoint)** — the fabricated first-pull `scrydex-trend` backfill is REMOVED (Req 7.2). Real multi-point history comes from `GET /{slug}/v1/cards/{id}/price_history` via `fetchScrydexPriceHistory` (3 credits/call), gated behind Owner_Approval (Checkpoint D) and NOT invoked by the writer. UNRESOLVED (Audit L2): whether graded points are labeled in the response and whether one call returns separable RAW/PSA/BGS series — no fabricated graded series.
   5. **Meter** — `SyncLog(status="ok", credits=SCRYDEX_CREDITS_PER_CALL)` once per successful fetch (trend points add no credits).
+- **Daily owned-price refresh.** `GET /api/cron/refresh-owned-prices` (Vercel cron 03:00 UTC, `CRON_SECRET`-guarded via constant-time compare, **fail-closed in production** — a missing secret rejects in prod, local dev only pass-through) → `refreshOwnedPrices()` in `owned-price-refresh.service.ts`. It keeps CURRENT price DAILY-fresh for the OWNED set ONLY: the distinct `Card.id` across every active `UserCollection(isSold:false)` row for ALL users (NOT user-scoped, NOT the whole catalog), deduped in JS and mapped to `ScrydexPullCard` (selects both `Card.id` and `externalId`/`scrydexId` per the two-id rule). Each card goes through the single writer `pullAndStoreScrydexPrice` (NO `force`) behind the SOFT credit gate — when `SCRYDEX_LIVE_CREDITS_APPROVED` is unset the whole run is a safe no-op (no DB read, no HTTP, zero credits, logs "skipped: credits not approved"). Bounded by a per-run cap `DAILY_OWNED_PRICE_CAP` (default 250, cards handed to a width-5 pool) + a ~250s wall-clock budget; leftover owned cards refresh on the next daily run because the writer's per-card 24h freshness gate skips already-fresh cards (resumable, no cursor table). It writes `CurrentPrice` only (**NOT `Card.marketPrice`** — stays on the existing single-writer path) and never fabricates (a card with no Scrydex current price leaves `CurrentPrice` unchanged). One summary `SyncLog(job="daily_owned_price", status="ok", credits=<total>, error="summary: owned=… attempted=… refreshed=… skipped=… failed=…")` row is written per run for admin/logs visibility. **History / population / deeper Scrydex data stay on the existing on-view 7-day cadence — this job does NOT change their schedule or scope.** (The old `/api/cron/sync-cards` daily catalog sync was removed in commit `bf1eb28`; this is the only scheduled job.)
 - **Price fallback chain (FR-1).** Catalog + first price come from the primary catalog source (TCGdex for Pokémon, apitcg for One Piece). PokéWallet/BerryWallet are **PRICING ONLY** gap-fills: One Piece fills `marketPrice` from `fetchOnePieceSetPrices(setCode)` where apitcg's TCGplayer price was null (join key = `Card.externalId` == PokéWallet `card_number`); Pokémon gaps fall to `fetchPokemonCardPrice(name)`. Scrydex (store-and-reuse) then refines the real history series. A missing value stays `null` → UI "—", never coerced to 0.
 - Graded pricing (F-17 + FR-6): the public `GET /api/cards/[id]/graded` route runs `resolveGradedPrice` with a Scrydex `priceSource` (`pickGradedPrice` over the ScrydexCard returned by `pullAndStoreScrydexPrice`). Live Scrydex PSA market → `isFallback:false`; null → `getGradedPrice` curated 20-entry table / `{8:1.2, 9:1.5, 10:2.5}` multipliers (strictly increasing so grade hierarchy never inverts) with `isFallback:true`. `fetchPSAGradedPrice` (PSA public cert API, verification only) remains the offline cert-verify fallback.
 
@@ -201,7 +202,7 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 - `/api/cards/[id]/population`: `private, max-age=86400`
 - `/api/one-piece-img/[cardId]`: `public, max-age=86400, swr=604800` (upstream fetch `force-cache`)
 - collection/want-list/users-me GETs: `no-store`
-- `/api/cron/sync-cards`: `force-dynamic`
+- `/api/cron/refresh-owned-prices`: `force-dynamic`
 
 ## 7. TanStack Query key registry (client)
 
@@ -291,7 +292,8 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `BETTER_AUTH_URL` | yes | MUST match serving origin/port (cookie scoping; e2e uses :3001) |
 | `SIGNUP_ALLOWLIST` | no | gates NEW signups (email/pw + Google) via `user.create.before`; comma-separated exact emails and/or `@domain`; empty/unset = open |
 | `GOOGLE_CLIENT_ID/SECRET` | prod | `test` fallbacks keep routes alive in dev |
-| `CRON_SECRET` | prod! | unset = sync route unauthenticated (local dev only) |
+| `CRON_SECRET` | prod! | guards `/api/cron/refresh-owned-prices`; unset = fail-closed in prod (rejected), unauthenticated pass-through local dev only |
+| `DAILY_OWNED_PRICE_CAP` | no | max owned cards refreshed per daily run (default 250); leftovers drain next run via the 24h gate |
 | `POKEMON_TCG_API_KEY` | no | raises rate limit to 20k/day |
 | `APITCG_API_KEY` | for One Piece | x-api-key header |
 | `EBAY_CLIENT_ID/SECRET` | for eBay | client-credentials |
@@ -325,6 +327,6 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 
 ## 12. Deploy topology
 
-- **Vercel**: cron 02:00 UTC hits `/api/cron/sync-cards` with `Authorization: Bearer $CRON_SECRET`; preview URLs trusted via `*.vercel.app`.
+- **Vercel**: cron 03:00 UTC hits `/api/cron/refresh-owned-prices` with `Authorization: Bearer $CRON_SECRET` (the old `/api/cron/sync-cards` 02:00 catalog sync was removed in `bf1eb28`); preview URLs trusted via `*.vercel.app`.
 - **Docker**: multi-stage build of `output:"standalone"`; compose adds Redis; healthcheck `/api/health` gates on **Postgres** (503 only when Postgres is unreachable). Redis is cache-only/optional (RULE 1) — a Redis outage yields HTTP 200 `status:"degraded"`, never 503.
 - **E2E/Docker asset fix**: `scripts/assemble-standalone.mjs` copies `.next/static` + `public` into the standalone tree (Next doesn't).

@@ -198,9 +198,20 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
   Never bypass it. Scan allowance = `User.scanCount` (lifetime 10 successful,
   `SCAN_LIMIT`-configurable), atomic `updateMany where scanCount<limit`.
   Env vars table: docs/ARCHITECTURE.md §Environment.
-- **Daily sync**: `GET /api/cron/sync-cards` (Vercel cron 02:00 UTC,
-  `CRON_SECRET`-guarded) → `runCardSync()` — max 10 stale sets/run, 7-day staleness,
-  250s wall budget, fetch-before-upsert so failures retry next run.
+- **Daily owned-price refresh**: `GET /api/cron/refresh-owned-prices` (Vercel cron
+  03:00 UTC, `CRON_SECRET`-guarded, **fail-closed in prod** — missing secret rejects
+  in production, allowed only in local dev) → `refreshOwnedPrices()`. Refreshes
+  CURRENT price for the OWNED-cards set ONLY (distinct `UserCollection(isSold:false)`
+  cardIds across ALL users — not the catalog) via the single writer
+  `pullAndStoreScrydexPrice` through the SOFT credit gate (no-op when
+  `SCRYDEX_LIVE_CREDITS_APPROVED` unset). Bounded by `DAILY_OWNED_PRICE_CAP`
+  (default 250) + ~250s wall budget; leftovers refresh next run via the per-card
+  24h freshness gate (resumable, no cursor table). Writes `CurrentPrice` (NOT
+  `marketPrice`); metered as one `SyncLog(job="daily_owned_price")` summary row.
+  **History / population / deeper Scrydex data stay on the existing on-view 7-day
+  cadence — this job does NOT change their schedule or scope.** The old
+  `/api/cron/sync-cards` daily catalog sync was REMOVED (commit `bf1eb28`); this
+  owned-price cron is the only scheduled job.
 
 ## 9. Doc index (read the one matching your task)
 
