@@ -9,6 +9,7 @@ import {
 } from "@/lib/services/scan-allowance.service";
 import { base64ToBytes, validateScanUpload } from "@/lib/utils/scan-upload";
 import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
+import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
 import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 
 /**
@@ -105,6 +106,12 @@ export async function POST(request: Request): Promise<NextResponse> {
         { status: 401 }
       );
     }
+
+    // Rate-limit the credit-consuming Vision path by user BEFORE upload
+    // validation / allowance / the credit gate (Vision = 5 credits per call).
+    // The anonymous `text` path below is NOT limited here — it spends no credit.
+    const limited = await enforceRateLimit(request, creditTier(), { kind: "user", id: userId });
+    if (limited) return limited;
 
     // 2. Validate the upload server-side (actual bytes, not declared type).
     const bytes = base64ToBytes(image);

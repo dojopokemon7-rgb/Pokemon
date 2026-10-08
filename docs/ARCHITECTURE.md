@@ -189,6 +189,7 @@ The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measu
 | `card:prices:{externalId}` | 300s | `GET /api/cards/[id]/prices` — user-agnostic (RULE 3), DB-read-only (no Scrydex) |
 | `card:history:{externalId}` | 600s | `GET /api/cards/[id]/history` — user-agnostic (RULE 3), DB-read-only (no Scrydex) |
 | `card:pop:{externalId}` | 86400s | `GET /api/cards/[id]/population` — user-agnostic (RULE 3), stored-read only (no Scrydex) |
+| `ratelimit:{bucket}:{u:userId\|ip:ip}` | 60s (tier window) | `enforceRateLimit` (`src/lib/utils/rate-limit.ts`) — fixed-window counter, FAIL-OPEN; `bucket` = `credit`\|`auth`\|`search`; a miss/outage ALLOWS the request (not a source of truth) |
 
 The per-user keys above (`dashboard`/`collection`/`wantlist`/`collections`) go through `src/lib/utils/cache.ts` (`cacheGetJson`/`cacheSetJson`), and TTLs live in `CACHE_TTL` in `redis.ts`. **Every** per-user key embeds the `userId` (RULE 5 — a key without it would leak one user's private data to another); the card keys are deliberately user-AGNOSTIC (RULE 3 — the catalog result is identical for everyone). `/api/cards/[id]/graded` is intentionally NOT cached — it routes through the credit-gated `pullAndStoreScrydexPrice`, so a cache there could alter gate/freshness behavior.
 
@@ -321,6 +322,9 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `RESEND_API_KEY` + `EMAIL_FROM` (or `EMAIL_PROVIDER_API_KEY` + `EMAIL_PROVIDER_BASE_URL` + `EMAIL_FROM`) | prod (password reset) | configured → reset links emailed via Resend REST; dev w/o provider logs link; prod w/o provider logs a clear error (never silent) |
 | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` | no | client base URL / future uploads |
 | `ADMIN_INITIAL_PASSWORD` | for create-admin script | |
+| `RATELIMIT_CREDIT_PER_MIN` | no | per-USER cap on Scrydex-credit routes (recognize/enrich/reprice/ebay-sold POST/portfolio refresh); default **10**/min |
+| `RATELIMIT_AUTH_PER_MIN` | no | per-IP cap on auth sign-in/sign-up POSTs (get-session never limited); default **10**/min |
+| `RATELIMIT_SEARCH_PER_MIN` | no | per-user-if-authed-else-IP cap on `/api/cards/search`; default **60**/min |
 
 ## 11. Pattern catalog (the house style)
 
@@ -339,6 +343,7 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 13. **SessionStorage handoff** — `pending-collection.ts` for multi-select → add flow (mirrors `AddCardSchema` exactly).
 14. **TDD F-numbers** — behavior changes change the test FIRST; features trace to F-02…F-22.
 15. **Design tokens only** — `--color-dojo-*`, square corners, canonical `ArrowRight`.
+16. **Rate limiting (`src/lib/utils/rate-limit.ts`)** — Redis-backed fixed-window counter guarding Scrydex credits, the DB pool, and login. `enforceRateLimit(req, tier, identity)` returns a 429 (`Retry-After` header + `{ error:"Too Many Requests", message }`) or `null`. **Keying:** authenticated → user id (`u:<id>`), unauthenticated → client IP (`ip:<ip>`) read from `x-forwarded-for` first hop → `x-real-ip` → `"unknown"` (the app is behind a proxy, so the socket IP is the proxy's). **FAIL-OPEN (RULE 1):** every Redis call is try/caught; any error ALLOWS the request (a cache outage disables limiting, never blocks). **Limited routes:** the five Scrydex-credit routes (recognize/Vision, `[id]/enrich`, `cards/reprice`, `[id]/ebay-sold` POST, `users/me/portfolio/refresh`) per user via `RATELIMIT_CREDIT_PER_MIN` (10/min); `/api/cards/search` per user-or-IP via `RATELIMIT_SEARCH_PER_MIN` (60/min); the Better Auth `sign-in`/`sign-up` POSTs per IP via `RATELIMIT_AUTH_PER_MIN` (10/min). `get-session` (fired on every page) and other auth POSTs (sign-out, OAuth callbacks) are deliberately NOT limited. ponytail ceiling: fixed-window allows a ~2× burst across a window boundary — accepted for an abuse cap.
 
 ## 12. Deploy topology
 

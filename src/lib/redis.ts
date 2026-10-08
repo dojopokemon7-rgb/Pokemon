@@ -164,6 +164,18 @@ export const RedisKeys = {
   otpRateLimit: (phone: string): string => `otp:rate:${phone}`,
 
   /**
+   * Per-identity rate-limit counter (src/lib/utils/rate-limit.ts).
+   * `bucket` is the tier name ("credit" | "auth" | "search"); `identity` is
+   * `u:<userId>` (authenticated) or `ip:<ip>` (unauthenticated).
+   * TTL = the tier window (60s). FAIL-OPEN and CACHE-ONLY (AGENTS.md RULE 1):
+   * a counter miss/outage ALLOWS the request — this key is NOT a source of
+   * truth, just a best-effort sliding abuse cap. No CACHE_TTL entry: the window
+   * lives in the tier/env, not the shared cache-TTL map.
+   */
+  rateLimit: (bucket: string, identity: string): string =>
+    `ratelimit:${bucket}:${identity}`,
+
+  /**
    * Cached card price by external card ID.
    * TTL: 6 hours (21600 seconds) — refreshed by the pricing cron job.
    */

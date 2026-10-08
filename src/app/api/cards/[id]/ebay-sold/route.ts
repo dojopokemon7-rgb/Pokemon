@@ -43,6 +43,7 @@ import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { requireAuth } from "@/lib/utils/auth-guard";
+import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
 import { isScrydexOnViewApproved } from "@/lib/services/scrydex-credit-gate";
 import { pullAndStoreSoldListings } from "@/lib/services/scrydex-pricing.service";
 
@@ -150,6 +151,14 @@ export async function POST(
   // The GET above stays PUBLIC (pure Postgres read, no spend; AGENTS.md rule 7).
   const guard = await requireAuth(request);
   if (guard.unauthorized) return guard.unauthorized;
+
+  // Rate-limit by user BEFORE the on-view gate + credit-gated sold-listings
+  // pull — caps a client iterating card ids to drain sold-listings credits.
+  const limited = await enforceRateLimit(request, creditTier(), {
+    kind: "user",
+    id: guard.session.user.id,
+  });
+  if (limited) return limited;
 
   const { id } = await params;
 

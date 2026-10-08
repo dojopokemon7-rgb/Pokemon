@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { redis, RedisKeys } from "@/lib/redis";
 import { requireAuth } from "@/lib/utils/auth-guard";
+import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
 import { pickPokemonMarketPrice, type PokemonPricePayload } from "@/lib/utils/card-price";
 
 /**
@@ -51,6 +52,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   // upstream fan-out + shared-write trigger (sec-audit-1 #3).
   const guard = await requireAuth(request);
   if (guard.unauthorized) return guard.unauthorized;
+
+  // Rate-limit by user BEFORE the live upstream fan-out + shared write (guards
+  // the per-request MAX_IDS pokemontcg.io calls against a hammering client).
+  const limited = await enforceRateLimit(request, creditTier(), {
+    kind: "user",
+    id: guard.session.user.id,
+  });
+  if (limited) return limited;
 
   let body: unknown;
   try {

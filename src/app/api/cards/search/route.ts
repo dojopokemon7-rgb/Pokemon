@@ -41,7 +41,9 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { auth } from "@/lib/auth";
 import { requireAuth } from "@/lib/utils/auth-guard";
+import { enforceRateLimit, searchTier, clientIp } from "@/lib/utils/rate-limit";
 import { CardSortEnum, orderByForCardSort } from "@/lib/utils/card-sort";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import {
@@ -99,6 +101,22 @@ export async function GET(request: Request): Promise<NextResponse> {
     const guard = await requireAuth(request);
     if (guard.unauthorized) return guard.unauthorized;
   }
+
+  // Rate-limit the search path BEFORE the query parse / DB work. Search is
+  // public (ENFORCE_AUTH=false), so best-effort resolve the session to key by
+  // user id when present (one abusive account is capped regardless of IP), else
+  // fall back to the client IP. The session read is fail-open (any error → IP).
+  let identity: Parameters<typeof enforceRateLimit>[2];
+  try {
+    const session = await auth.api.getSession({ headers: request.headers });
+    identity = session?.user?.id
+      ? { kind: "user", id: session.user.id }
+      : { kind: "ip", id: clientIp(request) };
+  } catch {
+    identity = { kind: "ip", id: clientIp(request) };
+  }
+  const limited = await enforceRateLimit(request, searchTier(), identity);
+  if (limited) return limited;
 
   const { searchParams } = new URL(request.url);
   const parsed = SearchQuerySchema.safeParse({

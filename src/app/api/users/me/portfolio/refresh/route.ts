@@ -27,6 +27,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireAuth } from "@/lib/utils/auth-guard";
+import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
 import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
 import {
   pullAndStoreScrydexPrice,
@@ -54,6 +55,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   const guard = await requireAuth(request);
   if (guard.unauthorized) return guard.unauthorized;
   const userId = guard.session.user.id;
+
+  // Rate-limit by user BEFORE the credit gate + batched Scrydex pulls — caps a
+  // client hammering the refresh button against the credit/DB-pool spend.
+  const limited = await enforceRateLimit(request, creditTier(), { kind: "user", id: userId });
+  if (limited) return limited;
 
   // Credit gate — a safe no-op when live spend is not approved (no HTTP, no
   // credits). Mirrors how the enrich route gates on-view spend.
