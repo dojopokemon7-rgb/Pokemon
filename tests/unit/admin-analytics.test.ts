@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   fillDailyRange,
+  fillScanDailyRange,
   toCumulative,
   utcDayKey,
   type DailyCount,
+  type ScanDailyCount,
 } from "@/lib/utils/admin-analytics";
 
 describe("utcDayKey", () => {
@@ -47,6 +49,30 @@ describe("fillDailyRange", () => {
   it("returns a single day when start === end", () => {
     const out = fillDailyRange([{ date: "2024-01-01", count: 7 }], start, start);
     expect(out).toEqual([{ date: "2024-01-01", count: 7 }]);
+  });
+});
+
+describe("fillScanDailyRange", () => {
+  const start = new Date("2024-01-01T00:00:00Z");
+  const end = new Date("2024-01-03T00:00:00Z");
+
+  it("densifies success/fail per day, filling missing days with 0/0", () => {
+    const rows: ScanDailyCount[] = [
+      { date: "2024-01-01", success: 3, fail: 1 },
+      { date: "2024-01-03", success: 0, fail: 2 },
+    ];
+    const out = fillScanDailyRange(rows, start, end);
+    expect(out).toEqual([
+      { date: "2024-01-01", success: 3, fail: 1 },
+      { date: "2024-01-02", success: 0, fail: 0 },
+      { date: "2024-01-03", success: 0, fail: 2 },
+    ]);
+  });
+
+  it("honest empty: no rows → flat zero across the range", () => {
+    const out = fillScanDailyRange([], start, end);
+    expect(out).toHaveLength(3);
+    expect(out.every((d) => d.success === 0 && d.fail === 0)).toBe(true);
   });
 });
 

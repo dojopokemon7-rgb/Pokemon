@@ -49,6 +49,48 @@ export function fillDailyRange(
   return out;
 }
 
+/** A single day bucket for scan activity: successful vs failed scan counts. */
+export interface ScanDailyCount {
+  date: string;
+  success: number;
+  fail: number;
+}
+
+/**
+ * Densify a sparse list of per-day scan rows (success/fail split) into a
+ * continuous daily series from `start` to `end` (both inclusive, UTC), inserting
+ * {success:0, fail:0} for days with no scans. Same honest-zero contract as
+ * fillDailyRange — a quiet scanning day is a real 0/0, not a fabricated point.
+ *
+ * `rows` may be unordered; out-of-range days are ignored and in-range duplicates
+ * are summed per field.
+ */
+export function fillScanDailyRange(
+  rows: readonly ScanDailyCount[],
+  start: Date,
+  end: Date
+): ScanDailyCount[] {
+  const byDay = new Map<string, { success: number; fail: number }>();
+  for (const r of rows) {
+    const prev = byDay.get(r.date) ?? { success: 0, fail: 0 };
+    byDay.set(r.date, {
+      success: prev.success + r.success,
+      fail: prev.fail + r.fail,
+    });
+  }
+
+  const out: ScanDailyCount[] = [];
+  const cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const last = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+  while (cur.getTime() <= last) {
+    const key = utcDayKey(cur);
+    const v = byDay.get(key) ?? { success: 0, fail: 0 };
+    out.push({ date: key, success: v.success, fail: v.fail });
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
 /**
  * Running total of a daily series. `baseline` is the count that already existed
  * BEFORE the first bucket (e.g. users created before the range start) so the

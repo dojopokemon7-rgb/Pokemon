@@ -27,9 +27,11 @@
 import { prisma } from "@/lib/db";
 import {
   fillDailyRange,
+  fillScanDailyRange,
   toCumulative,
   utcDayKey,
   type DailyCount,
+  type ScanDailyCount,
 } from "@/lib/utils/admin-analytics";
 
 // ---------------------------------------------------------------------------
@@ -337,5 +339,255 @@ export async function getTopCollectedCards(
     cardId: r.cardId,
     name: r.name,
     totalQuantity: Number(r.total),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Detail analytics (FEAT-001) — scan usage, portfolio totals, per-game split,
+// active users, top wanted / most scanned cards.
+//
+// All REAL aggregations (AGENTS.md rule 2): grouped SQL over actual rows, honest
+// zeros for quiet days / empty [] for empty ranges. Financial sums keep the
+// isSold=false exclusion (BUG-3) and the documented raw-for-graded caveat.
+// ---------------------------------------------------------------------------
+
+/** A gap-filled scan-activity series plus the window-wide roll-ups. */
+export interface ScanUsageSeries {
+  /** Gap-free daily success/fail counts over the range (UTC day keys). */
+  points: ScanDailyCount[];
+  totalScans: number;
+  successfulScans: number;
+  failedScans: number;
+  /**
+   * ESTIMATE of Scrydex Vision credits consumed by scans in-range: successful
+   * scans whose ocrSource='vision' * 5. SyncLog.credits does NOT meter Vision
+   * scans, so this is derived, not read back — hence "estimated". A scan that
+   * was abandoned before a pick counts as a FAIL (pickedCardId IS NULL), which
+   * is honest: no card was confirmed.
+   */
+  estimatedVisionCredits: number;
+}
+
+/** Credits a single successful Scrydex Vision identify consumes (per AGENTS.md). */
+const VISION_CREDITS_PER_SCAN = 5;
+
+/**
+ * Per-UTC-day scan activity: total scans, successful (pickedCardId NOT NULL) vs
+ * failed (total − success), gap-filled over the range. Also returns window-wide
+ * totals and an ESTIMATE of Vision credits spent (see ScanUsageSeries doc).
+ */
+export async function getScanUsageSeries(
+  days = ANALYTICS_RANGE_DAYS
+): Promise<ScanUsageSeries> {
+  const start = rangeStart(days);
+
+  const rows = await prisma.$queryRaw<
+    { day: Date; total: bigint; success: bigint; visionSuccess: bigint }[]
+  >`
+    SELECT date_trunc('day', "createdAt" AT TIME ZONE 'UTC') AS day,
+           COUNT(*)::bigint AS total,
+           COUNT("pickedCardId")::bigint AS success,
+           COUNT(*) FILTER (
+             WHERE "pickedCardId" IS NOT NULL AND "ocrSource" = 'vision'
+           )::bigint AS "visionSuccess"
+    FROM "scan_feedback"
+    WHERE "createdAt" >= ${start}
+    GROUP BY day
+    ORDER BY day
+  `;
+
+  const daily: ScanDailyCount[] = rows.map((r) => {
+    const total = Number(r.total);
+    const success = Number(r.success);
+    return { date: utcDayKey(new Date(r.day)), success, fail: total - success };
+  });
+  const points = fillScanDailyRange(daily, start, new Date());
+
+  let totalScans = 0;
+  let successfulScans = 0;
+  let visionSuccesses = 0;
+  for (const r of rows) {
+    totalScans += Number(r.total);
+    successfulScans += Number(r.success);
+    visionSuccesses += Number(r.visionSuccess);
+  }
+
+  return {
+    points,
+    totalScans,
+    successfulScans,
+    failedScans: totalScans - successfulScans,
+    estimatedVisionCredits: visionSuccesses * VISION_CREDITS_PER_SCAN,
+  };
+}
+
+/** Platform-wide active-holdings portfolio roll-up. */
+export interface PortfolioTotals {
+  /** SUM(card.marketPrice * qty) over active (isSold=false) lots; raw-for-graded. */
+  totalPortfolioValue: number;
+  /** SUM(quantity) over active (isSold=false) lots. */
+  activeCards: number;
+  totalUsers: number;
+  /** activeCards / totalUsers, or 0 when there are no users. */
+  averageCollectionSize: number;
+}
+
+/**
+ * Platform active-holdings totals: aggregate market value and owned quantity over
+ * NON-sold lots (isSold=false, matching getPlatformStats / BUG-3), plus the
+ * average active collection size per user (guarded against divide-by-zero).
+ *
+ * Value uses the RAW card.marketPrice for every lot, graded included — the same
+ * DOCUMENTED raw-for-graded limitation as getPlatformStats (see file header).
+ */
+export async function getPortfolioTotals(): Promise<PortfolioTotals> {
+  const [valueRow, qtyRow, totalUsers] = await Promise.all([
+    prisma.$queryRaw<{ total: number | null }[]>`
+      SELECT COALESCE(SUM(c."marketPrice" * uc."quantity"), 0)::float AS total
+      FROM "user_collection" uc
+      JOIN "card" c ON c.id = uc."cardId"
+      WHERE c."marketPrice" IS NOT NULL AND uc."isSold" = false
+    `,
+    prisma.$queryRaw<{ total: number | null }[]>`
+      SELECT COALESCE(SUM(uc."quantity"), 0)::bigint AS total
+      FROM "user_collection" uc
+      WHERE uc."isSold" = false
+    `,
+    prisma.user.count(),
+  ]);
+
+  const totalPortfolioValue = valueRow[0]?.total ?? 0;
+  const activeCards = Number(qtyRow[0]?.total ?? 0);
+  const averageCollectionSize = totalUsers > 0 ? activeCards / totalUsers : 0;
+
+  return { totalPortfolioValue, activeCards, totalUsers, averageCollectionSize };
+}
+
+/** Owned-quantity split across the two supported games (active lots only). */
+export interface PerGameSplit {
+  pokemon: number;
+  onePiece: number;
+}
+
+/**
+ * Owned-card quantity split by game (POKEMON vs ONE_PIECE), summing NON-sold lots
+ * (isSold=false). A game with no active holdings is an honest 0 (the grouped row
+ * simply doesn't appear, and we default each game to 0).
+ */
+export async function getPerGameSplit(): Promise<PerGameSplit> {
+  const rows = await prisma.$queryRaw<{ game: string; total: bigint }[]>`
+    SELECT c."game"::text AS game,
+           SUM(uc."quantity")::bigint AS total
+    FROM "user_collection" uc
+    JOIN "card" c ON c.id = uc."cardId"
+    WHERE uc."isSold" = false
+    GROUP BY c."game"
+  `;
+
+  const byGame = new Map<string, number>();
+  for (const r of rows) byGame.set(r.game, Number(r.total));
+  return {
+    pokemon: byGame.get("POKEMON") ?? 0,
+    onePiece: byGame.get("ONE_PIECE") ?? 0,
+  };
+}
+
+/** Distinct-session active user counts over the last day / week. */
+export interface ActiveUsers {
+  dau: number;
+  wau: number;
+}
+
+/**
+ * Active users = DISTINCT session.userId with a session touched recently. We use
+ * Session.updatedAt as the activity proxy: Better Auth refreshes it on session
+ * use, so a recent updatedAt means the user was actually active (vs createdAt,
+ * which only marks sign-in). DAU = within 1 day, WAU = within 7 days.
+ */
+export async function getActiveUsers(): Promise<ActiveUsers> {
+  const now = new Date();
+  const dayAgo = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000);
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const [dauRow, wauRow] = await Promise.all([
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(DISTINCT "userId")::bigint AS count
+      FROM "session"
+      WHERE "updatedAt" >= ${dayAgo}
+    `,
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(DISTINCT "userId")::bigint AS count
+      FROM "session"
+      WHERE "updatedAt" >= ${weekAgo}
+    `,
+  ]);
+
+  return {
+    dau: Number(dauRow[0]?.count ?? 0),
+    wau: Number(wauRow[0]?.count ?? 0),
+  };
+}
+
+/** A ranked card entry (wanted or scanned) with its lookup name. */
+export interface RankedCard {
+  /** EXTERNAL catalog id (RULE 3) — want_list_item.cardId / scan_feedback.pickedCardId. */
+  cardId: string;
+  /** Card.name resolved via externalId; null when the id isn't in the catalog. */
+  name: string | null;
+  count: number;
+}
+
+/**
+ * The N most-wanted cards across every want list: group want_list_item by cardId
+ * (an EXTERNAL id per RULE 3), COUNT(*), order desc. LEFT JOIN card ON
+ * card.externalId so a wanted-but-uncatalogued id still appears with a null name
+ * (honest — we don't invent a label). Returns [] when nothing is wanted.
+ */
+export async function getTopWantedCards(limit = 10): Promise<RankedCard[]> {
+  const rows = await prisma.$queryRaw<
+    { cardId: string; name: string | null; total: bigint }[]
+  >`
+    SELECT wli."cardId" AS "cardId",
+           c."name"     AS name,
+           COUNT(*)::bigint AS total
+    FROM "want_list_item" wli
+    LEFT JOIN "card" c ON c."externalId" = wli."cardId"
+    GROUP BY wli."cardId", c."name"
+    ORDER BY total DESC
+    LIMIT ${limit}
+  `;
+
+  return rows.map((r) => ({
+    cardId: r.cardId,
+    name: r.name,
+    count: Number(r.total),
+  }));
+}
+
+/**
+ * The N most-scanned-and-picked cards: group scan_feedback by the non-null
+ * pickedCardId (an EXTERNAL id per RULE 3), COUNT(*), order desc. LEFT JOIN card
+ * ON card.externalId for the name (null if uncatalogued). Abandoned scans
+ * (pickedCardId NULL) are excluded — they identify no card. [] when empty.
+ */
+export async function getMostScannedCards(limit = 10): Promise<RankedCard[]> {
+  const rows = await prisma.$queryRaw<
+    { cardId: string; name: string | null; total: bigint }[]
+  >`
+    SELECT sf."pickedCardId" AS "cardId",
+           c."name"          AS name,
+           COUNT(*)::bigint  AS total
+    FROM "scan_feedback" sf
+    LEFT JOIN "card" c ON c."externalId" = sf."pickedCardId"
+    WHERE sf."pickedCardId" IS NOT NULL
+    GROUP BY sf."pickedCardId", c."name"
+    ORDER BY total DESC
+    LIMIT ${limit}
+  `;
+
+  return rows.map((r) => ({
+    cardId: r.cardId,
+    name: r.name,
+    count: Number(r.total),
   }));
 }
