@@ -22,7 +22,7 @@ const populationMock = vi.hoisted(() => ({
 vi.mock("@/lib/services/population.service", () => populationMock);
 
 const redisMock = vi.hoisted(() => ({
-  get: vi.fn(async () => null),
+  get: vi.fn(async (): Promise<string | null> => null),
   set: vi.fn(async () => "OK"),
   del: vi.fn(async () => 0),
   keys: vi.fn(async () => []),
@@ -50,6 +50,8 @@ describe("GET /api/cards/[id]/population — empty-cache poisoning guard", () =>
     expect(res.status).toBe(200);
     expect(body).toEqual({ report: null, bgsSupported: false });
     expect(redisMock.set).not.toHaveBeenCalled();
+    // Fix A: the browser must NOT pin the empty body for 24h (was max-age=86400).
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
   it("caches a real report with the full cardPopulation TTL", async () => {
@@ -57,6 +59,8 @@ describe("GET /api/cards/[id]/population — empty-cache poisoning guard", () =>
     populationMock.getStoredPopulationReport.mockResolvedValue(report);
     const res = await populationGET(new Request("http://localhost/x"), ctxFor("base1-4"));
     expect(res.status).toBe(200);
+    // Fix A: live-report path also returns no-store (was max-age=86400).
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(redisMock.set).toHaveBeenCalledTimes(1);
     // ioredis signature: set(key, value, "EX", ttlSeconds)
     expect(redisMock.set).toHaveBeenCalledWith(
@@ -65,5 +69,19 @@ describe("GET /api/cards/[id]/population — empty-cache poisoning guard", () =>
       "EX",
       CACHE_TTL.cardPopulation
     );
+  });
+
+  it("returns no-store on the cached-hit path too", async () => {
+    // Redis HIT with a valid cached blob → served without touching the service,
+    // but the browser still must not pin it (Fix A on the cached-hit return).
+    const cached = JSON.stringify({
+      report: { source: "scrydex", companies: [] },
+      bgsSupported: false,
+    });
+    redisMock.get.mockResolvedValue(cached);
+    const res = await populationGET(new Request("http://localhost/x"), ctxFor("base1-4"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(populationMock.getStoredPopulationReport).not.toHaveBeenCalled();
   });
 });

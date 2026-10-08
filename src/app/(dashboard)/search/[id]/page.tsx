@@ -386,7 +386,13 @@ function CardDetailInner() {
       if (!res.ok) throw new Error("Failed to load history");
       return res.json();
     },
-    staleTime: 60_000,
+    // Always revalidate (staleTime 0) so a just-enriched history series shows up
+    // without a hard refresh — mirroring the ["population", id] query. The first
+    // on-mount read may race AHEAD of the on-view enrich store write, so a
+    // revisit/invalidate must re-read rather than serve an early empty blob. The
+    // GET is a cheap DB read (Redis-cached server-side), nothing fabricated.
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   // ON-VIEW enrichment: fire the enrich POST exactly ONCE per card mount. Using

@@ -44,7 +44,7 @@ export async function GET(
   if (rawCached != null) {
     const parsed = PopulationCacheSchema.safeParse(rawCached);
     if (parsed.success) {
-      return NextResponse.json(parsed.data, { headers: { "Cache-Control": "private, max-age=86400" } });
+      return NextResponse.json(parsed.data, { headers: { "Cache-Control": "no-store" } });
     }
     // parse miss (stale OLD-shape blob) → fall through to the live stored read.
   }
@@ -63,7 +63,7 @@ export async function GET(
     }
     return NextResponse.json(
       payload,
-      { headers: { "Cache-Control": "private, max-age=86400" } }
+      { headers: { "Cache-Control": "no-store" } }
     );
   } catch (err) {
     console.error("[cards/population] failed:", err instanceof Error ? err.message : err);
