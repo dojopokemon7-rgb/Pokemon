@@ -37,6 +37,14 @@ export function valueAtFraction(f: number, max: number, min: number): number {
 // three interior gridlines the chart already draws.
 const Y_AXIS_FRACTIONS = [0, 0.25, 0.5, 0.75, 1];
 
+// Left gutter (px) reserved for the Y-axis value labels so they sit BESIDE the
+// plot (right-aligned, Collectr-style) instead of overlaying the line. The plot
+// (svg + tooltip) and the x-axis tick row are both shifted right by this amount
+// via marginLeft, so the tooltip's and ticks' %-based left offsets keep tracking
+// the line exactly (they resolve against the shifted plot box, unchanged math).
+// Only applied when showYLabels is true — plain charts keep the full width.
+const Y_AXIS_GUTTER = 38;
+
 // Types ported verbatim from the design system's AreaChart.d.ts (same folder
 // as AreaChart.jsx). Exported so the two app chart sites type their props.
 export interface AreaChartDatum {
@@ -228,6 +236,11 @@ export function AreaChart({
         aria-label={ariaLabel}
       >
         <div style={{ position: "relative" }}>
+          {/* Plot shifted right by the gutter (when y-labels show) so the svg,
+              tooltip and dashed guide clear the left-gutter value labels. The
+              inner relative box is the %-reference for the tooltip, so its
+              left:X% math is unchanged — just offset by the gutter. */}
+          <div style={{ position: "relative", marginLeft: showYLabels ? Y_AXIS_GUTTER : 0 }}>
           <svg
             viewBox={`0 0 ${w} ${h}`}
             width="100%"
@@ -343,12 +356,18 @@ export function AreaChart({
               ))}
             </div>
           )}
+          </div>
+          {/* Y-axis value labels in the LEFT GUTTER (Collectr-style): a
+              fixed-width band at left:0, right-aligned so the numbers end just
+              before the plot. Faint, square, no shadow, non-interactive. */}
           {yLabels.map(({ f, text }) => (
             <span
               key={f}
               style={{
                 position: "absolute",
                 left: 0,
+                width: Y_AXIS_GUTTER - 6,
+                textAlign: "right",
                 top: `${f * 100}%`,
                 transform: "translateY(-50%)",
                 fontSize: 11,
@@ -361,7 +380,7 @@ export function AreaChart({
             </span>
           ))}
         </div>
-        <div style={{ position: "relative", height: 14, marginTop: 8 }}>
+        <div style={{ position: "relative", height: 14, marginTop: 8, marginLeft: showYLabels ? Y_AXIS_GUTTER : 0 }}>
           {axisTicks.map((t, i) => (
             <span
               key={i}
@@ -408,6 +427,11 @@ export function AreaChart({
       aria-label={ariaLabel}
     >
       <div style={{ position: "relative" }}>
+        {/* Plot shifted right by the gutter (when y-labels show) so the svg,
+            tooltip and dashed guide clear the left-gutter value labels. The
+            inner relative box is the %-reference for the tooltip, so its
+            left:X% math is unchanged — just offset by the gutter. */}
+        <div style={{ position: "relative", marginLeft: showYLabels ? Y_AXIS_GUTTER : 0 }}>
         <svg
           viewBox={`0 0 ${w} ${h}`}
           width="100%"
@@ -492,12 +516,18 @@ export function AreaChart({
             </div>
           </div>
         )}
+        </div>
+        {/* Y-axis value labels in the LEFT GUTTER (Collectr-style): a
+            fixed-width band at left:0, right-aligned so the numbers end just
+            before the plot. Faint, square, no shadow, non-interactive. */}
         {yLabels.map(({ f, text }) => (
           <span
             key={f}
             style={{
               position: "absolute",
               left: 0,
+              width: Y_AXIS_GUTTER - 6,
+              textAlign: "right",
               top: `${f * 100}%`,
               transform: "translateY(-50%)",
               fontSize: 11,
@@ -510,7 +540,7 @@ export function AreaChart({
           </span>
         ))}
       </div>
-      <div style={{ position: "relative", height: 14, marginTop: 8 }}>
+      <div style={{ position: "relative", height: 14, marginTop: 8, marginLeft: showYLabels ? Y_AXIS_GUTTER : 0 }}>
         {axisTicks.map((t, i) => (
           <span
             key={i}
