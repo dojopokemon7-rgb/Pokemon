@@ -105,6 +105,12 @@ docker-compose.override.yml
 .env*
 !.env.example
 
+# Strix pentest LLM config (contains an API key — never commit)
+.strix.env
+
+# Strix pentest run output (local scratch — reports, logs, SARIF)
+strix_runs/
+
 # Local test/report scratch output (coverage already covered above)
 reports/
 
