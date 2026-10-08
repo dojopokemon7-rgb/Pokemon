@@ -24,6 +24,7 @@ import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
 import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
+import { gradedPrice, isGraded, parseGrade } from "@/lib/utils/graded-price";
 
 // ── Real collection item shape ──
 interface CollectionItem {
@@ -118,7 +119,12 @@ function GainLossTag({ item }: { item: CollectionItem }) {
   }
 
   if (item.purchasePrice == null || item.card.marketPrice == null) return null;
-  const diff = item.card.marketPrice - item.purchasePrice;
+  // BUG-1: graded holdings compare against their GRADED market price, not raw
+  // (same resolution as the portfolio summary via statsFromLots).
+  const marketPerCopy = isGraded(item.condition)
+    ? gradedPrice(item.card.marketPrice, parseGrade(item.condition as string))
+    : item.card.marketPrice;
+  const diff = marketPerCopy - item.purchasePrice;
   const pct = item.purchasePrice > 0 ? (diff / item.purchasePrice) * 100 : 0;
   const up = diff >= 0;
   return (
@@ -127,10 +133,6 @@ function GainLossTag({ item }: { item: CollectionItem }) {
     </span>
   );
 }
-
-// A card is "graded" if its free-text condition names a grading company.
-const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
-const isGraded = (c: string | null | undefined) => !!c && GRADED_RE.test(c);
 
 /** Sub-line like "Obsidian Flames · PSA 10" / "Base Set · Raw · Foil". */
 function subLine(item: CollectionItem): string {
@@ -816,6 +818,7 @@ export default function PortfolioPage() {
           quantity: i.quantity,
           purchasePrice: i.purchasePrice,
           marketPrice: i.card.marketPrice,
+          condition: i.condition,
           isSold: i.isSold,
           soldPrice: i.soldPrice,
         }))

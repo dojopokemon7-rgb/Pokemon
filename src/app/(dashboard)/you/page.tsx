@@ -23,6 +23,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSession, authClient } from "@/lib/auth-client";
+import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 import { CollectionsSection } from "./_components/CollectionsSection";
 import { ContactSupport } from "./_components/ContactSupport";
 
@@ -34,6 +35,8 @@ interface CollectionItem {
   isFoil: boolean;
   condition: string | null;
   purchasePrice: number | null;
+  isSold?: boolean;
+  soldPrice?: number | null;
   card: { marketPrice: number | null };
 }
 
@@ -130,13 +133,21 @@ export default function YouAccountPage() {
     // faked. Wire when a `isSealed` column exists on UserCollection.
     const sealed = 0;
 
-    const paid = rows.reduce(
-      (s, r) => s + (r.purchasePrice ?? 0) * (r.quantity ?? 0),
-      0
-    );
-    const value = rows.reduce(
-      (s, r) => s + (r.card.marketPrice ?? 0) * (r.quantity ?? 0),
-      0
+    // BUG-2 fix: route Paid/Value through the SAME shared engine the portfolio
+    // page and dashboard use (statsFromLots). The old inline reduces summed over
+    // ALL rows, so SOLD lots (isSold=true, still returned by GET /collection)
+    // were double-counted as active holdings. The engine splits active vs sold
+    // and excludes sold from marketValue/paid, and — via BUG-1 — resolves graded
+    // holdings to their graded price here for free (condition is threaded in).
+    const { paid, marketValue: value } = statsFromLots(
+      rows.map((r) => ({
+        quantity: r.quantity,
+        purchasePrice: r.purchasePrice,
+        marketPrice: r.card.marketPrice,
+        condition: r.condition,
+        isSold: r.isSold,
+        soldPrice: r.soldPrice,
+      }))
     );
     return { totalCards, sealed, graded, paid, value };
   }, [items]);

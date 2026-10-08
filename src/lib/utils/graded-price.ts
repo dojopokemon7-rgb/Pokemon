@@ -65,6 +65,14 @@ export function parseGrade(grade: string | number): number {
   return match ? Number(match[0]) : NaN;
 }
 
+/** A free-text condition is "graded" when it names a grading company. Single
+ *  source of truth so the portfolio/value path and the UI agree on what counts
+ *  as a slab (previously each surface carried its own regex copy). */
+const GRADED_RE = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
+export function isGraded(condition: string | null | undefined): boolean {
+  return !!condition && GRADED_RE.test(condition);
+}
+
 // Composite-key index for the name/set/grade lookup.
 const byNameSetGrade = new Map(
   GRADED_PRICE_LOOKUP.map((e) => [`${e.name}|${e.set}|${e.grade}`, e.gradedMarketValue])

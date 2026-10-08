@@ -11,7 +11,14 @@
  *   - Partial sales allocate cost basis PROPORTIONALLY, so the sum of
  *     allocations across all partial sales of a lot equals the lot's total
  *     basis (no basis is created or lost by splitting).
+ *
+ * CURRENCY: all amounts are treated as USD. P&L is USD-only — no FX
+ * conversion is applied to either cost basis or market value (see the P&L
+ * findings report, Q4). Mixing a non-USD stored basis here would be wrong,
+ * but that is a latent/out-of-scope concern, not a behavior of this engine.
  */
+
+import { gradedPrice, isGraded, parseGrade } from "./graded-price";
 
 export type PnL =
   | { status: "resolved"; value: number }
@@ -141,6 +148,11 @@ export interface RawLot {
   marketPrice: number | null;
   isSold?: boolean | null;
   soldPrice?: number | null;
+  /** Free-text grade/condition (e.g. "PSA 10"). OPTIONAL — raw lots omit it
+   *  and behave EXACTLY as before. When present and graded, the active market
+   *  value is resolved via the graded price (same helper the card-detail /
+   *  add-sheet use) instead of the raw aggregate `marketPrice`. */
+  condition?: string | null;
 }
 
 /**
@@ -159,9 +171,18 @@ export function statsFromLots(lots: readonly RawLot[]): PortfolioStats {
       const grossPerCopy = lot.quantity > 0 ? (lot.soldPrice ?? 0) / lot.quantity : 0;
       sold.push({ qty: lot.quantity, grossPerCopy, basisPerCopy: lot.purchasePrice });
     } else {
+      // BUG-1 fix: graded holdings are worth their GRADED price, not the raw
+      // aggregate `marketPrice`. Resolve per-copy market with the SAME helper
+      // the card-detail / add-sheet use (curated lookup, else coarse per-grade
+      // multiplier). Raw lots (no condition / non-graded) keep `marketPrice`
+      // untouched, so existing behavior is unchanged.
+      const marketPerCopy =
+        lot.marketPrice != null && isGraded(lot.condition)
+          ? gradedPrice(lot.marketPrice, parseGrade(lot.condition as string))
+          : lot.marketPrice;
       active.push({
         qty: lot.quantity,
-        marketPerCopy: lot.marketPrice,
+        marketPerCopy,
         basisPerCopy: lot.purchasePrice,
       });
     }

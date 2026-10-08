@@ -120,3 +120,65 @@ describe("statsFromLots (shared dashboard + portfolio aggregation)", () => {
     expect(whole).toBe(52); // 12 + 20×2 — each lot counted exactly once
   });
 });
+
+/**
+ * BUG-1 (graded value): a graded holding is worth its GRADED price, not the raw
+ * aggregate marketPrice. statsFromLots now resolves graded lots via the SAME
+ * graded-price.ts helper the card-detail / add-sheet use (curated lookup, else
+ * a coarse per-grade multiplier). Raw lots must be untouched.
+ */
+describe("statsFromLots graded resolution (BUG-1)", () => {
+  it("a PSA 10 lot values at the CURATED graded price, not raw", () => {
+    // Charizard Base Set PSA 10 is curated at raw 3500 → graded 35000
+    // (graded-price.ts GRADED_PRICE_LOOKUP, mirrors golden_prices.json).
+    const s = statsFromLots([
+      { quantity: 1, purchasePrice: 3500, marketPrice: 3500, condition: "PSA 10", isSold: false },
+    ]);
+    expect(s.marketValue).toBe(35000); // graded value, NOT raw 3500
+    expect(s.unrealized).toBe(31500); // 35000 − 3500, not $0
+  });
+
+  it("a NON-curated graded lot uses the coarse fallback multiplier (×2.5 for PSA 10)", () => {
+    // raw 100 with no curated (raw,grade) hit → fallback 100 × 2.5 = 250.
+    const s = statsFromLots([
+      { quantity: 2, purchasePrice: 100, marketPrice: 100, condition: "PSA 10", isSold: false },
+    ]);
+    expect(s.marketValue).toBe(500); // 250 per copy × 2
+    expect(s.unrealized).toBe(300); // (250 − 100) × 2
+  });
+
+  it("a raw (ungraded) lot is unchanged — no graded resolution applied", () => {
+    const s = statsFromLots([
+      { quantity: 2, purchasePrice: 10, marketPrice: 25, condition: "Near Mint", isSold: false },
+      { quantity: 1, purchasePrice: 10, marketPrice: 25, isSold: false }, // no condition
+    ]);
+    expect(s.marketValue).toBe(75); // 25 × 3 — raw price kept verbatim
+  });
+
+  it("graded resolution never applies to a SOLD lot's proceeds (realized stays gross)", () => {
+    // soldPrice is the recorded gross total; a sold graded lot must not have its
+    // proceeds inflated by the graded multiplier.
+    const s = statsFromLots([
+      { quantity: 1, purchasePrice: 100, marketPrice: 100, condition: "PSA 10", isSold: true, soldPrice: 300 },
+    ]);
+    expect(s.marketValue).toBe(0); // sold → excluded from market value
+    expect(s.realized).toBe(200); // 300 gross − 100 basis, no graded multiplier
+  });
+});
+
+/**
+ * BUG-2 (You page): the Profile page's Paid/Value must come from statsFromLots,
+ * not an inline reduce over ALL rows. This pins the engine output for a dataset
+ * that mixes an active lot with a sold lot (the exact shape the You page maps),
+ * so the sold lot can never be double-counted as an active holding again.
+ */
+describe("You-page aggregation routes through statsFromLots (BUG-2)", () => {
+  it("Paid/Value exclude the sold lot (report's $12/$10 example, not $24/$20)", () => {
+    const s = statsFromLots([
+      { quantity: 1, purchasePrice: 10, marketPrice: 12, isSold: false },
+      { quantity: 1, purchasePrice: 10, marketPrice: 12, isSold: true, soldPrice: 25 },
+    ]);
+    expect(s.marketValue).toBe(12); // active only — NOT 24
+    expect(s.paid).toBe(10); // active basis only — NOT 20
+  });
+});

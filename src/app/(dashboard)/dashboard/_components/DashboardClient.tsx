@@ -500,6 +500,7 @@ export default function DashboardClient({
           quantity: i.quantity,
           purchasePrice: i.purchasePrice,
           marketPrice: i.card.marketPrice,
+          condition: i.condition,
           isSold: i.isSold,
           soldPrice: i.soldPrice,
         }))
@@ -602,6 +603,7 @@ export default function DashboardClient({
         quantity: i.quantity,
         purchasePrice: i.purchasePrice,
         marketPrice: i.card.marketPrice,
+        condition: i.condition,
         isSold: i.isSold,
         soldPrice: i.soldPrice,
       }))

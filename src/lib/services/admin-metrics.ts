@@ -10,6 +10,18 @@
  * Portfolio value = SUM(card.marketPrice * user_collection.quantity)
  * Total invested  = SUM(user_collection.purchasePrice * quantity)
  *                   where purchasePrice IS NOT NULL
+ *
+ * SOLD lots (isSold = true) are EXCLUDED from value / invested (BUG-3 fix) so
+ * a disposed holding isn't counted as if still held — matching the user-facing
+ * portfolio engine (statsFromLots). The quantity sum (cardsOwned) and the
+ * activity series deliberately count ALL rows (an add is an activity signal).
+ *
+ * GRADED CAVEAT: these SQL sums use the RAW card.marketPrice for every lot,
+ * including graded ones (e.g. "PSA 10"). The user-facing portfolio resolves
+ * graded holdings to their graded price (graded-price.ts) in JS, but that
+ * helper can't be called cheaply from SQL, so admin value stays raw-for-graded
+ * as a DOCUMENTED limitation. Reconciling would require post-fetch JS graded
+ * resolution per row rather than a risky SQL port of the lookup table.
  */
 
 import { prisma } from "@/lib/db";
@@ -39,12 +51,12 @@ export async function getPlatformStats(): Promise<PlatformStats> {
       SELECT COALESCE(SUM(c."marketPrice" * uc."quantity"), 0)::float AS total
       FROM "user_collection" uc
       JOIN "card" c ON c.id = uc."cardId"
-      WHERE c."marketPrice" IS NOT NULL
+      WHERE c."marketPrice" IS NOT NULL AND uc."isSold" = false
     `,
     prisma.$queryRaw<{ total: number | null }[]>`
       SELECT COALESCE(SUM(uc."purchasePrice" * uc."quantity"), 0)::float AS total
       FROM "user_collection" uc
-      WHERE uc."purchasePrice" IS NOT NULL
+      WHERE uc."purchasePrice" IS NOT NULL AND uc."isSold" = false
     `,
     prisma.userCollection.aggregate({
       _sum: { quantity: true },
@@ -153,12 +165,12 @@ export async function getUserFinancials(userId: string): Promise<UserFinancials>
       SELECT COALESCE(SUM(c."marketPrice" * uc."quantity"), 0)::float AS total
       FROM "user_collection" uc
       JOIN "card" c ON c.id = uc."cardId"
-      WHERE uc."userId" = ${userId} AND c."marketPrice" IS NOT NULL
+      WHERE uc."userId" = ${userId} AND c."marketPrice" IS NOT NULL AND uc."isSold" = false
     `,
     prisma.$queryRaw<{ total: number | null }[]>`
       SELECT COALESCE(SUM(uc."purchasePrice" * uc."quantity"), 0)::float AS total
       FROM "user_collection" uc
-      WHERE uc."userId" = ${userId} AND uc."purchasePrice" IS NOT NULL
+      WHERE uc."userId" = ${userId} AND uc."purchasePrice" IS NOT NULL AND uc."isSold" = false
     `,
     prisma.userCollection.aggregate({
       where: { userId },
@@ -201,6 +213,7 @@ export async function getPortfolioValuesByUser(
     JOIN "card" c ON c.id = uc."cardId"
     WHERE uc."userId" = ANY(${userIds as string[]})
       AND c."marketPrice" IS NOT NULL
+      AND uc."isSold" = false
     GROUP BY uc."userId"
   `;
 
