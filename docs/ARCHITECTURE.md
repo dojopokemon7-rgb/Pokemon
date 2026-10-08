@@ -53,6 +53,19 @@ Key facts:
 - `trustedOrigins`: localhost:3000 AND 3001 (e2e), prod domain, `*.vercel.app`.
 - `BETTER_AUTH_URL` MUST match the port the app is served on (cookie scoping) — e2e boots on :3001 with `BETTER_AUTH_URL=http://localhost:3001`.
 
+### Admin analytics (live panel)
+
+The admin panel surfaces platform metrics through the `admin-metrics.ts` service (REAL grouped SQL only — RULE 2; every number traces to real rows, a quiet day is a true 0, an empty range renders honest "No data yet").
+
+- **Pages.** `/admin` (Overview) + `/admin/analytics` (detail, FEAT-003). Both `force-dynamic` server components that compute aggregates server-side and pass them as TanStack `initialData` to client wrappers (`LiveOverviewStats` / `AnalyticsDetail`) — populated first paint, no empty flash.
+- **Routes.** `GET /api/admin/metrics/overview` ({stats, activeUsers}) and `GET /api/admin/metrics/analytics` (the 7 detail aggregates in one object). Both guarded by the EXISTING `requireAdmin` (401 unauth / 403 non-admin, fresh-DB `isAdmin` re-read — platform financials/PII never leak), `force-dynamic` + `Cache-Control: no-store`. NOT Redis-cached (low-traffic admin, cheap grouped queries).
+- **Live refresh.** The client queries override the global TanStack defaults (staleTime 5m, `refetchOnWindowFocus:false`) PER-QUERY: `staleTime:0` + `refetchInterval:25s` + `refetchOnWindowFocus:true`, so the panel auto-refreshes.
+- **Metric method notes:**
+  - *Scan Vision credits are an ESTIMATE* — `estimatedVisionCredits = (successful scans with ocrSource='vision') × 5`. `SyncLog.credits` does NOT meter Vision scans, so this is derived, not read back; the UI labels it "estimated". A scan abandoned before a pick (`pickedCardId IS NULL`) counts as a FAIL.
+  - *Active users (DAU/WAU)* use `Session.updatedAt` as the activity proxy (Better Auth refreshes it on session use), `COUNT(DISTINCT "userId")` within 1 day / 7 days.
+  - *Financial consistency* — portfolio value/qty sums carry `uc."isSold" = false` (BUG-3 fix: a disposed holding isn't counted as held), keeping the documented raw-`Card.marketPrice`-for-graded limitation (the JS graded helper can't be called cheaply from SQL).
+  - *Ranked cards* (top wanted / most scanned) group by the EXTERNAL id (`want_list_item.cardId` / `scan_feedback.pickedCardId`, RULE 3) and LEFT JOIN `Card.externalId` so an uncatalogued id still shows (null name → falls back to the id).
+
 ## 3. The two card-id universe (memorize)
 
 | ID | Example | Where it's used |
@@ -220,6 +233,8 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 | `["population", id]` | `GET /api/cards/[id]/population` | staleTime 24h |
 | `["ebay-sold", id, name, set, rarity, number, game]` | `GET /api/cards/[id]/ebay-sold` | Postgres `SoldListing` read (Part D); server read-through 120s |
 | `["linked-accounts"]` | `authClient.listAccounts()` | `/you` |
+| `["admin-overview"]` | `GET /api/admin/metrics/overview` | **Live admin** — SSR `initialData`, `staleTime:0`, `refetchInterval:25s`, `refetchOnWindowFocus:true` (overrides global defaults) |
+| `["admin-analytics"]` | `GET /api/admin/metrics/analytics` | **Live admin** — same per-query live overrides as `admin-overview` |
 
 **Invalidation map:** add-to-collection → `["collection"]` + `["portfolio-collection"]`; want-list add/remove/move → whole `["want-list"]`; bulk delete → `["portfolio-collection"]` + `["collection"]`; admin card PATCH → no query invalidation (RSC `router.refresh()`).
 

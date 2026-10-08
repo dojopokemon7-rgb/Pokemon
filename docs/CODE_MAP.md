@@ -110,8 +110,11 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 | File | Route | Type | Notes |
 |---|---|---|---|
 | `layout.tsx` | `/admin/*` | S | Two-tier enforcement: middleware cookie check + **this layout re-validates `isAdmin` from DB-backed session, redirect non-admins to `/dashboard` (fail-closed)**. `isAdmin` is cookie-cached ~5 min. Fixed `<AdminSidebar/>` (240px) + scrolling main. |
-| `page.tsx` | `/admin` | S | Overview. `getPlatformStats()` + `getRecentPlatformActivity(10)` (admin-metrics service). Financial cards (Total Platform Value, Total Invested), activity cards (Users / Cards Tracked / **Active Floor Listings = explicit 0 stub**), activity feed linking → `/admin/users/{id}`. |
-| `_components/AdminSidebar.tsx` | — | C | Nav: Overview / Users / Card Database / Transactions / Audit Logs + "Back to App". `usePathname()` active state. |
+| `page.tsx` | `/admin` | S | Overview. `getPlatformStats()` + `getActiveUsers()` + `getRecentPlatformActivity(10)` + summary series (admin-metrics service). Server-computes stats → `<LiveOverviewStats initialData>` (financial/activity + DAU/WAU cards that **auto-refresh** via `/api/admin/metrics/overview`). Summary charts (`UserGrowthChart` / `CardsAddedChart` / `TopCollectedCardsChart`) + activity feed stay server-rendered. `force-dynamic` so SSR initialData is fresh. Links → `/admin/analytics`. |
+| `analytics/page.tsx` | `/admin/analytics` | S | **Detail analytics (FEAT-003).** Server-computes the 7 detail aggregates (scan usage, portfolio totals, per-game split, DAU/WAU, top collected/wanted/scanned) → `<AnalyticsDetail initialData>`. `force-dynamic`. Mirrors Overview header styling. |
+| `_components/LiveOverviewStats.tsx` | — | C | Live Overview stat cards. `useQuery(['admin-overview'])` → `GET /api/admin/metrics/overview`; SSR `initialData`, `staleTime:0`, `refetchInterval:25000`, `refetchOnWindowFocus:true` (overrides global defaults). Renders Financial + Activity + DAU/WAU cards. |
+| `_components/AnalyticsDetail.tsx` | — | C | Live detail panel. `useQuery(['admin-analytics'])` → `GET /api/admin/metrics/analytics`; SSR `initialData` + same live overrides. Renders all five metric groups; scan series as a two-series (success/fail) `AreaChart` (`showYAxis={false}` count axis); per-game two-slice bars; ranked lists (TopCollected bar style). **Vision credits labeled "estimated"**; honest "No data yet." on empty. |
+| `_components/AdminSidebar.tsx` | — | C | Nav: Overview / **Analytics** / Users / Card Database / Transactions / Audit Logs + "Back to App". `usePathname()` active state. |
 | `cards/page.tsx` | `/admin/cards` | S | `prisma.card.findMany` (take 50, `?q=` filters name OR set name). Game column inferred from set `externalId` prefix. Client islands below. |
 | `cards/_components/CardSearchInput.tsx` | — | C | 250ms debounced `router.replace(?q=)` inside `useTransition` — URL is source of truth for the server-component filter. |
 | `cards/_components/EditCardButton.tsx` | — | C | Modal editing Market Price + Image URL → `useMutation` `PATCH /api/admin/cards/{id}` → `router.refresh()`. |
@@ -122,7 +125,7 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 
 ---
 
-## 8. `src/app/api/` — 22 route files
+## 8. `src/app/api/` — 24 route files
 
 Full contracts in **API_REFERENCE.md**. Quick index:
 
@@ -156,6 +159,8 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | `want-list/route.ts` | GET, POST | `requireAuth` | `want-list.service` |
 | `want-list/[id]/route.ts` | PATCH, DELETE | `requireAuth` | `want-list.service` |
 | `admin/cards/[id]/route.ts` | PATCH | `requireAdmin` | Prisma + `writeAuditLog` (action `card.update`) |
+| `admin/metrics/overview/route.ts` | GET | `requireAdmin` | `getPlatformStats()` + `getActiveUsers()` → `{stats, activeUsers}`. `force-dynamic` + `Cache-Control: no-store`. Live Overview cards consume it. |
+| `admin/metrics/analytics/route.ts` | GET | `requireAdmin` | `getScanUsageSeries` + `getPortfolioTotals` + `getPerGameSplit` + `getActiveUsers` + top collected/wanted/scanned → one JSON object. `force-dynamic` + no-store. NOT Redis-cached (low-traffic admin, cheap). |
 
 ---
 
@@ -210,7 +215,8 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | `scan-allowance.service.ts` | `getScanAllowance(userId)`, `reserveSuccessfulScan(userId)` | Lifetime successful-scan allowance (`User.scanCount`). `reserveSuccessfulScan` = atomic `updateMany where scanCount<limit` → `count===1` (concurrency-safe, no overrun). |
 | `collection.service.ts` (+`VirtualCollectionReadonlyError`, `MainCollectionProtectedError`) | `getOrCreateMainCollection` (FEAT-004, protected per-user Main), `listCollections`, `createCollection`, `renameCollection`, `deleteCollection`, `updateCollectionSettings` | Ownership-scoped CRUD. Writes to the reserved virtual ALL view (id `__all__` / name "All Cards") throw `VirtualCollectionReadonlyError` → 400. |
 | `support.service.ts` | `submitSupportTicket(input, {deliver?, userId?})` | F-21. Injectable `deliver` (default: persist `SupportTicket` row). Result-object `{ok, ticketId}\|{ok:false, error}` — never throws. |
-| `admin-metrics.ts` | `getPlatformStats()`, `getRecentPlatformActivity(limit)`, `getUserFinancials(userId)`, `getPortfolioValuesByUser(userIds)` | Raw SQL for cross-relation sums; grouped `ANY(...)` query avoids N+1. `activeFloorListings` explicit 0 stub. Admin pages only. |
+| `admin-metrics.ts` | `getPlatformStats()`, `getRecentPlatformActivity(limit)`, `getUserFinancials(userId)`, `getPortfolioValuesByUser(userIds)`, `getUserGrowthSeries()`, `getCardsAddedSeries()`, `getTopCollectedCards(limit)`, **`getScanUsageSeries(days)`** (+ est. Vision credits), **`getPortfolioTotals()`**, **`getPerGameSplit()`**, **`getActiveUsers()`** (DAU/WAU via `Session.updatedAt`), **`getTopWantedCards(limit)`**, **`getMostScannedCards(limit)`**; `ANALYTICS_RANGE_DAYS=90`. Raw grouped SQL for cross-relation sums; grouped `ANY(...)`/`DISTINCT` avoids N+1. Financials carry `uc."isSold"=false` (BUG-3) + raw-for-graded caveat. Ranked cards join `Card.externalId` (RULE 3). `activeFloorListings` explicit 0 stub. Consumed by `/admin`, `/admin/analytics`, and the two `/api/admin/metrics/*` routes. Admin only. |
+| `admin-analytics.ts` (utils) | `fillDailyRange`, `fillScanDailyRange`, `toCumulative`, `utcDayKey`; types `DailyCount`, `ScanDailyCount` | Pure UTC day-bucket gap-fill / cumulative helpers for the series; honest-zero fill. Unit-tested in isolation. |
 
 ### 10.3 Utils (`src/lib/utils/`)
 

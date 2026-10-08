@@ -9,64 +9,35 @@
 import Link from "next/link";
 import {
   getPlatformStats,
+  getActiveUsers,
   getRecentPlatformActivity,
   getUserGrowthSeries,
   getCardsAddedSeries,
   getTopCollectedCards,
   type PlatformActivityItem,
 } from "@/lib/services/admin-metrics";
-import { formatCurrency, formatRelative } from "@/lib/utils/format";
+import { formatRelative } from "@/lib/utils/format";
 import {
   UserGrowthChart,
   CardsAddedChart,
   TopCollectedCardsChart,
 } from "./_components/AnalyticsCharts";
+import { LiveOverviewStats } from "./_components/LiveOverviewStats";
 
-interface Stat {
-  label: string;
-  value: string;
-  note?: string;
-  highlight?: boolean;
-}
+// Live, per-request authed read — the stat cards auto-refresh client-side, but
+// the server render must stay dynamic so the SSR initialData is fresh too.
+export const dynamic = "force-dynamic";
 
 export default async function AdminOverviewPage() {
-  const [stats, activity, userGrowth, cardsAdded, topCollected] =
+  const [stats, activeUsers, activity, userGrowth, cardsAdded, topCollected] =
     await Promise.all([
       getPlatformStats(),
+      getActiveUsers(),
       getRecentPlatformActivity(10),
       getUserGrowthSeries(),
       getCardsAddedSeries(),
       getTopCollectedCards(10),
     ]);
-
-  const financial: readonly Stat[] = [
-    {
-      label: "Total Platform Value",
-      value: formatCurrency(stats.totalPlatformValue),
-      note: "Current market value across every collection",
-      highlight: true,
-    },
-    {
-      label: "Total Invested",
-      value: formatCurrency(stats.totalInvested),
-      note: "Sum of recorded purchase prices",
-      highlight: true,
-    },
-  ];
-
-  const activityStats: readonly Stat[] = [
-    { label: "Total Users", value: stats.totalUsers.toLocaleString() },
-    {
-      label: "Total Cards Tracked",
-      value: stats.totalCardsTracked.toLocaleString(),
-      note: "Includes duplicates",
-    },
-    {
-      label: "Active Floor Listings",
-      value: stats.activeFloorListings.toLocaleString(),
-      note: "Awaiting Floor schema",
-    },
-  ];
 
   return (
     <div className="px-10 py-10">
@@ -81,31 +52,15 @@ export default async function AdminOverviewPage() {
           Overview
         </h1>
         <p className="dojo-body" style={{ marginTop: "6px" }}>
-          Platform-wide financials and activity.
+          Platform-wide financials and activity.{" "}
+          <Link href="/admin/analytics" className="dojo-link">
+            View detailed analytics →
+          </Link>
         </p>
       </header>
 
-      {/* ── Financial ── */}
-      <SectionHeading>Financial</SectionHeading>
-      <section
-        className="grid grid-cols-1 md:grid-cols-2 gap-4"
-        style={{ marginBottom: "28px" }}
-      >
-        {financial.map((s) => (
-          <StatCard key={s.label} stat={s} />
-        ))}
-      </section>
-
-      {/* ── Activity ── */}
-      <SectionHeading>Activity</SectionHeading>
-      <section
-        className="grid grid-cols-1 md:grid-cols-3 gap-4"
-        style={{ marginBottom: "36px" }}
-      >
-        {activityStats.map((s) => (
-          <StatCard key={s.label} stat={s} />
-        ))}
-      </section>
+      {/* ── Financial + Activity stat cards (live, auto-refresh ~25s) ── */}
+      <LiveOverviewStats initialData={{ stats, activeUsers }} />
 
       {/* ── Analytics (real time-series) ── */}
       <SectionHeading>Analytics</SectionHeading>
@@ -141,45 +96,6 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
     >
       {children}
     </div>
-  );
-}
-
-function StatCard({ stat }: { stat: Stat }) {
-  return (
-    <article
-      style={{
-        background: "var(--color-dojo-card)",
-        border: "1px solid var(--color-dojo-stroke)",
-        padding: "24px 24px 28px",
-      }}
-    >
-      <div
-        className="dojo-step-label"
-        style={{ fontSize: "10px", color: "var(--color-dojo-body)" }}
-      >
-        {stat.label}
-      </div>
-      <div
-        className="dojo-count-up"
-        style={{
-          marginTop: "14px",
-          fontFamily: "var(--font-serif)",
-          fontSize: "38px",
-          lineHeight: 1.1,
-          color: stat.highlight
-            ? "var(--color-dojo-gold)"
-            : "var(--color-dojo-ink)",
-          wordBreak: "break-word",
-        }}
-      >
-        {stat.value}
-      </div>
-      {stat.note ? (
-        <div className="dojo-faint" style={{ marginTop: "10px" }}>
-          {stat.note}
-        </div>
-      ) : null}
-    </article>
   );
 }
 

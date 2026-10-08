@@ -19,6 +19,7 @@ interface NavItem {
 
 const NAV_ITEMS: readonly NavItem[] = [
   { label: "Overview", href: "/admin", exact: true },
+  { label: "Analytics", href: "/admin/analytics" },
   { label: "Users", href: "/admin/users" },
   { label: "Card Database", href: "/admin/cards" },
   { label: "Transactions", href: "/admin/transactions" },
