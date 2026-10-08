@@ -10,6 +10,8 @@
 | Route | Method(s) | Auth | Zod | Redis | Never-500s? |
 |---|---|---|---|---|---|
 | `/auth/[...all]` | GET, POST | public (is the handler) | Better Auth internal | — | — |
+| `/card-img` (`?u=`) | GET | public | SSRF host allowlist | 24h + SWR | No (400/404/502) |
+| `/card-img/[id]` | GET | public | id→DB url + SSRF allowlist | 24h + SWR | No (400/404/502) |
 | `/cards/[id]/ebay-sold` | GET, POST | public | — | soldRows 120s | Yes (`listings: []`) |
 | `/cards/[id]/enrich` | POST | public | — | — | Yes (always 200 `{enriched}`) |
 | `/cards/[id]/history` | GET | public | — | — | Yes (`points: []`) |
@@ -184,6 +186,12 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ### `GET /api/health` — Docker healthcheck
 - Readiness gates on **Postgres only** (the source of truth). 200 `{ status: "ok", timestamp, services: { app: "ok", postgres: "ok", redis: "ok" } }` when both reachable. Redis is cache-only/optional (RULE 1) and NEVER gates readiness → Redis unreachable is **still 200** `{ status: "degraded", services: { postgres: "ok", redis: "unreachable" } }`. Postgres unreachable → **503** `{ status: "error", services: { postgres: "unreachable" } }`.
+
+### `GET /api/card-img` + `GET /api/card-img/[id]` — Pokémon card-art same-origin proxies
+
+- **Why two routes:** both front the Pokémon art CDNs with a same-origin, SSRF-safe, edge-cached proxy (anti-hotlink + 24h+SWR cache). The SSRF guard is shared (`src/app/api/card-img/ssrf.ts`): https-only, no credentials, **exact-host** allowlist Set (`images.scrydex.com`, `assets.tcgdex.net`, `images.pokemontcg.io` — never a substring), `redirect:"manual"`, `image/*` only.
+- **`?u=<encoded url>` (legacy):** the url comes from the client, so the upstream host is visible in the query string. Kept as the fallback for live-search cards without a stored DB row.
+- **`/[id]` (preferred — hides the source):** `[id]` is the catalog **externalId** (AGENTS.md rule 3; falls back to internal cuid). Resolves `Card.imageUrl` (or `imageUrlHi` when `?hi=1`, falling back to `imageUrl`) **server-side**, so the browser only ever sees `/api/card-img/<id>` — `images.scrydex.com` appears neither in the request nor the page URL. The DB-sourced url STILL passes the SSRF allowlist (defense in depth → disallowed stored host = 400). Unknown id / no stored url = 404; non-image or redirecting upstream = 404; fetch error = 502. `Cache-Control: public, max-age=86400, stale-while-revalidate=604800`. The client builds this via `cardImgById()` + `CardImage`'s `cardId` prop; detail-page links no longer carry `img=<raw url>`.
 
 ### `GET /api/one-piece-img/[cardId]` — Bandai CDN same-origin proxy
 - `[cardId]` must match `/^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/` (whitelist — prevents open proxy) else 400.

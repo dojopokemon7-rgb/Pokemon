@@ -216,9 +216,11 @@ function TrendCardTile({
   // built from the SAME params goToCard threads (there is no get-by-id
   // API). The plain click is intercepted so goToCard still threads
   // price/image/number/rarity — mirrors CardTile's established pattern.
+  // NOTE: the raw image url is NOT threaded as `img=` (it would leak the
+  // upstream `images.scrydex.com` host in the address bar). The detail page
+  // rebuilds the hero from the route id via /api/card-img/<id> instead.
   const detailParams = new URLSearchParams({ name: card.name, game });
   if (card.setImage) detailParams.set("set", card.setImage);
-  if (card.imageUrl) detailParams.set("img", card.imageUrl);
   if (card.price != null) detailParams.set("price", String(card.price));
   if (card.rarity) detailParams.set("rarity", card.rarity);
 
@@ -281,6 +283,7 @@ function TrendCardTile({
       <div style={{ width: "100%" }}>
         <CardImage
           src={card.imageUrl}
+          cardId={game === "onepiece" ? undefined : card.externalId}
           fallbackChain={
             game === "onepiece"
               ? onePieceImageChain(card.externalId, card.imageUrl)
@@ -526,11 +529,13 @@ function CardTile({
   //
   // `game` is threaded through so the detail page shows the right franchise
   // name; `number`/`rarity` feed the detail page's serial line.
+  // NOTE: the raw image url is NOT threaded as `img=` (it would leak the
+  // upstream `images.scrydex.com` host in the address bar). The detail page
+  // rebuilds the hero from the route id via /api/card-img/<id> instead.
   const detailParams = new URLSearchParams({
     name: card.name,
     game,
     ...(setName ? { set: setName } : {}),
-    ...(imgSrc ? { img: imgSrc } : {}),
     ...(price ? { price: String(price) } : {}),
     ...(card.number ? { number: card.number } : {}),
     ...(card.rarity ? { rarity: card.rarity } : {}),
@@ -569,6 +574,7 @@ function CardTile({
       <div style={{ position: "relative" }}>
         <CardImage
           src={imgSrc}
+          cardId={game === "onepiece" ? undefined : card.id}
           fallbackChain={
             game === "onepiece" ? onePieceImageChain(card.id, imgSrc) : undefined
           }

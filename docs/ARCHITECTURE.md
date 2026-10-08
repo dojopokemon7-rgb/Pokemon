@@ -214,6 +214,7 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 - `/api/cards/search`: `public, max-age=30, stale-while-revalidate=300`
 - `/api/cards/trending`: `private, max-age=30, swr=120`
 - `/api/cards/[id]/population`: `private, max-age=86400`
+- `/api/card-img` + `/api/card-img/[id]`: `public, max-age=86400, swr=604800` (upstream fetch `force-cache`). The id-based twin resolves `Card.imageUrl` server-side so the browser never sees the upstream `images.scrydex.com` host; both share the SSRF allowlist (`card-img/ssrf.ts`).
 - `/api/one-piece-img/[cardId]`: `public, max-age=86400, swr=604800` (upstream fetch `force-cache`)
 - collection/want-list/users-me GETs: `no-store`
 - `/api/cron/refresh-owned-prices`: `force-dynamic`

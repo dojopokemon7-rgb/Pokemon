@@ -96,11 +96,13 @@ export function CardDetailsPopup({
   const price = card.marketPrice;
   const showSet = card.setName && card.setName.toLowerCase() !== "unknown set";
 
+  // NOTE: the raw image url is NOT threaded as `img=` (it would leak the
+  // upstream `images.scrydex.com` host in the address bar). The detail page
+  // rebuilds the hero from the route id via /api/card-img/<id> instead.
   const detailParams = new URLSearchParams({
     name: card.name,
     ...(card.game ? { game: card.game } : {}),
     ...(showSet ? { set: card.setName as string } : {}),
-    ...(card.imageUrl ? { img: card.imageUrl } : {}),
     ...(price != null ? { price: String(price) } : {}),
   });
 
@@ -193,6 +195,7 @@ export function CardDetailsPopup({
           <div style={{ width: "62%", margin: "0 auto" }}>
             <CardImage
               src={card.imageUrl}
+              cardId={card.game === "onepiece" ? undefined : card.externalId}
               alt={card.name}
               initials={cardInitials(card.name)}
               initialsSize="26px"

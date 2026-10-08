@@ -39,6 +39,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { gradedPrice } from "@/lib/utils/graded-price";
 import { formatCurrencyCompact } from "@/lib/utils/format";
+import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
 import {
   buildChips,
   buildChartMatrix,
@@ -233,7 +234,6 @@ function CardDetailInner() {
 
   const name = searchParams.get("name") ?? "Card";
   const setName = searchParams.get("set") ?? "";
-  const img = searchParams.get("img") ?? "/cards/card-front.webp";
   const priceParam = Number(searchParams.get("price") ?? 0);
   
   // Batch 2B · Item 2 (paint-from-cache): this query intentionally sets NO
@@ -297,6 +297,19 @@ function CardDetailInner() {
   const serialNumber =
     searchParams.get("number") ||
     (isBandai ? (id ?? "").toUpperCase() : (id ?? ""));
+
+  // Hero art is rebuilt from the ROUTE id via a same-origin proxy — the raw
+  // upstream url is NEVER carried in the address bar (`img=` was removed). One
+  // Piece ids go through the Bandai proxy; Pokémon ids through /api/card-img/
+  // <id>, which resolves Card.imageUrl server-side (hides images.scrydex.com).
+  // If the proxy 404s (live-search card with no stored row) the plain <img>'s
+  // onError swaps in the local placeholder, so no raw url ever leaks.
+  const PLACEHOLDER = "/cards/card-front.webp";
+  const heroSrc =
+    game === "onepiece"
+      ? onePieceImageUrl(id) ?? PLACEHOLDER
+      : cardImgById(id);
+  const [heroError, setHeroError] = useState(false);
 
   const [flipped, setFlipped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -500,8 +513,15 @@ function CardDetailInner() {
       {/* ── Hero art with overlaid controls ── */}
       <div style={{ position: "relative", display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
         <img
-          src={flipped ? "/cards/card-back.webp" : img}
+          src={
+            flipped
+              ? "/cards/card-back.webp"
+              : heroError
+                ? PLACEHOLDER
+                : heroSrc
+          }
           alt={name}
+          onError={() => setHeroError(true)}
           onClick={() => setFlipped((v) => !v)}
           title="Flip the card"
           style={{
@@ -791,7 +811,13 @@ function CardDetailInner() {
 
         {sheetOpen && (
           <AddCardSheet
-            card={{ externalId: id, name, setName: setName || null, imageUrl: img || null, marketPrice: fetchedPrice ?? (priceParam > 0 ? priceParam : null), gradedPrices }}
+            // imageUrl intentionally null: the raw upstream url is no longer
+            // carried into this page (hide-img-source). For a KNOWN card the
+            // collection POST ignores a client imageUrl anyway (the shared
+            // catalog row's image wins); only a brand-new live-search row
+            // would miss an image, which then falls back to initials — the
+            // same-origin proxy url must NOT be stored (it isn't a real URL).
+            card={{ externalId: id, name, setName: setName || null, imageUrl: null, marketPrice: fetchedPrice ?? (priceParam > 0 ? priceParam : null), gradedPrices }}
             onClose={() => setSheetOpen(false)}
             onAdded={(msg) => { setSheetOpen(false); setToast(msg); }}
           />

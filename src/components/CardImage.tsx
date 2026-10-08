@@ -20,11 +20,21 @@
  */
 
 import { useState } from "react";
-import { proxiedCardImage } from "@/lib/utils/card-image";
+import { proxiedCardImage, cardImgById, isOnePieceCode } from "@/lib/utils/card-image";
 
 interface CardImageProps {
   src?: string | null;
   alt: string;
+  /**
+   * Catalog id (externalId, e.g. "base1-4") for Pokémon cards. When present
+   * (and NOT a One Piece code), the FIRST image candidate becomes the id-based
+   * same-origin proxy `/api/card-img/<id>`, so the browser never sees the
+   * upstream `images.scrydex.com` URL (neither in the request nor the Network
+   * tab). The raw `src`/`fallbackChain` entries remain as later fallbacks, so a
+   * card with no stored DB row still falls through to the `?u=` proxy, then to
+   * initials. Omit for One Piece — its chain is untouched (RULE 13).
+   */
+  cardId?: string | null;
   /**
    * Ordered image URLs to try, best first. On <img onError> the component
    * advances to the next entry before giving up to initials. When omitted,
@@ -56,6 +66,7 @@ export function cardInitials(name: string): string {
 export function CardImage({
   src,
   alt,
+  cardId,
   fallbackChain,
   initials,
   aspectRatio = "660 / 921",
@@ -71,9 +82,21 @@ export function CardImage({
   // other URL (One Piece proxy chain, same-origin, other hosts) is untouched,
   // which keeps this component game-agnostic and the <img onError> fallback
   // to initials intact.
-  const chain = (fallbackChain?.length ? fallbackChain : [src])
-    .map(proxiedCardImage)
-    .filter((u): u is string => typeof u === "string" && u.length > 0);
+  // When a Pokémon card id is known, prefer the id-based same-origin proxy
+  // (/api/card-img/<id>) so the browser never requests the upstream CDN by
+  // url — the server resolves Card.imageUrl and hides images.scrydex.com. One
+  // Piece codes are excluded (their chain stays untouched, RULE 13). The raw
+  // src/fallbackChain entries stay AFTER it, so a card with no stored DB row
+  // (id-proxy 404s) still falls through to the `?u=` proxy, then to initials.
+  const idProxy =
+    cardId && !isOnePieceCode(cardId) ? cardImgById(cardId) : null;
+  const candidates = [
+    ...(idProxy ? [idProxy] : []),
+    ...(fallbackChain?.length ? fallbackChain : [src]).map(proxiedCardImage),
+  ];
+  const chain = Array.from(
+    new Set(candidates.filter((u): u is string => typeof u === "string" && u.length > 0))
+  );
   // Index into `chain`. On <img onError> (404, CORP/CORS block, non-image
   // body) we advance to the next candidate; once past the end we give up to
   // the initials placeholder.

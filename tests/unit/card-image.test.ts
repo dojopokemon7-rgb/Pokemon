@@ -4,6 +4,7 @@ import {
   onePieceImageChain,
   isOnePieceCode,
   proxiedCardImage,
+  cardImgById,
 } from "@/lib/utils/card-image";
 
 /**
@@ -115,6 +116,30 @@ describe("proxiedCardImage", () => {
     );
     expect(proxiedCardImage("http://images.scrydex.com/x")).toBe(
       "http://images.scrydex.com/x"
+    );
+  });
+});
+
+/**
+ * Guards the id-based proxy helper: the browser-facing src is `/api/card-img/
+ * <id>` (same-origin), NOT a `?u=<upstream url>` that would leak the CDN host.
+ */
+describe("cardImgById", () => {
+  it("builds the same-origin id-based proxy url (not ?u=...)", () => {
+    const src = cardImgById("base1-4");
+    expect(src).toBe("/api/card-img/base1-4");
+    expect(src).not.toContain("?u=");
+    expect(src).not.toContain("scrydex");
+  });
+
+  it("appends ?hi=1 only when hi-res is requested", () => {
+    expect(cardImgById("base1-4", false)).toBe("/api/card-img/base1-4");
+    expect(cardImgById("base1-4", true)).toBe("/api/card-img/base1-4?hi=1");
+  });
+
+  it("url-encodes the id", () => {
+    expect(cardImgById("sv3pt5-199/ foo")).toBe(
+      "/api/card-img/" + encodeURIComponent("sv3pt5-199/ foo")
     );
   });
 });

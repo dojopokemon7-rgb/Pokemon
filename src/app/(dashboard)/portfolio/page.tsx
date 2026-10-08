@@ -147,11 +147,13 @@ function subLine(item: CollectionItem): string {
 function detailHref(item: CollectionItem): string {
   const cardIdentifier = item.card.externalId || item.cardId;
   const game = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(cardIdentifier) ? "onepiece" : "pokemon";
+  // NOTE: the raw image url is NOT threaded as `img=` (it would leak the
+  // upstream `images.scrydex.com` host in the address bar). The detail page
+  // rebuilds the hero from the route id via /api/card-img/<id> instead.
   const params = new URLSearchParams({
     name: item.card.name,
     game,
     ...(item.card.set?.name ? { set: item.card.set.name } : {}),
-    ...(item.card.imageUrl ? { img: item.card.imageUrl } : {}),
     ...(item.card.marketPrice ? { price: String(item.card.marketPrice) } : {}),
     ...(item.card.number ? { number: item.card.number } : {}),
     ...(item.card.rarity ? { rarity: item.card.rarity } : {}),
@@ -205,7 +207,7 @@ function SellModal({ item, onClose, onConfirm, isPending }: SellModalProps) {
         <div style={{ width: "100%", maxWidth: "380px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
             <div style={{ width: "48px", flex: "none" }}>
-              <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} aspectRatio="660 / 921" />
+              <CardImage src={item.card.imageUrl} cardId={item.card.externalId || item.cardId} alt={item.card.name} initials={cardInitials(item.card.name)} aspectRatio="660 / 921" />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <h2 className="dojo-heading" style={{ fontSize: "16px", margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -328,7 +330,7 @@ function CardGrid({
     <>
       {selectMode && <SelectCheckbox checked={selected} />}
       <div style={{ position: "relative" }}>
-        <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} style={{ background: "var(--color-dojo-raised)", border: "none" }} />
+        <CardImage src={item.card.imageUrl} cardId={item.card.externalId || item.cardId} alt={item.card.name} initials={cardInitials(item.card.name)} style={{ background: "var(--color-dojo-raised)", border: "none" }} />
         {item.isSold && (
           <span style={{ position: "absolute", top: "6px", right: "6px", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "9px", padding: "2px 6px", letterSpacing: "0.1em", textTransform: "uppercase" }}>
             SOLD
@@ -440,7 +442,7 @@ function CardRow({
         </span>
       )}
       <div style={{ width: "40px", flex: "none", position: "relative" }}>
-        <CardImage src={item.card.imageUrl} alt={item.card.name} initials={cardInitials(item.card.name)} aspectRatio="660 / 921" initialsSize="12px" style={{ background: "var(--color-dojo-raised)", border: "none" }} />
+        <CardImage src={item.card.imageUrl} cardId={item.card.externalId || item.cardId} alt={item.card.name} initials={cardInitials(item.card.name)} aspectRatio="660 / 921" initialsSize="12px" style={{ background: "var(--color-dojo-raised)", border: "none" }} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: "12px" }}>

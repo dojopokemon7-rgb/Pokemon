@@ -296,11 +296,11 @@ function fmtDelta(pct: number | null | undefined): { delta: string | null; up: b
 // threaded — the detail page infers it from the externalId pattern. Price is
 // only appended when non-null (AGENTS.md rule 2 — no fabricated price).
 function cardDetailHref(card: CardDetailsData): string {
-  // (img threaded below so the detail page shows THIS card's art, not a
-  // placeholder/stale image — the "wrong photo from dashboard" bug.)
+  // The raw image url is NOT threaded as `img=` (it would leak the upstream
+  // `images.scrydex.com` host in the address bar). The detail page rebuilds
+  // the hero from the route id via /api/card-img/<id> instead.
   const params = new URLSearchParams({ name: card.name });
   if (card.setName) params.set("set", card.setName);
-  if (card.imageUrl) params.set("img", card.imageUrl);
   if (card.marketPrice != null) params.set("price", String(card.marketPrice));
   return `/search/${encodeURIComponent(card.externalId)}?${params.toString()}`;
 }

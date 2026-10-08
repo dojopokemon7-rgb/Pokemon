@@ -64,6 +64,17 @@ export function proxiedCardImage(url: string | null | undefined): string | null 
   return `/api/card-img?u=${encodeURIComponent(url)}`;
 }
 
+/**
+ * Same-origin id-based proxy URL for a Pokémon card, e.g.
+ * `/api/card-img/base1-4`. Unlike proxiedCardImage (which puts the upstream
+ * CDN url in a `?u=` query param), this exposes ONLY the card id — the server
+ * resolves `Card.imageUrl` and never reveals `images.scrydex.com` to the
+ * browser. `hi` requests the hi-res variant (?hi=1). The id is url-encoded.
+ */
+export function cardImgById(externalId: string, hi = false): string {
+  return `/api/card-img/${encodeURIComponent(externalId)}${hi ? "?hi=1" : ""}`;
+}
+
 // Set-coded cards (OP/ST/EB/PRB) + P-### promos — the codes Bandai's CDN hosts.
 const ONE_PIECE_CODE = /^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/;
 

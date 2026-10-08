@@ -32,21 +32,7 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server";
-
-// Hosts that actually serve Pokémon card art in this app (confirmed below):
-//   - images.scrydex.com  — the entire stored catalog (full-catalog pull;
-//     e.g. https://images.scrydex.com/pokemon/mee-1/medium). Verified by
-//     querying every POKEMON Card.imageUrl: 10000/10000 are this host.
-//   - assets.tcgdex.net   — TCGdex live-search fallback adapter
-//     (card.service.ts fetchTcgdex → `${image}/high.webp`).
-//   - images.pokemontcg.io — Pokémon TCG API live-search fallback adapter
-//     (card.service.ts fetchPokemonTcg → images.small/large).
-// Exact-match Set — never a substring check.
-const ALLOWED_HOSTS: ReadonlySet<string> = new Set([
-  "images.scrydex.com",
-  "assets.tcgdex.net",
-  "images.pokemontcg.io",
-]);
+import { assertAllowedPokemonImageHost } from "./ssrf";
 
 function bad(message: string, status: 400 | 404 | 502) {
   const title =
@@ -60,20 +46,10 @@ export async function GET(request: NextRequest): Promise<Response> {
     return bad("Missing image url.", 400);
   }
 
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return bad("Malformed image url.", 400);
-  }
-
   // https only, no credentials, exact allowlisted host. Reject everything else.
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    !ALLOWED_HOSTS.has(parsed.hostname)
-  ) {
+  // Shared with the id-based twin (./[id]/route.ts) so both routes stay in sync.
+  const parsed = assertAllowedPokemonImageHost(raw);
+  if (!parsed) {
     return bad("Image host not allowed.", 400);
   }
 
