@@ -53,6 +53,7 @@ import {
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { parseSearchQuery } from "@/lib/utils/search-query";
+import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 import { rankCards, hasNameHit } from "@/lib/utils/search-rank";
 import { isSearchIndexEnabled, searchIndexIds } from "@/lib/services/card-search-index.service";
 
@@ -94,6 +95,11 @@ const SearchQuerySchema = z.object({
   // (which treats any non-empty string as true), so only the explicit
   // truthy values turn it on.
   hasPrice: z.enum(["true", "1"]).optional(),
+  // Language filter. There is NO language column on Card — language is
+  // inferred from the externalId: Japanese cards contain the literal
+  // substring "_ja-" (e.g. "bw1b_ja-3"), English/other cards do not
+  // (e.g. "xy7-57"). `all` (default/omitted) applies no predicate.
+  language: ScanLanguageSchema.optional(),
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -129,6 +135,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     minPrice: searchParams.get("minPrice") ?? undefined,
     maxPrice: searchParams.get("maxPrice") ?? undefined,
     hasPrice: searchParams.get("hasPrice") ?? undefined,
+    language: searchParams.get("language") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -143,7 +150,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query, set, rarity, graded, minPrice, maxPrice, hasPrice } = parsed.data;
+  const { game, query, set, rarity, graded, minPrice, maxPrice, hasPrice, language } = parsed.data;
   const sort = parsed.data.sort ?? "trending";
   const relevance = sort === "trending";
 
@@ -162,6 +169,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     minPrice,
     maxPrice,
     hasPrice,
+    language,
   });
   const cached = await cacheGetJson<{ cards: unknown[]; source: string }>(cacheKey);
   if (cached) {
@@ -232,6 +240,25 @@ export async function GET(request: Request): Promise<NextResponse> {
       }
     : {};
 
+  // Language filter. Language is NOT a column — it's encoded in the externalId:
+  // Japanese cards contain the literal substring "_ja-" (e.g. "bw1b_ja-3"),
+  // English/other cards do not (e.g. "xy7-57"). The underscore is a SQL LIKE
+  // single-char wildcard, so it MUST be escaped to match literally: the JS
+  // string "\\_ja-" is the two chars `\` + `_`, which Prisma's `contains`
+  // compiles to Postgres LIKE '%\_ja-%' (default escape char `\`) — matching a
+  // literal "_ja-" and NOT e.g. "Xja-". ponytail: this is a filtered LIKE scan
+  // over externalId (fine inside the already-filtered, paginated query — the
+  // bounded take:300/600/60 caps it); upgrade path if the catalog grows or this
+  // becomes hot = a partial/expression index on `externalId LIKE '%\_ja-%'`, or
+  // a generated boolean `isJapanese` column.
+  const JA_MARKER = "\\_ja-";
+  const languageFilter: Prisma.CardWhereInput =
+    language === "ja"
+      ? { externalId: { contains: JA_MARKER } }
+      : language === "en"
+        ? { NOT: { externalId: { contains: JA_MARKER } } }
+        : {};
+
   // Multi-field query match: name / card number / set name / set code
   // (the externalId encodes the code, e.g. "pokemon-sv3") / keyword tags.
   // Only applied when there's a query; an empty query lists the game's
@@ -264,6 +291,9 @@ export async function GET(request: Request): Promise<NextResponse> {
     ...priceFilter,
     // "Has price data" — nested AND so it never collides with the graded OR.
     ...hasPriceFilter,
+    // Language (en/ja) — inferred from the "_ja-" externalId marker. `all`
+    // (default) spreads an empty object, so no predicate is added.
+    ...languageFilter,
   };
 
   // Prisma's `AND` is `T | T[] | undefined`; normalize to an array so the

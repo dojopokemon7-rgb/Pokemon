@@ -101,8 +101,16 @@ Idempotent everywhere (`upsert` keyed on `externalId`). Sources: Pokémon → po
 ### 4.2 Read path (search)
 
 ```
-GET /api/cards/search (game, query, sort, set?, rarity?, graded?, minPrice?, maxPrice?)
+GET /api/cards/search (game, query, sort, set?, rarity?, graded?, minPrice?, maxPrice?, language?)
   → reads ONLY local Postgres (take 60) — external APIs are NEVER hit per keystroke
+  → language (en|ja|all, default all): INFERRED from the externalId — Japanese cards contain the
+    literal "_ja-" (e.g. bw1b_ja-3), English/other do not. ja → Prisma contains "\_ja-" (underscore
+    ESCAPED so Postgres LIKE matches it literally, not as a single-char wildcard); en → NOT contains;
+    all → no predicate. Spreads into baseWhere so it composes with every candidate query and keeps
+    offset pagination (rule 12). "English" = non-Japanese (other langs lumped in). Distinct from the
+    scanner's `language` param, which is echo-only and does NOT filter. ponytail: filtered LIKE scan
+    on externalId; upgrade = partial/expression index on `externalId LIKE '%\_ja-%'` or a generated
+    boolean `isJapanese` column.
   → sort omitted/"trending" = RELEVANCE: parseSearchQuery → bounded candidate pool (300; +600
     name-prefix recall pool only when no name hit and not identifier-like) → rankCards in JS
     (search-query.ts / search-rank.ts). Cache key sort = "rel-v2". Explicit sort = legacy single query.

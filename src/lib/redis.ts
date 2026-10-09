@@ -294,6 +294,7 @@ export const RedisKeys = {
     minPrice?: number;
     maxPrice?: number;
     hasPrice?: string;
+    language?: string;
   }): string => {
     // Stable, order-independent key=value join; query lowercased to match the
     // existing lowercase search convention so ?query=Char and ?query=char hit
@@ -308,6 +309,7 @@ export const RedisKeys = {
       `min=${params.minPrice ?? ""}`,
       `max=${params.maxPrice ?? ""}`,
       `hasprice=${params.hasPrice ?? ""}`,
+      `lang=${params.language ?? ""}`,
     ];
     return `card:searchq:${parts.join("|")}`;
   },

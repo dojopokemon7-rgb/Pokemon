@@ -154,6 +154,7 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 | `FindOnEbayLink.tsx` | Orphaned on purpose (client wanted users kept in-app); kept for future use |
 | Redis in dev | App runs fine WITHOUT Redis; non-fatal `[Redis] … falling through` logs are expected |
 | Card `set` filter | Matches set NAME (not id) — known limitation |
+| Card search `language` filter | Language has NO column — inferred from the `externalId` `_ja-` marker (JA cards contain `_ja-`, e.g. `bw1b_ja-3`; EN/other do not). `en\|ja\|all` (default `all`) on `GET /api/cards/search` + the `?language=` search-page param, filtering via escaped Prisma `contains:"\\_ja-"` (literal underscore). "English" = non-Japanese (other langs lumped in). ponytail: filtered LIKE scan; upgrade = expression index or generated `isJapanese` column |
 | `activeFloorListings` stat | Explicit 0 stub until a listings table exists |
 
 ## 7. Testing map

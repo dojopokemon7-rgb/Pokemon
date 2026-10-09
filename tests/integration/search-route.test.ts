@@ -157,6 +157,49 @@ describe("hasPrice filter", () => {
   });
 });
 
+describe("language filter", () => {
+  // Language is inferred from the "_ja-" externalId marker (no language column).
+  // The underscore MUST be escaped so Postgres LIKE matches it literally — the
+  // JS string "\\_ja-" is the two chars `\` + `_`. These literals pin the escape
+  // so a regression to an unescaped "_ja-" (which also matches "Xja-") fails.
+  const JA = { externalId: { contains: "\\_ja-" } };
+  const NOT_JA = { NOT: { externalId: { contains: "\\_ja-" } } };
+  it("language=ja adds the escaped `contains '_ja-'` predicate to every query", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // no name hit → stage 2 runs
+    await call("game=pokemon&query=charzard&language=ja");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2); // stage 1 + stage 2 recall
+    for (const w of ws) {
+      expect(w.externalId).toEqual(JA.externalId);
+      // Escaped underscore: NOT the unescaped "_ja-" that would match "Xja-".
+      expect(JSON.stringify(w)).not.toContain('"contains":"_ja-"');
+    }
+  });
+
+  it("language=en adds the negated predicate to every query", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // stage 2 recall too
+    await call("game=pokemon&query=charzard&language=en");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2);
+    for (const w of ws) expect(w.NOT).toEqual(NOT_JA.NOT);
+  });
+
+  it.each([
+    ["language=all", "game=pokemon&query=charzard&language=all"],
+    ["omitted", "game=pokemon&query=charzard"],
+  ])("%s adds NO language predicate (default path unchanged)", async (_n, qs) => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]);
+    await call(qs);
+    for (const w of wheres()) {
+      expect(JSON.stringify(w)).not.toContain("_ja-");
+    }
+  });
+
+  it("rejects an invalid language value with 400", async () => {
+    expect((await call("game=pokemon&query=x&language=fr")).status).toBe(400);
+  });
+});
+
 describe("Typesense flag", () => {
   it("is never called when disabled (default)", async () => {
     await call("game=pokemon&query=charizard");
