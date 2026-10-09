@@ -252,11 +252,17 @@ export async function GET(request: Request): Promise<NextResponse> {
   // becomes hot = a partial/expression index on `externalId LIKE '%\_ja-%'`, or
   // a generated boolean `isJapanese` column.
   const JA_MARKER = "\\_ja-";
+  // The `en` branch keys on top-level `NOT`, which the sibling
+  // `graded==="ungraded"` branch ALSO uses — a plain spread would let one
+  // clobber the other (last key wins), silently dropping a filter. So the
+  // language predicate is nested under its OWN `AND` (same technique as
+  // `hasPriceFilter`), and the `AND`-carrying fragments are merged by concat
+  // in `baseWhere` below rather than spread, so neither `AND` is lost.
   const languageFilter: Prisma.CardWhereInput =
     language === "ja"
-      ? { externalId: { contains: JA_MARKER } }
+      ? { AND: [{ externalId: { contains: JA_MARKER } }] }
       : language === "en"
-        ? { NOT: { externalId: { contains: JA_MARKER } } }
+        ? { AND: [{ NOT: { externalId: { contains: JA_MARKER } } }] }
         : {};
 
   // Multi-field query match: name / card number / set name / set code
@@ -274,6 +280,13 @@ export async function GET(request: Request): Promise<NextResponse> {
       ]
     : undefined;
 
+  // Prisma's `AND` is `T | T[] | undefined`; normalize to an array so the
+  // nested-AND fragments (hasPrice, language) and the relevance path's
+  // `extra.AND` can be concatenated uniformly without one clobbering another.
+  const toArray = (
+    v: Prisma.CardWhereInput["AND"]
+  ): Prisma.CardWhereInput[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
+
   // Shared filter fragment: EVERY candidate query (legacy, pool, typo recall,
   // index hydration) ANDs this in, so filters are never weakened.
   const baseWhere: Prisma.CardWhereInput = {
@@ -289,18 +302,15 @@ export async function GET(request: Request): Promise<NextResponse> {
     ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
     // F-06: price range.
     ...priceFilter,
-    // "Has price data" — nested AND so it never collides with the graded OR.
-    ...hasPriceFilter,
-    // Language (en/ja) — inferred from the "_ja-" externalId marker. `all`
-    // (default) spreads an empty object, so no predicate is added.
-    ...languageFilter,
+    // "Has price data" and Language both use a nested `AND` (so their
+    // top-level `NOT`/`OR` never clobber the graded top-level `OR`/`NOT`).
+    // Spreading both would let the second `AND` key overwrite the first, so
+    // their clauses are concatenated into ONE `AND` array here. `all` language
+    // contributes an empty object → no clause.
+    ...(hasPriceFilter.AND || languageFilter.AND
+      ? { AND: [...toArray(hasPriceFilter.AND), ...toArray(languageFilter.AND)] }
+      : {}),
   };
-
-  // Prisma's `AND` is `T | T[] | undefined`; normalize to an array so the
-  // merge below can concat baseWhere's and extra's clauses uniformly.
-  const toArray = (
-    v: Prisma.CardWhereInput["AND"]
-  ): Prisma.CardWhereInput[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
   const find = (extra: Prisma.CardWhereInput, take: number, orderBy: Prisma.CardOrderByWithRelationInput[]) =>
     prisma.card.findMany({

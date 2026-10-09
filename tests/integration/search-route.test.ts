@@ -162,15 +162,22 @@ describe("language filter", () => {
   // The underscore MUST be escaped so Postgres LIKE matches it literally — the
   // JS string "\\_ja-" is the two chars `\` + `_`. These literals pin the escape
   // so a regression to an unescaped "_ja-" (which also matches "Xja-") fails.
-  const JA = { externalId: { contains: "\\_ja-" } };
-  const NOT_JA = { NOT: { externalId: { contains: "\\_ja-" } } };
+  // The language predicate is nested in its OWN `AND` clause (so its top-level
+  // NOT can't clobber the sibling graded `NOT`/`OR`), alongside any other
+  // AND clauses (hasPrice, the relevance query OR). Assert it's present IN the
+  // AND array, not as a top-level `externalId`/`NOT` key.
+  const JA_CLAUSE = { externalId: { contains: "\\_ja-" } };
+  const NOT_JA_CLAUSE = { NOT: { externalId: { contains: "\\_ja-" } } };
+  const andOf = (w: Record<string, unknown>) =>
+    (w.AND as Array<Record<string, unknown>> | undefined) ?? [];
+
   it("language=ja adds the escaped `contains '_ja-'` predicate to every query", async () => {
     prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // no name hit → stage 2 runs
     await call("game=pokemon&query=charzard&language=ja");
     const ws = wheres();
     expect(ws.length).toBeGreaterThanOrEqual(2); // stage 1 + stage 2 recall
     for (const w of ws) {
-      expect(w.externalId).toEqual(JA.externalId);
+      expect(andOf(w)).toEqual(expect.arrayContaining([JA_CLAUSE]));
       // Escaped underscore: NOT the unescaped "_ja-" that would match "Xja-".
       expect(JSON.stringify(w)).not.toContain('"contains":"_ja-"');
     }
@@ -181,7 +188,24 @@ describe("language filter", () => {
     await call("game=pokemon&query=charzard&language=en");
     const ws = wheres();
     expect(ws.length).toBeGreaterThanOrEqual(2);
-    for (const w of ws) expect(w.NOT).toEqual(NOT_JA.NOT);
+    for (const w of ws) expect(andOf(w)).toEqual(expect.arrayContaining([NOT_JA_CLAUSE]));
+  });
+
+  it("graded=ungraded & language=en keep BOTH filters (no NOT-key collision)", async () => {
+    // Regression guard: both branches used to key on a bare top-level `NOT`,
+    // so a plain spread let language overwrite the ungraded filter. The
+    // language `NOT` now lives inside `AND`, so BOTH must survive together.
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // stage 2 recall too
+    await call("game=pokemon&query=charzard&graded=ungraded&language=en");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2);
+    for (const w of ws) {
+      // ungraded's top-level NOT:{OR} is untouched...
+      expect(w.NOT).toBeDefined();
+      expect((w.NOT as { OR?: unknown }).OR).toBeDefined();
+      // ...and the language NOT:{externalId} rides in the AND array.
+      expect(andOf(w)).toEqual(expect.arrayContaining([NOT_JA_CLAUSE]));
+    }
   });
 
   it.each([
