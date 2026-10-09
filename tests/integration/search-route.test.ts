@@ -224,6 +224,46 @@ describe("language filter", () => {
   });
 });
 
+describe("image presence filter", () => {
+  // Bug 1: imageless catalog rows (null/empty imageUrl) must NEVER appear in
+  // search. The two clauses are UNCONDITIONAL (no opt-in param) and live in the
+  // nested `AND` so they compose with — never clobber — the graded top-level
+  // NOT/OR and the language NOT. Assert via the same andOf() helper the
+  // language block uses.
+  const IMG_NOT_NULL = { imageUrl: { not: null } };
+  const IMG_NOT_EMPTY = { NOT: { imageUrl: "" } };
+  const andOf = (w: Record<string, unknown>) =>
+    (w.AND as Array<Record<string, unknown>> | undefined) ?? [];
+
+  it("adds the two image clauses to every query, even with no hasPrice/language params", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // no name hit → stage 2 runs
+    await call("game=pokemon&query=charzard");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2); // stage 1 + stage 2 recall
+    for (const w of ws) {
+      expect(andOf(w)).toEqual(expect.arrayContaining([IMG_NOT_NULL, IMG_NOT_EMPTY]));
+    }
+  });
+
+  it("keeps ALL THREE filters when graded=ungraded & language=en (no key collision)", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // stage 2 recall too
+    await call("game=pokemon&query=charzard&graded=ungraded&language=en");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2);
+    for (const w of ws) {
+      // graded ungraded's top-level NOT:{OR} is untouched...
+      expect(w.NOT).toBeDefined();
+      expect((w.NOT as { OR?: unknown }).OR).toBeDefined();
+      // ...language NOT:{externalId} rides in the AND...
+      expect(andOf(w)).toEqual(
+        expect.arrayContaining([{ NOT: { externalId: { contains: "\\_ja-" } } }])
+      );
+      // ...and the image clauses survive alongside them.
+      expect(andOf(w)).toEqual(expect.arrayContaining([IMG_NOT_NULL, IMG_NOT_EMPTY]));
+    }
+  });
+});
+
 describe("Typesense flag", () => {
   it("is never called when disabled (default)", async () => {
     await call("game=pokemon&query=charizard");

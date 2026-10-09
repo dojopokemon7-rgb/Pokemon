@@ -213,9 +213,17 @@ export async function GET(request: Request): Promise<NextResponse> {
     // by users via /api/users/me/collection use "user-added-*" and are
     // excluded from the game-filtered feed — that's fine, this endpoint
     // powers the "Trending" grid off the seeded catalog only.
+    // Image-presence exclusion (findings Bug 1): the catalog holds ~71
+    // imageless, priceless rows (incl. 28 exu-* Unown) that must NEVER surface
+    // in the trending grid either. Exclude on `imageUrl` ONLY — never
+    // marketPrice/price (many legit cards have a null Card.marketPrice but a
+    // real CurrentPrice NM row). Carried in the SHARED gameFilter so all four
+    // read branches AND topTrendingCardIds (its `where:{ card: gameWhere }`)
+    // inherit it; offset/skip pagination is unchanged.
+    const imagePresent = { AND: [{ imageUrl: { not: null } }, { NOT: { imageUrl: "" } }] };
     const gameFilter = game
-      ? { set: { externalId: { startsWith: `${game}-` } } }
-      : {};
+      ? { set: { externalId: { startsWith: `${game}-` } }, ...imagePresent }
+      : { ...imagePresent };
 
     let rows: CardWithSetName[];
     let hasMore = false;

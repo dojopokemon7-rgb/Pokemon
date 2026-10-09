@@ -125,6 +125,11 @@ GET /api/cards/search (game, query, sort, set?, rarity?, graded?, minPrice?, max
   → filters: set.externalId startsWith "{game}-", set name equals-insensitive,
     rarity contains, graders regex (PSA|BGS|CGC|SGC|Beckett), price range,
     text = OR(name, number, tags has q, set.name contains, set.externalId contains)
+  → image-presence (UNCONDITIONAL, Bug 1): imageUrl not null AND NOT "" — folded into the same
+    nested-AND concat as hasPrice/language so imageless catalog rows (e.g. the exu-* Unown) are
+    NEVER listed. Excludes on imageUrl ONLY, never marketPrice/price (legit cards can have a null
+    Card.marketPrice but a real CurrentPrice NM row). The same predicate rides trending's shared
+    gameFilter, so the Explore grid + topTrendingCardIds exclude imageless cards too.
   → orderByForCardSort(sort)
   → One Piece images → onePieceImageChain() (stored → storedHi → same-origin proxy)
 ```

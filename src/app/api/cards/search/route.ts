@@ -287,6 +287,19 @@ export async function GET(request: Request): Promise<NextResponse> {
     v: Prisma.CardWhereInput["AND"]
   ): Prisma.CardWhereInput[] => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
+  // Image-presence exclusion (findings Bug 1): the catalog holds ~71 imageless,
+  // priceless rows (incl. 28 exu-* Unown and a stray "mega darkrai") that must
+  // NEVER appear in search. Image presence is the SAFE exclusion — exclude on
+  // `imageUrl` ONLY, never marketPrice/price: 5,843 legit cards have a null
+  // Card.marketPrice but a real CurrentPrice NM row, so a price gate would hide
+  // them. These two clauses are UNCONDITIONAL (not behind hasPrice/language) and
+  // live in their OWN nested `AND` fragment so they ride the same `AND` concat
+  // as hasPrice/language and NEVER clobber the graded top-level `NOT:{OR}` /
+  // `OR` or the language `NOT`.
+  const imagePresentFilter: Prisma.CardWhereInput = {
+    AND: [{ imageUrl: { not: null } }, { NOT: { imageUrl: "" } }],
+  };
+
   // Shared filter fragment: EVERY candidate query (legacy, pool, typo recall,
   // index hydration) ANDs this in, so filters are never weakened.
   const baseWhere: Prisma.CardWhereInput = {
@@ -302,14 +315,17 @@ export async function GET(request: Request): Promise<NextResponse> {
     ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
     // F-06: price range.
     ...priceFilter,
-    // "Has price data" and Language both use a nested `AND` (so their
-    // top-level `NOT`/`OR` never clobber the graded top-level `OR`/`NOT`).
-    // Spreading both would let the second `AND` key overwrite the first, so
-    // their clauses are concatenated into ONE `AND` array here. `all` language
-    // contributes an empty object → no clause.
-    ...(hasPriceFilter.AND || languageFilter.AND
-      ? { AND: [...toArray(hasPriceFilter.AND), ...toArray(languageFilter.AND)] }
-      : {}),
+    // "Has price data", Language, and the unconditional image-presence filter
+    // all use a nested `AND` (so their top-level `NOT`/`OR` never clobber the
+    // graded top-level `OR`/`NOT`). Spreading them would let one `AND` key
+    // overwrite another, so their clauses are concatenated into ONE `AND` array
+    // here. The image-presence clauses are ALWAYS folded in (imagePresentFilter
+    // has no opt-in gate); `all` language contributes an empty object → no clause.
+    AND: [
+      ...toArray(hasPriceFilter.AND),
+      ...toArray(languageFilter.AND),
+      ...toArray(imagePresentFilter.AND),
+    ],
   };
 
   const find = (extra: Prisma.CardWhereInput, take: number, orderBy: Prisma.CardOrderByWithRelationInput[]) =>
