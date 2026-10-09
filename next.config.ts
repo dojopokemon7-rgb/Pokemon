@@ -6,6 +6,11 @@ const nextConfig: NextConfig = {
   // reducing the final image size.
   output: "standalone",
 
+  // Don't advertise the framework. Next.js sends `X-Powered-By: Next.js` by
+  // default; an OWASP ZAP baseline scan flagged it as an information leak
+  // (fingerprinting aid). Harmless on its own but trivially removable.
+  poweredByHeader: false,
+
   // Pin the file-tracing root to THIS project dir. Without it, Next infers
   // the root from the nearest lockfile — and when this checkout lives inside
   // another repo (e.g. a git worktree nested under a parent that has its own
