@@ -136,22 +136,14 @@ export function buildChips(
     byCompany.get(company)!.set(grade, rowPrice(r));
   }
 
-  // FR-6: the card-detail PSA 10 (and PSA 9) chips come from the live/fallback
-  // graded ROUTE (chipPrice["PSA|10"] / ["PSA|9"]), not only from a stored
-  // graded current-price row. Seed a PSA group from any PSA|<grade> key present
-  // in chipPrice so the PSA 10/9 chip ALWAYS surfaces (never a blank row) even
-  // when the catalog has no graded current-price row yet. The price itself is
-  // whatever the route resolved (real or curated fallback) — nothing fabricated
-  // here; a `${company}|${grade}` chip id already matches the chipPrice lookup.
-  for (const key of Object.keys(chipPrice)) {
-    const [company, grade] = key.split("|");
-    if (!company || !grade || company === "raw") continue; // "raw" is not graded
-    if (chipPrice[key] == null) continue; // no price → no fabricated chip
-    if (!byCompany.has(company)) byCompany.set(company, new Map());
-    if (!byCompany.get(company)!.has(grade)) {
-      byCompany.get(company)!.set(grade, chipPrice[key]);
-    }
-  }
+  // FEAT-002 (AGENTS RULE 2 — never fabricate): graded chips come SOLELY from
+  // the real `byCompany` map above (stored CurrentPrice graded rows), matching
+  // AddCardSheet's real-only dropdown. The old chipPrice->PSA-seed loop (which
+  // force-surfaced PSA 10/9 from the ×2.5/×1.5 curated fallback) was removed —
+  // it made every card show identical fabricated PSA chips. page.tsx now writes
+  // chipPrice["PSA|10"]/["PSA|9"] only when a REAL stored row exists
+  // (/graded isFallback===false), so if the key is here it already has a real
+  // row AND will be plotted; a missing stored row means NO PSA chip (honest).
 
   // Companies: PSA-first via CHIP_COMPANY_ORDER, then any others sorted.
   const companies = [

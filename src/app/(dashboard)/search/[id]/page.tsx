@@ -37,7 +37,6 @@ import { AreaChart } from "@/components/AreaChart";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
-import { gradedPrice } from "@/lib/utils/graded-price";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
 import {
@@ -453,21 +452,18 @@ function CardDetailInner() {
       if (!company || !grade) continue;
       map[`${company}|${grade}`] = r.priceMarket ?? r.priceLow ?? null;
     }
-    // FR-6: the PSA 10 / PSA 9 rows must ALWAYS carry a non-blank price. Prefer
-    // the live graded-route value; when the route has none (Scrydex miss), fall
-    // back to the curated/multiplier estimate from the raw market price so the
-    // UI never regresses to a blank graded row. Nothing is fabricated — the
-    // fallback is the same curated resolver the server route uses. Only applied
-    // when a raw price exists (no raw price → honest "—").
-    if (gradedData?.price != null) {
+    // FEAT-002 (AGENTS RULE 2 — never fabricate): emit a PSA|10 / PSA|9 chip
+    // price ONLY when the /graded route resolved a REAL stored CurrentPrice PSA
+    // row (isFallback === false). The ×2.5/×1.5 curated/multiplier fallback
+    // (isFallback === true) is NOT a real graded quote — seeding it here made
+    // every card show identical PSA 10/9 chips, disagreeing with AddCardSheet's
+    // real-only dropdown. No stored row → no PSA chip (honest "—"/absent), same
+    // as any other grade. gradedPrice() stays in use only for the P&L valuation.
+    if (gradedData?.price != null && gradedData.isFallback === false) {
       map["PSA|10"] = gradedData.price;
-    } else if (rawPrice != null) {
-      map["PSA|10"] = gradedPrice(rawPrice, 10);
     }
-    if (graded9Data?.price != null) {
+    if (graded9Data?.price != null && graded9Data.isFallback === false) {
       map["PSA|9"] = graded9Data.price;
-    } else if (rawPrice != null) {
-      map["PSA|9"] = gradedPrice(rawPrice, 9);
     }
     return map;
   }, [currentPrices, fetchedPrice, priceParam, gradedData, graded9Data]);

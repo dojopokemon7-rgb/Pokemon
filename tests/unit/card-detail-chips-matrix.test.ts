@@ -76,6 +76,41 @@ describe("buildChips", () => {
     expect(cgc.chips[0].id).toBe("CGC|9.5");
   });
 
+  // FEAT-002 regression guard: a raw-only card (NO stored graded CurrentPrice
+  // row) must show the Raw chip ONLY — even if chipPrice still carries PSA|10 /
+  // PSA|9 keys (e.g. a leftover fallback estimate). The old chipPrice->PSA-seed
+  // loop fabricated identical PSA 10/9 chips on every priced card; it is gone,
+  // so graded chips derive solely from real currentPrices graded rows. (The
+  // Mew ex me55-152 case: priced, no graded rows → Raw only.)
+  it("emits Raw ONLY for a raw-only card even when chipPrice carries PSA keys (no fabricated graded chip)", () => {
+    const groups = buildChips(
+      [{ type: "raw", condition: "NM", priceMarket: 40 }],
+      { raw: 40, "PSA|10": 100, "PSA|9": 60 }
+    );
+    expect(groups.map((g) => g.group)).toEqual(["Raw"]);
+    expect(groups.flatMap((g) => g.chips).map((c) => c.id)).toEqual(["raw"]);
+  });
+
+  // FEAT-002 real-ladder: a card WITH real stored PSA rows shows exactly those
+  // PSA grades (and only them), matching AddCardSheet. chipPrice carrying extra
+  // PSA keys must NOT invent grades beyond the stored rows. (The Umbreon
+  // swsh7-215 case: real PSA 10 + PSA 9 stored.)
+  it("emits exactly the real stored PSA grades, ignoring extra chipPrice PSA keys", () => {
+    const groups = buildChips(
+      [
+        { type: "graded", company: "PSA", grade: "10", priceMarket: 1200 },
+        { type: "graded", company: "PSA", grade: "9", priceMarket: 700 },
+        { type: "raw", condition: "NM", priceMarket: 300 },
+      ],
+      { raw: 300, "PSA|10": 1200, "PSA|9": 700, "PSA|8": 500 }
+    );
+    expect(groups.map((g) => g.group)).toEqual(["Raw", "PSA"]);
+    const psa = groups.find((g) => g.group === "PSA")!;
+    // exactly the two stored grades (desc), NOT the fabricated PSA|8 chipPrice key
+    expect(psa.chips.map((c) => c.grade)).toEqual(["10", "9"]);
+    expect(psa.chips.map((c) => c.price)).toEqual([1200, 700]);
+  });
+
   it("ignores graded rows missing company or grade (no fabricated chip)", () => {
     const groups = buildChips(
       [
