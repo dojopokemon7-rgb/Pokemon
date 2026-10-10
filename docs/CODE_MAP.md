@@ -125,7 +125,7 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 
 ---
 
-## 8. `src/app/api/` — 24 route files
+## 8. `src/app/api/` — 25 route files
 
 Full contracts in **API_REFERENCE.md**. Quick index:
 
@@ -141,7 +141,8 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | `cards/[id]/ebay-sold/route.ts` | GET | public | **Part D: pure Postgres read** of stored `SoldListing` (soldAt desc nulls-last, take 8) — NO credit gate on READ, always `{listings:[]}`+200 on unknown/empty; NEVER active listings/fabricated. Writer = owner-approval-gated `pullAndStoreSoldListings` (not invoked live) |
 | `cards/recognize/route.ts` | GET, POST, PATCH | optional/required session | POST image path (session-required): validate upload (20MB+MIME) → allowance precheck → credit gate → Scrydex Vision `identifyCard` → reserve on success (atomic) → image discarded; text path anon → `recognize()`. GET = scan allowance + `scanEnabled`. PATCH = `ScanFeedback` pick |
 | `cards/reprice/route.ts` | POST | public | `pickPokemonMarketPrice` + Redis 6h |
-| `cards/search/route.ts` | GET | public (`ENFORCE_AUTH=false`) | Prisma local search + relevance ranker (`SearchQuerySchema`, optional `sort`). UNCONDITIONALLY excludes imageless rows via an `imageUrl not null AND NOT ""` predicate folded into the nested-`AND` concat (imageUrl only — never marketPrice) |
+| `cards/filter-options/route.ts` | GET | public | Distinct set names + rarities per game for the Explore filter dropdowns (`game` Zod; Redis 24h `RedisKeys.cardFilterOptions`, fail-open; 200 + empty arrays on error) |
+| `cards/search/route.ts` | GET | public (`ENFORCE_AUTH=false`) | Prisma local search + relevance ranker (`SearchQuerySchema`, optional `sort`; `query` optional when a filter is set = browse mode, price-desc order, via `isValidSearchRequest` in `search-query.ts`). UNCONDITIONALLY excludes imageless rows via an `imageUrl not null AND NOT ""` predicate folded into the nested-`AND` concat (imageUrl only — never marketPrice) |
 | `cards/trending/route.ts` | GET | public | Prisma groupBy adds + offset paging (Redis 120s). Shared `gameFilter` carries the same image-presence predicate so all four read branches + `topTrendingCardIds` exclude imageless cards |
 | `collections/route.ts` | GET, POST | `requireAuth` | `collection.service` |
 | `collections/[id]/route.ts` | PATCH, DELETE | `requireAuth` | `collection.service` |

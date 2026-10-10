@@ -8,7 +8,9 @@
  *
  * Query params:
  *   - `game`     Required. `"pokemon"` or `"onepiece"`.
- *   - `query`    Required. Free-text search term.
+ *   - `query`    Free-text search term. Optional ONLY when at least one filter
+ *                below is set (browse mode: ordered by marketPrice desc);
+ *                empty query + no filter → 400.
  *   - `sort`     Optional. Omitted or `trending` = RELEVANCE (exact id > exact
  *                number+set > exact name > prefix > typo > set/rarity; see
  *                search-rank.ts). Any other key (CardSortEnum) overrides it.
@@ -52,7 +54,7 @@ import {
 } from "@/lib/validators/card.validator";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
-import { parseSearchQuery } from "@/lib/utils/search-query";
+import { parseSearchQuery, isValidSearchRequest } from "@/lib/utils/search-query";
 import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 import { rankCards, hasNameHit } from "@/lib/utils/search-rank";
 import { pickHeadlineRaw } from "@/lib/utils/raw-price";
@@ -71,11 +73,9 @@ const GRADERS = ["PSA", "BGS", "CGC", "SGC", "Beckett"] as const;
 
 const SearchQuerySchema = z.object({
   game: z.enum(["pokemon", "onepiece"]),
-  query: z
-    .string()
-    .trim()
-    .min(1, "query must not be empty")
-    .max(100, "query is too long"),
+  // Optional (browse mode): an empty/omitted query is valid ONLY when at least
+  // one filter is present (see the .refine below).
+  query: z.string().trim().max(100, "query is too long").optional().default(""),
   // Optional: omitted (or the UI default "trending") = relevance ranking.
   sort: CardSortEnum.optional(),
   // F-06: optional set filter. Matches on the joined CardSet.name (that's
@@ -101,6 +101,9 @@ const SearchQuerySchema = z.object({
   // substring "_ja-" (e.g. "bw1b_ja-3"), English/other cards do not
   // (e.g. "xy7-57"). `all` (default/omitted) applies no predicate.
   language: ScanLanguageSchema.optional(),
+}).refine(isValidSearchRequest, {
+  path: ["query"],
+  message: "query must not be empty unless a filter is set",
 });
 
 export async function GET(request: Request): Promise<NextResponse> {
@@ -433,6 +436,13 @@ export async function GET(request: Request): Promise<NextResponse> {
   if (!relevance) {
     // Explicit sort overrides relevance: the original single query.
     rows = await find(queryOr ? { AND: [{ OR: queryOr }] } : {}, RESULT_LIMIT, orderByForCardSort(sort));
+  } else if (!query) {
+    // Browse mode (empty query + filter): no name matching or relevance
+    // ranking — most valuable first, same ordering as the relevance pools.
+    rows = await find({}, RESULT_LIMIT, [
+      { marketPrice: { sort: "desc", nulls: "last" } },
+      { externalId: "asc" },
+    ]);
   } else {
     rows = await relevantRows(query);
   }
@@ -440,7 +450,9 @@ export async function GET(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "Not Found",
-        message: `No local matches for "${query}". The daily sync may not have reached this set yet.`,
+        message: query
+          ? `No local matches for "${query}". The daily sync may not have reached this set yet.`
+          : "No local matches for these filters.",
         source: "local-db",
       },
       { status: 404 }

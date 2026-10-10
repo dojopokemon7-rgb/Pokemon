@@ -40,3 +40,26 @@ export function parseSearchQuery(raw: string): ParsedQuery {
   const numberCandidates = tokens.filter((t) => /^\d+(\/\d+)?$/.test(t));
   return { raw, norm, tokens, idCandidates, numberCandidates, identifierLike };
 }
+
+/** Filters that make an empty-query (browse) request valid. */
+export interface BrowseFilters {
+  query?: string | null;
+  set?: string | null;
+  rarity?: string | null;
+  graded?: string | null;
+  minPrice?: number | string | null;
+  maxPrice?: number | string | null;
+  hasPrice?: string | null;
+  language?: string | null;
+}
+
+/** True when any non-text filter is active (language "all" is not a filter). */
+export function hasActiveFilter(p: Omit<BrowseFilters, "query">): boolean {
+  return Boolean(p.set || p.rarity || p.graded || p.hasPrice || (p.language && p.language !== "all")) ||
+    (p.minPrice != null && p.minPrice !== "") || (p.maxPrice != null && p.maxPrice !== "");
+}
+
+/** Valid search request = non-empty query OR at least one filter (browse mode). */
+export function isValidSearchRequest(p: BrowseFilters): boolean {
+  return Boolean(p.query && p.query.trim()) || hasActiveFilter(p);
+}

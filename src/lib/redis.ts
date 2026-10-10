@@ -301,7 +301,9 @@ export const RedisKeys = {
     // the same entry.
     const parts = [
       `game=${params.game}`,
-      `q=${params.query.toLowerCase().trim()}`,
+      // Empty query (browse mode) gets an explicit marker so it can never
+      // collide with a real query key.
+      `q=${params.query.trim() ? params.query.toLowerCase().trim() : "<browse>"}`,
       `sort=${params.sort}`,
       `set=${params.set ?? ""}`,
       `rarity=${params.rarity ?? ""}`,
@@ -320,6 +322,12 @@ export const RedisKeys = {
    * USER-AGNOSTIC. TTL: 300s (CACHE_TTL.cardPrices). DB-read-only; NO Scrydex.
    */
   cardPrices: (externalId: string): string => `card:prices:${externalId}`,
+
+  /**
+   * `GET /api/cards/filter-options` payload ({sets, rarities}) per game.
+   * USER-AGNOSTIC. TTL: 86400s (CACHE_TTL.cardFilterOptions). DB-read-only.
+   */
+  cardFilterOptions: (game: string): string => `card:filteropts:${game}`,
 
   /**
    * `GET /api/cards/[id]/history` payload, keyed by EXTERNAL card id (RULE 3).
@@ -361,6 +369,7 @@ export const CACHE_TTL = {
   collections: 60,
   cardSearch: 300, // 5 min
   cardPrices: 300, // 5 min
+  cardFilterOptions: 86400, // 24h — set/rarity lists change only on catalog sync
   cardHistory: 600, // 10 min
   cardPopulation: 86400, // 24h — matches the route's existing max-age=86400
   soldRows: 120, // 2 min — short read-through; Postgres (SoldListing) is truth

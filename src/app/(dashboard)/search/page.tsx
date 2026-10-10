@@ -42,6 +42,7 @@ import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
 import { DojoSelect } from "@/components/DojoSelect";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { onePieceImageChain } from "@/lib/utils/card-image";
+import { hasActiveFilter as anyFilterActive } from "@/lib/utils/search-query";
 import { Toast } from "@/components/Toast";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
@@ -1011,6 +1012,14 @@ function SearchPageInner() {
   // Language filter: "" (default) = All, "en" = English/other, "ja" = Japanese.
   // Inferred server-side from the "_ja-" externalId marker (no language column).
   const languageFilter = searchParams.get("language") ?? "";
+  // Browse mode: filters work WITHOUT a text query (server orders by price).
+  // Clearing the last filter with no query returns to the trending view.
+  const browseMode =
+    hasQuery ||
+    anyFilterActive({
+      set: setFilter, rarity: rarityFilter, graded: gradedFilter, minPrice: minPriceFilter,
+      maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter,
+    });
 
   // Sort state — persisted only in memory. Query keys below include
   // `sort` so switching the filter sheet triggers a refetch without a
@@ -1095,7 +1104,7 @@ function SearchPageInner() {
     },
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    enabled: !hasQuery,
+    enabled: !browseMode,
     // Item 2 (Batch 2B): keep the previous results painted while the new
     // set loads (TanStack v5 keepPreviousData) so a sort switch doesn't
     // blank the grid. GATED on matching game (flagged risk #6): the query
@@ -1129,7 +1138,8 @@ function SearchPageInner() {
     queryFn: async () => {
       // Compose the optional F-06 filter params only when set.
       // "trending" was never a real search sort: omit it so the API ranks by relevance.
-      const params = new URLSearchParams({ game, query: initialQ });
+      const params = new URLSearchParams({ game });
+      if (initialQ.trim()) params.set("query", initialQ);
       if (sort !== "trending") params.set("sort", sort);
       if (setFilter) params.set("set", setFilter);
       if (rarityFilter) params.set("rarity", rarityFilter);
@@ -1145,7 +1155,7 @@ function SearchPageInner() {
       }
       return res.json();
     },
-    enabled: initialQ.trim().length > 0,
+    enabled: browseMode,
     // Item 2 (Batch 2B): keep the previous results painted while a new
     // search/sort/filter loads so the grid doesn't blank. GATED on
     // matching game (key index 1) for the same reason as trending — never
@@ -1164,7 +1174,7 @@ function SearchPageInner() {
   // returned prices here, and the tiles update live. Never blocks initial
   // load. One Piece is ~98% priced already, so this targets Pokémon.
   const [repriced, setRepriced] = useState<Record<string, number>>({});
-  const visibleForReprice = hasQuery ? rawCards : rawTrendingCards;
+  const visibleForReprice = browseMode ? rawCards : rawTrendingCards;
   useEffect(() => {
     if (game !== "pokemon") return;
     const missing = visibleForReprice
@@ -1216,6 +1226,17 @@ function SearchPageInner() {
   // list in state; while a filter IS active the API returns only that set,
   // so we reuse the remembered list to keep every option (and "All sets")
   // reachable. State — not a ref — so populating it re-renders the control.
+  // Base option lists (24h server cache) so the dropdowns are populated before
+  // any search; unioned with names seen in results + the active filter below.
+  const { data: filterOptions } = useQuery<{ sets: string[]; rarities: string[] }>({
+    queryKey: ["filter-options", game],
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/filter-options?game=${game}`);
+      if (!res.ok) return { sets: [], rarities: [] };
+      return res.json();
+    },
+    staleTime: 60 * 60 * 1000,
+  });
   const [knownSets, setKnownSets] = useState<string[]>([]);
   useEffect(() => {
     if (setFilter || cards.length === 0) return;
@@ -1234,7 +1255,7 @@ function SearchPageInner() {
   // Always include the active filter so it stays selectable (e.g. a
   // deep-linked ?set= whose set wasn't in the remembered list).
   const setOptions = Array.from(
-    new Set([...knownSets, ...(setFilter ? [setFilter] : [])])
+    new Set([...knownSets, ...(filterOptions?.sets ?? []), ...(setFilter ? [setFilter] : [])])
   ).sort();
 
   // F-06: apply one or more filter changes at once, preserving the query,
@@ -1275,7 +1296,7 @@ function SearchPageInner() {
     );
   }, [rarityFilter, cards]);
   const rarityOptions = Array.from(
-    new Set([...knownRarities, ...(rarityFilter ? [rarityFilter] : [])])
+    new Set([...knownRarities, ...(filterOptions?.rarities ?? []), ...(rarityFilter ? [rarityFilter] : [])])
   ).sort();
 
   return (
@@ -1366,169 +1387,6 @@ function SearchPageInner() {
       </div>
 
       <div style={{ padding: "0 22px 24px" }}>
-        {/* ── Screen 06: Empty state — "Trending this week" ──
-            Layout ported from searchEmpty()/trendCard() in
-            dojo-prototype/app.js, backed by the real seeded catalog
-            via /api/cards/trending instead of the reference's fixed
-            5-card mock — see file header for the full rationale. */}
-        {!hasQuery && (
-          <>
-            <div style={{ display: "flex", alignItems: "baseline", marginTop: "16px" }}>
-              <span
-                style={{
-                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px",
-                  letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)",
-                }}
-              >
-                Trending this week
-              </span>
-              {/* Multi-select entry point on the Explore landing too — it
-                  used to appear only after searching, so bulk-add was
-                  effectively hidden. Routes to the multi list for the
-                  current game. */}
-              <Link
-                href={`/search/multi?game=${game}`}
-                style={{
-                  marginLeft: "auto",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                  fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
-                  color: "var(--color-dojo-gold)", textDecoration: "none",
-                }}
-              >
-                Multi-select ›
-              </Link>
-            </div>
-
-            <div className="dojo-card-grid" style={{ marginTop: "12px" }}>
-              {trendingLoading
-                ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
-                : trendingError
-                ? (
-                  <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "40px 0", color: "var(--color-dojo-body)" }}>
-                    <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px" }}>
-                      Could not load trending cards. Check your connection and try again.
-                    </p>
-                  </div>
-                )
-                : trendingCards.length === 0
-                ? (
-                  <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "40px 0", color: "var(--color-dojo-body)" }}>
-                    <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px" }}>
-                      No cards in the catalog yet.
-                    </p>
-                  </div>
-                )
-                : trendingCards.map((card) => (
-                  <TrendCardTile
-                    key={card.id}
-                    card={card}
-                    game={game}
-                    tracked={isWanted(card.externalId)}
-                    onToggleTrack={() => {
-                      const next = toggleWant({
-                        externalId: card.externalId,
-                        name: card.name,
-                      });
-                      setAddToast(next ? "Added to Want to Buy" : "Removed from Want to Buy");
-                    }}
-                    selected={selected.has(card.id)}
-                    // Client feedback: + now opens a bottom sheet to pick
-                    // Ungraded / Graded for this specific card.
-                    onToggleSelect={() => setAddSheetCard(card)}
-                    // Tile click navigates straight to the card detail page.
-                    onOpen={() =>
-                      goToCard({
-                        id: card.externalId,
-                        name: card.name,
-                        setName: card.setImage || undefined,
-                        imageUrl: card.imageUrl || undefined,
-                        marketPrice: card.price ?? null,
-                        rarity: card.rarity ?? undefined,
-                      })
-                    }
-                    // Prefetch keys on externalId — the SAME id this tile
-                    // navigates with (AGENTS.md #3).
-                    onPrefetch={() => handlePrefetch(card.externalId)}
-                  />
-                ))}
-            </div>
-
-            {/* Show more — real keyset pagination through the full
-                seeded catalog (the reference has no pagination here
-                since its mock array only ever had 5 cards). */}
-            {!trendingLoading && !trendingError && hasMoreTrending && (
-              <div style={{ marginTop: "14px", display: "flex", justifyContent: "center" }}>
-                <button
-                  onClick={() => fetchMoreTrending()}
-                  // Item 1: prefetch the NEXT page on hover/focus so the
-                  // click lands on already-fetched data. fetchNextPage uses
-                  // the offset nextCursor (AGENTS.md #12 — unchanged); it's a
-                  // no-op while already fetching or when there's no next page.
-                  onMouseEnter={() => { if (hasMoreTrending && !fetchingMoreTrending) fetchMoreTrending(); }}
-                  onFocus={() => { if (hasMoreTrending && !fetchingMoreTrending) fetchMoreTrending(); }}
-                  disabled={fetchingMoreTrending}
-                  className="dojo-btn dojo-btn-outline"
-                  style={{ width: "auto", padding: "10px 24px" }}
-                >
-                  {fetchingMoreTrending ? "LOADING…" : "SHOW MORE"}
-                </button>
-              </div>
-            )}
-
-          </>
-        )}
-
-        {/* ── Screen 07: Results ── */}
-        {hasQuery && (
-          <>
-            {/* Results header */}
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "12px", marginBottom: "10px" }}>
-              <span
-                style={{
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                  fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase",
-                  color: "var(--color-dojo-faint)",
-                }}
-              >
-                {isFetching
-                  ? "Searching…"
-                  : isError
-                  ? "Error"
-                  : `${cards.length} result${cards.length !== 1 ? "s" : ""}`}
-              </span>
-              {sort !== "trending" && (
-                <button
-                  type="button"
-                  onClick={() => setSort("trending")}
-                  title="Clear sort"
-                  style={{
-                    display: "inline-flex", alignItems: "center", gap: "6px",
-                    background: "rgba(233,180,59,0.10)",
-                    border: "1px solid var(--color-dojo-gold)",
-                    color: "var(--color-dojo-gold)",
-                    padding: "4px 8px",
-                    fontFamily: "var(--font-display)", fontWeight: 700,
-                    fontSize: "9.5px", letterSpacing: "0.10em", textTransform: "uppercase",
-                    cursor: "pointer",
-                  }}
-                >
-                  {SORT_LABELS[sort]} ✕
-                </button>
-              )}
-              <div style={{ marginLeft: "auto" }}>
-                <Link
-                  href={`/search/multi?q=${encodeURIComponent(initialQ)}&game=${game}`}
-                  style={{
-                    fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                    fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
-                    color: "var(--color-dojo-gold)", textDecoration: "none",
-                  }}
-                >
-                  Multi-select ›
-                </Link>
-              </div>
-            </div>
-
             {/* F-06: Filter by set. Options are the sets present in the
                 (unfiltered) results, plus an "All sets" clear option.
                 Selecting one drives the ?set= URL param, which the search
@@ -1536,7 +1394,7 @@ function SearchPageInner() {
             {/* F-06 filters: set, rarity, graded/ungraded, price range.
                 Each is URL-driven (via applyFilters), so the search query
                 above reacts and the state survives refresh / deep-links. */}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "10px" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", margin: "12px 0 10px" }}>
               {setOptions.length > 0 && (
                 <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
                   <label className="dojo-label" htmlFor="set-filter">Filter by set</label>
@@ -1674,6 +1532,169 @@ function SearchPageInner() {
               </div>
             </div>
 
+        {/* ── Screen 06: Empty state — "Trending this week" ──
+            Layout ported from searchEmpty()/trendCard() in
+            dojo-prototype/app.js, backed by the real seeded catalog
+            via /api/cards/trending instead of the reference's fixed
+            5-card mock — see file header for the full rationale. */}
+        {!browseMode && (
+          <>
+            <div style={{ display: "flex", alignItems: "baseline", marginTop: "16px" }}>
+              <span
+                style={{
+                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px",
+                  letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)",
+                }}
+              >
+                Trending this week
+              </span>
+              {/* Multi-select entry point on the Explore landing too — it
+                  used to appear only after searching, so bulk-add was
+                  effectively hidden. Routes to the multi list for the
+                  current game. */}
+              <Link
+                href={`/search/multi?game=${game}`}
+                style={{
+                  marginLeft: "auto",
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
+                  fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
+                  color: "var(--color-dojo-gold)", textDecoration: "none",
+                }}
+              >
+                Multi-select ›
+              </Link>
+            </div>
+
+            <div className="dojo-card-grid" style={{ marginTop: "12px" }}>
+              {trendingLoading
+                ? Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)
+                : trendingError
+                ? (
+                  <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "40px 0", color: "var(--color-dojo-body)" }}>
+                    <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px" }}>
+                      Could not load trending cards. Check your connection and try again.
+                    </p>
+                  </div>
+                )
+                : trendingCards.length === 0
+                ? (
+                  <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "40px 0", color: "var(--color-dojo-body)" }}>
+                    <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px" }}>
+                      No cards in the catalog yet.
+                    </p>
+                  </div>
+                )
+                : trendingCards.map((card) => (
+                  <TrendCardTile
+                    key={card.id}
+                    card={card}
+                    game={game}
+                    tracked={isWanted(card.externalId)}
+                    onToggleTrack={() => {
+                      const next = toggleWant({
+                        externalId: card.externalId,
+                        name: card.name,
+                      });
+                      setAddToast(next ? "Added to Want to Buy" : "Removed from Want to Buy");
+                    }}
+                    selected={selected.has(card.id)}
+                    // Client feedback: + now opens a bottom sheet to pick
+                    // Ungraded / Graded for this specific card.
+                    onToggleSelect={() => setAddSheetCard(card)}
+                    // Tile click navigates straight to the card detail page.
+                    onOpen={() =>
+                      goToCard({
+                        id: card.externalId,
+                        name: card.name,
+                        setName: card.setImage || undefined,
+                        imageUrl: card.imageUrl || undefined,
+                        marketPrice: card.price ?? null,
+                        rarity: card.rarity ?? undefined,
+                      })
+                    }
+                    // Prefetch keys on externalId — the SAME id this tile
+                    // navigates with (AGENTS.md #3).
+                    onPrefetch={() => handlePrefetch(card.externalId)}
+                  />
+                ))}
+            </div>
+
+            {/* Show more — real keyset pagination through the full
+                seeded catalog (the reference has no pagination here
+                since its mock array only ever had 5 cards). */}
+            {!trendingLoading && !trendingError && hasMoreTrending && (
+              <div style={{ marginTop: "14px", display: "flex", justifyContent: "center" }}>
+                <button
+                  onClick={() => fetchMoreTrending()}
+                  // Item 1: prefetch the NEXT page on hover/focus so the
+                  // click lands on already-fetched data. fetchNextPage uses
+                  // the offset nextCursor (AGENTS.md #12 — unchanged); it's a
+                  // no-op while already fetching or when there's no next page.
+                  onMouseEnter={() => { if (hasMoreTrending && !fetchingMoreTrending) fetchMoreTrending(); }}
+                  onFocus={() => { if (hasMoreTrending && !fetchingMoreTrending) fetchMoreTrending(); }}
+                  disabled={fetchingMoreTrending}
+                  className="dojo-btn dojo-btn-outline"
+                  style={{ width: "auto", padding: "10px 24px" }}
+                >
+                  {fetchingMoreTrending ? "LOADING…" : "SHOW MORE"}
+                </button>
+              </div>
+            )}
+
+          </>
+        )}
+
+        {/* ── Screen 07: Results ── */}
+        {browseMode && (
+          <>
+            {/* Results header */}
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "12px", marginBottom: "10px" }}>
+              <span
+                style={{
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
+                  fontSize: "9.5px", letterSpacing: "0.14em", textTransform: "uppercase",
+                  color: "var(--color-dojo-faint)",
+                }}
+              >
+                {isFetching
+                  ? "Searching…"
+                  : isError
+                  ? "Error"
+                  : `${cards.length} result${cards.length !== 1 ? "s" : ""}`}
+              </span>
+              {sort !== "trending" && (
+                <button
+                  type="button"
+                  onClick={() => setSort("trending")}
+                  title="Clear sort"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: "6px",
+                    background: "rgba(233,180,59,0.10)",
+                    border: "1px solid var(--color-dojo-gold)",
+                    color: "var(--color-dojo-gold)",
+                    padding: "4px 8px",
+                    fontFamily: "var(--font-display)", fontWeight: 700,
+                    fontSize: "9.5px", letterSpacing: "0.10em", textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  {SORT_LABELS[sort]} ✕
+                </button>
+              )}
+              <div style={{ marginLeft: "auto" }}>
+                <Link
+                  href={`/search/multi?q=${encodeURIComponent(initialQ)}&game=${game}`}
+                  style={{
+                    fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
+                    fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
+                    color: "var(--color-dojo-gold)", textDecoration: "none",
+                  }}
+                >
+                  Multi-select ›
+                </Link>
+              </div>
+            </div>
+
             {/* Card grid — adaptive columns (2 mobile / 3 tablet / 4–5 desktop).
                 Item 2: skeletons only on the FIRST load (searchLoading);
                 with placeholderData a sort/filter/game refetch keeps the
@@ -1694,7 +1715,7 @@ function SearchPageInner() {
                 ? (
                   <div style={{ gridColumn: "1/-1", textAlign: "center", padding: "40px 0", color: "var(--color-dojo-body)" }}>
                     <p style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "13px" }}>
-                      No cards found for &ldquo;{initialQ}&rdquo;
+                      {hasQuery ? <>No cards found for &ldquo;{initialQ}&rdquo;</> : "No cards match these filters"}
                     </p>
                   </div>
                 )

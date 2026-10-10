@@ -201,6 +201,7 @@ The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measu
 | `wantlist:{userId}:{intent\|all}` | 60s | `GET /api/want-list` — **per-user (RULE 5)**, per-intent |
 | `collections:{userId}` | 60s | `GET /api/collections` — **per-user (RULE 5)** |
 | `card:searchq:{normalizedParams}` | 300s | `GET /api/cards/search` — user-agnostic (RULE 3); cards re-parsed with `NormalizedCardSchema` on read; only non-empty 200s cached |
+| `card:filteropts:{game}` | 86400s | `GET /api/cards/filter-options` — user-agnostic, Zod re-parsed on read, fail-open |
 | `card:prices:{externalId}` | 300s | `GET /api/cards/[id]/prices` — user-agnostic (RULE 3), DB-read-only (no Scrydex) |
 | `card:history:{externalId}` | 600s | `GET /api/cards/[id]/history` — user-agnostic (RULE 3), DB-read-only (no Scrydex) |
 | `card:pop:{externalId}` | 86400s | `GET /api/cards/[id]/population` — user-agnostic (RULE 3), stored-read only (no Scrydex) |
