@@ -1,5 +1,3 @@
-version: "3.9"
-
 # =============================================================
 # TCG Collection PWA — Docker Compose
 # Services: app (Next.js) | redis | caddy
@@ -42,7 +40,10 @@ services:
       redis:
         condition: service_started
     ports:
-      - "3000:3000"
+      # Loopback-only: the app is reached ONLY through Caddy (80/443). Binding to
+      # 127.0.0.1 keeps port 3000 off the public internet so the reverse proxy is
+      # the single entry point (no bypassing Caddy / its headers + TLS).
+      - "127.0.0.1:3000:3000"
     env_file:
       - .env
     environment:
