@@ -51,7 +51,7 @@ const prismaMock = vi.hoisted(() => ({
   // The route now reads a STORED graded CurrentPrice row FIRST (the real
   // per-grade price, no fabrication). Default to null so the existing
   // Scrydex/curated-fallback tests exercise that path; one test overrides it.
-  currentPrice: { findFirst: vi.fn() },
+  currentPrice: { findMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -91,7 +91,7 @@ const PRICED_CARD = {
 beforeEach(() => {
   vi.clearAllMocks();
   // Default: no stored graded row → route falls through to Scrydex/curated.
-  prismaMock.currentPrice.findFirst.mockResolvedValue(null);
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
   // Default: authenticated → the credit-spending pull path is reachable.
   authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
 });
@@ -121,7 +121,9 @@ describe("GET /api/cards/[id]/graded (NFR-4 / AC-16)", () => {
     // verbatim — the SAME number the detail-page chips show — instead of the
     // fabricated multiplier. No Scrydex pull, no curated fallback.
     prismaMock.card.findUnique.mockResolvedValue(PRICED_CARD);
-    prismaMock.currentPrice.findFirst.mockResolvedValue({ priceMarket: 326.17, updatedAt: new Date() });
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { variant: "normal", type: "graded", condition: "GRADED", company: "PSA", grade: "10", priceMarket: 326.17, priceLow: null },
+    ]);
 
     const [req, ctx] = gradedRequest("base1-4");
     const res = await GET(req, ctx);

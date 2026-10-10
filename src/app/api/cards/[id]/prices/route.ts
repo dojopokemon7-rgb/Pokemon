@@ -35,7 +35,17 @@ export async function GET(
     const card = await prisma.card.findUnique({
       where: { externalId },
       include: {
-        currentPrices: true,
+        // Deterministic order: the client picks headline/chips from these rows,
+        // and an unordered read made multi-variant cards flip between variants.
+        currentPrices: {
+          orderBy: [
+            { variant: "asc" },
+            { type: "asc" },
+            { condition: "asc" },
+            { company: "asc" },
+            { grade: "asc" },
+          ],
+        },
       },
     });
 

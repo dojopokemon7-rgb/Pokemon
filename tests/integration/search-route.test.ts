@@ -108,12 +108,12 @@ describe("GET /api/cards/search", () => {
 describe("hasPrice filter", () => {
   // The exact "has displayable price" OR the WHERE clause must encode. This
   // MUST stay identical to the route's tile-price definition
-  // (`currentPrices?.[0]?.priceMarket ?? marketPrice ?? null`): NM/normal
+  // (`pickHeadlineRaw(currentPrices) ?? marketPrice ?? null`): any RAW
   // CurrentPrice OR Card.marketPrice. If the WHERE and the display diverge,
   // this literal stops matching and the test fails.
   const PRICE_OR = [
     { marketPrice: { not: null } },
-    { currentPrices: { some: { variant: "normal", condition: "NM", priceMarket: { not: null } } } },
+    { currentPrices: { some: { type: "raw", priceMarket: { not: null } } } },
   ];
 
   it("adds the price OR (matching the display definition) to every query when ON", async () => {
@@ -148,7 +148,7 @@ describe("hasPrice filter", () => {
     // but a real NM CurrentPrice. The tile must then SHOW that NM price, so a
     // kept card never renders '—'. Pins the two definitions together.
     prismaMock.card.findMany.mockResolvedValue([
-      { ...row("nm-only", "Perfect Order", "64", "OP01", null), currentPrices: [{ priceMarket: 12.5 }] },
+      { ...row("nm-only", "Perfect Order", "64", "OP01", null), currentPrices: [{ variant: "normal", type: "raw", condition: "NM", company: null, grade: null, priceMarket: 12.5, priceLow: null }] },
     ]);
     const body = await (await call("game=onepiece&query=perfect&hasPrice=true")).json();
     const card = body.cards.find((c: { id: string }) => c.id === "nm-only");

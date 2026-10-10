@@ -38,6 +38,7 @@ import { AddCardSheet } from "@/components/AddCardSheet";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
+import { pickHeadlineRaw } from "@/lib/utils/raw-price";
 import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
 import {
   buildChips,
@@ -257,14 +258,10 @@ function CardDetailInner() {
   // → the trend row renders "—" (never a fabricated number — AGENTS.md rule 2).
   const weeklyChangePct: number | null =
     typeof pricesData?.weeklyChangePct === "number" ? pricesData.weeklyChangePct : null;
-  // Headline raw NM point (26px price) — UNCHANGED. Prefer a type==='raw' NM
-  // row, else any NM, else the first row (back-compat with pre-C1 rows that
-  // carry no `type`).
-  const rawPriceData =
-    currentPrices.find((p: CurrentPriceRow) => (p.type ?? "raw") === "raw" && p.condition === "NM") ||
-    currentPrices.find((p: CurrentPriceRow) => p.condition === "NM") ||
-    currentPrices[0];
-  const fetchedPrice = rawPriceData?.priceMarket ?? rawPriceData?.priceLow;
+  // Headline raw price (26px): shared derivation — NM, else LP->MP->HP->DM, from
+  // RAW rows only. Legacy graded rows carry condition "NM", so the old
+  // `condition === "NM"` / `currentPrices[0]` fallbacks surfaced a PSA price.
+  const fetchedPrice = pickHeadlineRaw(currentPrices as CurrentPriceRow[]);
   // No fabricated fallback (AGENTS.md rule 2): when neither a live price nor a
   // tile-passed ?price= exists, price is null and every consumer renders "—".
   const price: number | null = fetchedPrice ?? (priceParam > 0 ? priceParam : null);

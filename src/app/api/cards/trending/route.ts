@@ -53,6 +53,7 @@ import { prisma } from "@/lib/db";
 import { redis } from "@/lib/redis";
 import { CardSortEnum, orderByForCardSort, type CardSortKey } from "@/lib/utils/card-sort";
 import { onePieceImageChain } from "@/lib/utils/card-image";
+import { pickHeadlineRaw } from "@/lib/utils/raw-price";
 
 // Only the columns the response mapping actually reads. `include: { set }`
 // used to pull every Card + CardSet column (hi-res URLs, lastEbayPrice,
@@ -66,21 +67,17 @@ const TRENDING_SELECT = {
   imageUrl: true,
   imageUrlHi: true,
   marketPrice: true,
-  // Prefer the raw NM CurrentPrice (same source the card-detail prices route
-  // reads) over the cached Card.marketPrice — which is stale/garbage for some
-  // cards (e.g. a seed placeholder of 50000) and null for many that DO have a
-  // real NM row. Match ANY variant: a holo card stores its raw NM price under
-  // variant "holofoil", not "normal", so the old `variant: "normal"` filter
-  // missed it and fell through to the bad marketPrice. Filter on the raw type
-  // (company is null) + NM; order by variant so the pick is deterministic when
-  // a card has raw NM rows in several variants. Bounded take:1 on the
-  // current_price @@index([cardId]) — no N+1. All three fetch branches reuse
-  // TRENDING_SELECT, so this widens every trending read at once.
+  // Prefer the RAW CurrentPrice (same shared pickHeadlineRaw the card-detail
+  // page and search list use) over the cached Card.marketPrice — which is
+  // stale/garbage for some cards (e.g. a seed placeholder of 50000) and null
+  // for many that DO have a real raw row. Select ALL raw rows (type:"raw" only —
+  // legacy graded rows also carry condition "NM"); the helper picks NM else
+  // LP->MP->HP->DM per default variant deterministically. Bounded (~<=25 raw
+  // rows/card) on the current_price @@index([cardId]) — no N+1. All fetch
+  // branches reuse TRENDING_SELECT, so this widens every trending read at once.
   currentPrices: {
-    where: { type: "raw", condition: "NM" },
-    orderBy: { variant: "asc" },
-    select: { priceMarket: true },
-    take: 1,
+    where: { type: "raw" },
+    select: { variant: true, type: true, condition: true, company: true, grade: true, priceMarket: true, priceLow: true },
   },
   rarity: true,
   set: { select: { name: true } },
@@ -326,7 +323,7 @@ export async function GET(request: Request): Promise<NextResponse> {
           : undefined,
       // NM CurrentPrice first, then the cached Card.marketPrice, else null →
       // '—'. Stays number|null (never a fabricated 0).
-      price: c.currentPrices?.[0]?.priceMarket ?? c.marketPrice ?? null,
+      price: pickHeadlineRaw(c.currentPrices ?? []) ?? c.marketPrice ?? null,
       // Graded-ness rides on `rarity` ("PSA 10") — the popup uses it to
       // open the graded add flow (F-19). No dedicated grade column yet.
       rarity: c.rarity ?? null,

@@ -25,7 +25,9 @@
  */
 
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { pickDefaultVariant } from "@/lib/utils/raw-price";
 import { auth } from "@/lib/auth";
 import { pullAndStoreScrydexPrice } from "@/lib/services/scrydex-pricing.service";
 import { pickGradedPrice, type ScrydexCard } from "@/lib/services/scrydex.service";
@@ -47,7 +49,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   const { id: externalId } = await params;
-  const grade = new URL(request.url).searchParams.get("grade") ?? "10";
+  const searchParams = new URL(request.url).searchParams;
+  const grade = searchParams.get("grade") ?? "10";
+  // Optional ?variant= (Zod-validated; junk/empty => ignored, never an error).
+  const variantParsed = z.string().trim().min(1).max(64).safeParse(searchParams.get("variant"));
+  const variantParam = variantParsed.success ? variantParsed.data : null;
   const nullPayload = { price: null, isFallback: true, isStale: true };
 
   try {
@@ -79,17 +85,29 @@ export async function GET(
     // chips show (they read /prices), so the add-row and chip never disagree.
     // Only when no stored PSA row exists do we fall through to the gated Scrydex
     // refetch + curated/multiplier heuristic below.
-    const storedGraded = await prisma.currentPrice.findFirst({
-      where: {
-        cardId: card.id,
-        type: "graded",
-        company: "PSA",
-        grade,
-        priceMarket: { not: null },
+    //
+    // VARIANT: a card stores graded rows per variant. The old
+    // `orderBy priceMarket desc` picked the HIGHEST variant (e.g. Shining
+    // Gyarados PSA 10 firstEditionHolofoil $83k vs unlimitedHolofoil $29k), which
+    // disagreed with the chips. Now: explicit ?variant= wins, else the card's
+    // pickDefaultVariant (the same variant the details headline uses), else the
+    // first variant (deterministic order) that has this grade.
+    const stored = await prisma.currentPrice.findMany({
+      where: { cardId: card.id },
+      select: {
+        variant: true, type: true, condition: true, company: true, grade: true,
+        priceMarket: true, priceLow: true,
       },
-      orderBy: { priceMarket: "desc" },
-      select: { priceMarket: true, updatedAt: true },
     });
+    const wantVariant = variantParam ?? pickDefaultVariant(stored);
+    const gradedRows = stored.filter(
+      (r) => r.type === "graded" && r.company === "PSA" && r.grade === grade && r.priceMarket != null
+    );
+    const storedGraded =
+      gradedRows.find((r) => r.variant === wantVariant) ??
+      (variantParam
+        ? undefined
+        : [...gradedRows].sort((a, b) => a.variant.localeCompare(b.variant))[0]);
     if (storedGraded?.priceMarket != null) {
       return NextResponse.json(
         { price: storedGraded.priceMarket, isFallback: false, isStale: false },

@@ -37,7 +37,7 @@ vi.mock("@/lib/services/scrydex.service", () => scrydexMock);
 
 const prismaMock = vi.hoisted(() => ({
   card: { findUnique: vi.fn(), update: vi.fn() },
-  currentPrice: { findFirst: vi.fn(), deleteMany: vi.fn(), createMany: vi.fn() },
+  currentPrice: { findMany: vi.fn(), deleteMany: vi.fn(), createMany: vi.fn() },
   syncLog: { findFirst: vi.fn(), create: vi.fn() },
   pricingHistory: { count: vi.fn(), createMany: vi.fn() },
   userCollection: { updateMany: vi.fn() },
@@ -72,7 +72,7 @@ beforeEach(() => {
   authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
   // Priced card, but NO stored graded row → the route would reach the pull.
   prismaMock.card.findUnique.mockResolvedValue(PRICED_CARD);
-  prismaMock.currentPrice.findFirst.mockResolvedValue(null);
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
   prismaMock.syncLog.findFirst.mockResolvedValue(null);
 });
 

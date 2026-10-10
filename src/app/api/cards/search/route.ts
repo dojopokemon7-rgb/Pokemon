@@ -55,6 +55,7 @@ import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { parseSearchQuery } from "@/lib/utils/search-query";
 import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 import { rankCards, hasNameHit } from "@/lib/utils/search-rank";
+import { pickHeadlineRaw } from "@/lib/utils/raw-price";
 import { isSearchIndexEnabled, searchIndexIds } from "@/lib/services/card-search-index.service";
 
 /** Flip to `true` to gate search behind a valid Better Auth session. */
@@ -217,7 +218,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       : {};
 
   // "Has price data" filter: keep ONLY cards that have a DISPLAYABLE price.
-  // This OR MUST mirror the tile's `currentPrices?.[0]?.priceMarket ??
+  // This OR MUST mirror the tile's `pickHeadlineRaw(currentPrices) ??
   // marketPrice ?? null` definition below exactly — a card shown with a
   // price must never be hidden, and a card kept here must always render a
   // price. Wrapped in its OWN nested `AND` so it composes with (never
@@ -231,7 +232,7 @@ export async function GET(request: Request): Promise<NextResponse> {
               { marketPrice: { not: null } },
               {
                 currentPrices: {
-                  some: { variant: "normal", condition: "NM", priceMarket: { not: null } },
+                  some: { type: "raw", priceMarket: { not: null } },
                 },
               },
             ],
@@ -354,15 +355,14 @@ export async function GET(request: Request): Promise<NextResponse> {
         imageUrl: true,
         imageUrlHi: true,
         marketPrice: true,
-        // Prefer the raw NM/normal CurrentPrice — the SAME source the
-        // card-detail prices route reads. Many cards have a real NM price row
-        // while Card.marketPrice is still null, so selecting only marketPrice
-        // made priced cards (e.g. One Piece "Perfect Order") show "No price
-        // data". Bounded (take:1, uses current_price @@index([cardId])) — no N+1.
+        // RAW CurrentPrice rows (type:"raw" ONLY — legacy graded rows also carry
+        // condition "NM"), reduced by the SAME pickHeadlineRaw the card-detail
+        // page uses so list and details never disagree. Many cards have a real
+        // raw row while Card.marketPrice is still null (e.g. One Piece "Perfect
+        // Order"). Bounded: ~<=25 raw rows/card on current_price @@index([cardId]).
         currentPrices: {
-          where: { variant: "normal", condition: "NM" },
-          select: { priceMarket: true },
-          take: 1,
+          where: { type: "raw" },
+          select: { variant: true, type: true, condition: true, company: true, grade: true, priceMarket: true, priceLow: true },
         },
         set: { select: { name: true } },
       },
@@ -468,11 +468,11 @@ export async function GET(request: Request): Promise<NextResponse> {
       r.imageUrl ??
       r.imageUrlHi ??
       "",
-    // List price prefers the NM CurrentPrice (same source the detail route
-    // reads), falls back to the cached Card.marketPrice, else null → '—'.
+    // List price = shared raw derivation (NM, else LP->MP->HP->DM; never
+    // graded), falls back to the cached Card.marketPrice, else null → '—'.
     // Stays number|null (never a fabricated 0) so NormalizedCardSchema — and
     // this route's cached-payload re-parse — still validate.
-    marketPrice: r.currentPrices?.[0]?.priceMarket ?? r.marketPrice ?? null,
+    marketPrice: pickHeadlineRaw(r.currentPrices ?? []) ?? r.marketPrice ?? null,
   }));
 
   // Best-effort cache fill. Only non-empty 200s reach here (zero rows returned

@@ -38,6 +38,7 @@
 import { z } from "zod";
 import { Game } from "@prisma/client";
 import { parseGrade } from "@/lib/utils/graded-price";
+import { RAW_CONDITION_ORDER } from "@/lib/utils/raw-price";
 
 const SCRYDEX_BASE_URL = "https://api.scrydex.com";
 
@@ -631,23 +632,34 @@ export async function fetchScrydexPopulation(
  * (defaults "normal"/"NM" — the schema @default values). Null when absent.
  */
 export function pickRawPrice(card: ScrydexCard): ScrydexRawPrice | null {
+  // Prefer NM, then LP -> MP -> HP -> DM (shared RAW_CONDITION_ORDER) so the
+  // headline snapshot / history point is never an arbitrary first-listed
+  // condition. Earliest variant/entry wins ties (stable). Unknown conditions
+  // rank after DM.
+  let best: ScrydexRawPrice | null = null;
+  let bestRank = Infinity;
   for (const variant of card.variants) {
     for (const entry of variant.prices) {
       if (entry.type !== "raw") continue;
       const market = num(entry.market);
       const low = num(entry.low);
       if (market === null && low === null) continue;
-      return {
+      const condition = entry.condition || "NM";
+      const i = (RAW_CONDITION_ORDER as readonly string[]).indexOf(condition);
+      const rank = i === -1 ? RAW_CONDITION_ORDER.length : i;
+      if (rank >= bestRank) continue;
+      bestRank = rank;
+      best = {
         market,
         low,
         currency: entry.currency || "USD",
         trends: entry.trends ?? null,
         variant: variant.name || "normal",
-        condition: entry.condition || "NM",
+        condition,
       };
     }
   }
-  return null;
+  return best;
 }
 
 /**

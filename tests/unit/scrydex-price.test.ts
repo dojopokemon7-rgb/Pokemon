@@ -111,6 +111,18 @@ describe("pickRawPrice", () => {
   it("returns null when there is no raw entry (graded-only card)", () => {
     expect(pickRawPrice(cardWith([psa10Entry]))).toBeNull();
   });
+
+  it("prefers NM over an earlier LP entry", () => {
+    const lp = { ...rawEntry, condition: "LP", market: 100, low: 90 };
+    expect(pickRawPrice(cardWith([lp, rawEntry]))?.condition).toBe("NM");
+    expect(pickRawPrice(cardWith([lp, rawEntry]))?.market).toBe(191.34);
+  });
+
+  it("falls back to LP when there is no NM entry", () => {
+    const dm = { ...rawEntry, condition: "DM", market: 20, low: 10 };
+    const lp = { ...rawEntry, condition: "LP", market: 100, low: 90 };
+    expect(pickRawPrice(cardWith([dm, lp]))?.condition).toBe("LP");
+  });
 });
 
 describe("pickGradedPrice", () => {

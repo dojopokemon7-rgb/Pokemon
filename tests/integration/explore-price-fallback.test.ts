@@ -45,9 +45,25 @@ vi.mock("@/lib/redis", async (importOriginal) => {
 import { GET as searchGET } from "@/app/api/cards/search/route";
 import { GET as trendingGET } from "@/app/api/cards/trending/route";
 
+type PriceRow = {
+  variant: string; type: string; condition: string; company: string | null;
+  grade: string | null; priceMarket: number | null; priceLow: number | null;
+};
+const nm = (priceMarket: number): PriceRow => ({
+  variant: "normal", type: "raw", condition: "NM", company: null, grade: null, priceMarket, priceLow: null,
+});
+// Shining Gyarados (neo3-65): NO raw NM row. The routes select type:"raw" rows
+// only; the legacy graded "NM" PSA 10 ($83,435.13) is included here anyway to
+// prove the mapper (pickHeadlineRaw) ignores graded rows even if one slips in.
+const GYARADOS: PriceRow[] = [
+  { variant: "firstEditionHolofoil", type: "graded", condition: "NM", company: "PSA", grade: "10", priceMarket: 83435.13, priceLow: 32999.99 },
+  { variant: "unlimitedHolofoil", type: "raw", condition: "LP", company: null, grade: null, priceMarket: 782.55, priceLow: null },
+  { variant: "unlimitedHolofoil", type: "raw", condition: "MP", company: null, grade: null, priceMarket: 551.29, priceLow: null },
+];
+
 // A mocked Card row for the search route. externalId carries the game prefix
 // via the joined set so the query returns 200.
-function searchRow(marketPrice: number | null, currentPrices: { priceMarket: number | null }[]) {
+function searchRow(marketPrice: number | null, currentPrices: PriceRow[]) {
   return {
     externalId: "base1-4",
     name: "Charizard",
@@ -62,7 +78,7 @@ function searchRow(marketPrice: number | null, currentPrices: { priceMarket: num
   };
 }
 
-function trendingRow(marketPrice: number | null, currentPrices: { priceMarket: number | null }[]) {
+function trendingRow(marketPrice: number | null, currentPrices: PriceRow[]) {
   return {
     id: "ckcard1",
     externalId: "base1-4",
@@ -94,7 +110,11 @@ describe("GET /api/cards/search — tile price fallback", () => {
   }
 
   it("(a) null marketPrice + NM currentPrice → the currentPrice", async () => {
-    expect(await priceFor(searchRow(null, [{ priceMarket: 12.5 }]))).toBe(12.5);
+    expect(await priceFor(searchRow(null, [nm(12.5)]))).toBe(12.5);
+  });
+
+  it("(d) Gyarados: no raw NM → next raw (LP 782.55), never the graded 83,435.13", async () => {
+    expect(await priceFor(searchRow(null, GYARADOS))).toBe(782.55);
   });
 
   it("(b) marketPrice set + no currentPrice → marketPrice", async () => {
@@ -120,7 +140,11 @@ describe("GET /api/cards/trending — tile price fallback", () => {
   }
 
   it("(a) null marketPrice + NM currentPrice → the currentPrice", async () => {
-    expect(await priceFor(trendingRow(null, [{ priceMarket: 12.5 }]))).toBe(12.5);
+    expect(await priceFor(trendingRow(null, [nm(12.5)]))).toBe(12.5);
+  });
+
+  it("(d) Gyarados: no raw NM → next raw (LP 782.55), never the graded 83,435.13", async () => {
+    expect(await priceFor(trendingRow(null, GYARADOS))).toBe(782.55);
   });
 
   it("(b) marketPrice set + no currentPrice → marketPrice", async () => {
