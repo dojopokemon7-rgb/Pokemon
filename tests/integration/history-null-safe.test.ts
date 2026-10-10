@@ -20,6 +20,7 @@ import { CACHE_TTL } from "@/lib/redis";
 const prismaMock = vi.hoisted(() => ({
   card: { findUnique: vi.fn() },
   pricingHistory: { findMany: vi.fn() },
+  currentPrice: { findMany: vi.fn(async () => []) },
   userCollection: { findMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
@@ -56,6 +57,7 @@ beforeEach(() => {
   redisMock.set.mockResolvedValue("OK");
   redisMock.del.mockResolvedValue(0);
   redisMock.keys.mockResolvedValue([]);
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
 });
 
 // --- /api/cards/[id]/history ----------------------------------------------
@@ -87,7 +89,7 @@ describe("GET /api/cards/[id]/history (NFR-2 / NFR-4)", () => {
     prismaMock.card.findUnique.mockResolvedValue(null);
     const res = await historyGET(new Request("http://localhost/x"), ctxFor("nope"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ raw: [], graded: {} });
+    expect(await res.json()).toEqual({ raw: [], graded: {}, variants: [] });
   });
 
   // Empty-cache poisoning guard: an unknown card's empty result must NOT be
@@ -129,7 +131,7 @@ describe("GET /api/cards/[id]/history (NFR-2 / NFR-4)", () => {
     prismaMock.card.findUnique.mockRejectedValue(new Error("db down"));
     const res = await historyGET(new Request("http://localhost/x"), ctxFor("base1-4"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ raw: [], graded: {} });
+    expect(await res.json()).toEqual({ raw: [], graded: {}, variants: [] });
   });
 });
 

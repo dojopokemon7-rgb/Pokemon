@@ -13,11 +13,12 @@ import type { AreaChartDatum, AreaChartSeries } from "@/components/AreaChart";
 // graded keys are `${COMPANY}|${grade}` (company uppercased, grade verbatim),
 // each series oldest→newest; null-price rows already dropped server-side.
 export type HistoryPoint = { date: string; price: number };
-export type HistoryResponse = { raw: HistoryPoint[]; graded: Record<string, HistoryPoint[]> };
+export type HistoryResponse = { raw: HistoryPoint[]; graded: Record<string, HistoryPoint[]>; variants?: string[] };
 
 // A single current-price row as returned by /api/cards/[id]/prices (the new
 // company/grade/type columns flow through automatically).
 export interface CurrentPriceRow {
+  variant?: string | null;
   condition?: string | null;
   company?: string | null;
   grade?: string | null;
@@ -79,10 +80,12 @@ export function sortByGradeDesc<T extends { grade: string }>(rows: T[]): T[] {
 //   1M      → day-level  "Jun 12"   (ticks within one month need the day)
 //   3M      → month-only "Jun"      (a few months spread across the axis)
 //   1Y/ALL  → "Jun 2026" (default)  (long spans need the year to disambiguate)
-// The synthetic "flat-*" / invalid-date guard returns `iso` unchanged (a flat
-// marker carries no real date). Only the LABEL text changes — buildChartMatrix's
+// A synthetic "flat-*" key returns "" (a flat marker carries no real date); an
+// otherwise invalid date returns `iso` unchanged. Only the LABEL text changes — buildChartMatrix's
 // dense-matrix shape, windowing, and no-NaN contract are untouched.
 export function fmtChartDate(iso: string, range?: string): string {
+  // Synthetic "flat-*" keys carry no real date: never surface them on the axis.
+  if (iso.startsWith("flat-")) return "";
   const d = new Date(`${iso}T00:00:00.000Z`);
   if (Number.isNaN(d.getTime())) return iso;
   const opts: Intl.DateTimeFormatOptions =
@@ -92,6 +95,31 @@ export function fmtChartDate(iso: string, range?: string): string {
         ? { month: "short", timeZone: "UTC" }
         : { month: "short", year: "numeric", timeZone: "UTC" };
   return d.toLocaleDateString("en-US", opts);
+}
+
+export type RangeKey = "1M" | "3M" | "6M" | "1Y" | "ALL";
+const RANGE_ORDER: RangeKey[] = ["1M", "3M", "6M", "1Y", "ALL"];
+// Trailing windows (days); keep in sync with the page's RANGE_DAYS.
+const RANGE_WINDOW: Record<RangeKey, number> = { "1M": 31, "3M": 93, "6M": 183, "1Y": 366, ALL: Infinity };
+
+/** Days between the oldest and newest REAL point (0 for <2 points). Points are oldest→newest. */
+export function seriesSpanDays(points: HistoryPoint[]): number {
+  if (points.length < 2) return 0;
+  const t = (d: string) => new Date(`${d}T00:00:00.000Z`).getTime();
+  return Math.round((t(points[points.length - 1].date) - t(points[0].date)) / 86_400_000);
+}
+
+/**
+ * Which range tabs would reveal MORE data than the previous one. 1M is always
+ * enabled; each longer range only if the span exceeds the previous window
+ * (ALL only past a year). Never implies data that is not stored.
+ */
+export function rangeAvailability(spanDays: number): Record<RangeKey, boolean> {
+  const out = {} as Record<RangeKey, boolean>;
+  RANGE_ORDER.forEach((k, i) => {
+    out[k] = i === 0 || spanDays > RANGE_WINDOW[RANGE_ORDER[i - 1]];
+  });
+  return out;
 }
 
 // Numeric price read for a current-price row (priceMarket ?? priceLow ?? null)

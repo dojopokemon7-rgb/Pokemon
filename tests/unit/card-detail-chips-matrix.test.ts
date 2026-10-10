@@ -3,6 +3,8 @@ import {
   buildChips,
   buildChartMatrix,
   fmtChartDate,
+  rangeAvailability,
+  seriesSpanDays,
   type Chip,
   type HistoryResponse,
 } from "@/app/(dashboard)/search/[id]/price-history-chart";
@@ -320,7 +322,64 @@ describe("fmtChartDate (range-aware x-axis labels)", () => {
     expect(fmtChartDate("2026-06-12")).toBe("Jun 2026");
   });
 
-  it("returns a synthetic/invalid date unchanged (flat-marker guard)", () => {
-    expect(fmtChartDate("flat-0", "1M")).toBe("flat-0");
+  it("returns '' for a synthetic flat-marker key (never surfaces flat-0)", () => {
+    expect(fmtChartDate("flat-0", "1M")).toBe("");
+    expect(fmtChartDate("flat-1")).toBe("");
+  });
+});
+
+describe("rangeAvailability / seriesSpanDays (honest range tabs)", () => {
+  it("1M is always enabled; longer ranges need span beyond the previous window", () => {
+    const a = (d: number) => rangeAvailability(d);
+    expect(a(0)).toEqual({ "1M": true, "3M": false, "6M": false, "1Y": false, ALL: false });
+    expect(a(10)).toEqual({ "1M": true, "3M": false, "6M": false, "1Y": false, ALL: false });
+    expect(a(40)).toEqual({ "1M": true, "3M": true, "6M": false, "1Y": false, ALL: false });
+    expect(a(100)).toEqual({ "1M": true, "3M": true, "6M": true, "1Y": false, ALL: false });
+    expect(a(200)).toEqual({ "1M": true, "3M": true, "6M": true, "1Y": true, ALL: false });
+    expect(a(400)).toEqual({ "1M": true, "3M": true, "6M": true, "1Y": true, ALL: true });
+  });
+
+  it("seriesSpanDays = newest - oldest in days (0 for <2 points)", () => {
+    expect(seriesSpanDays([])).toBe(0);
+    expect(seriesSpanDays([{ date: "2026-01-01", price: 1 }])).toBe(0);
+    expect(
+      seriesSpanDays([
+        { date: "2026-01-01", price: 1 },
+        { date: "2026-04-11", price: 2 },
+      ])
+    ).toBe(100);
+  });
+
+  it("100-day fixture: 1M differs from 3M, but 6M/1Y/ALL are identical and reported disabled", () => {
+    const raw = Array.from({ length: 11 }, (_, i) => ({
+      date: new Date(Date.UTC(2026, 0, 1) + i * 10 * 86_400_000).toISOString().slice(0, 10),
+      price: 10 + i,
+    }));
+    const history: HistoryResponse = { raw, graded: {} };
+    const chip: Chip = { id: "raw", group: "Raw", grade: "Raw", company: null, price: 20, color: "#9AA0A6" };
+    const at = (rangeDays: number) =>
+      buildChartMatrix({ activeChips: [chip], history, chipPrice: { raw: 20 }, rangeDays }).data.map((d) => d.raw);
+    expect(at(31)).not.toEqual(at(93));
+    expect(at(183)).toEqual(at(366));
+    expect(at(366)).toEqual(at(Infinity));
+    expect(at(183).length).toBeGreaterThanOrEqual(at(93).length);
+    const avail = rangeAvailability(seriesSpanDays(raw));
+    expect(seriesSpanDays(raw)).toBe(100);
+    expect(avail["3M"]).toBe(true);
+    // 100d > 93d so 6M reveals the few extra points; 1Y/ALL reveal nothing and are disabled.
+    expect(avail["1Y"]).toBe(false);
+    expect(avail.ALL).toBe(false);
+  });
+});
+
+describe("buildChips with rows of ONE variant", () => {
+  it("does not mix another variant\x27s graded rows", () => {
+    const rows = [
+      { variant: "unlimitedHolofoil", type: "graded", company: "PSA", grade: "10", priceMarket: 29981 },
+      { variant: "firstEditionHolofoil", type: "graded", company: "PSA", grade: "10", priceMarket: 83435 },
+    ];
+    const one = rows.filter((r) => r.variant === "unlimitedHolofoil");
+    const psa = buildChips(one, { raw: 782.55 }).find((g) => g.group === "PSA")!;
+    expect(psa.chips.map((c) => c.price)).toEqual([29981]);
   });
 });

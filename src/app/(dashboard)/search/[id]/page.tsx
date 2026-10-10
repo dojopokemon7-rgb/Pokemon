@@ -38,15 +38,18 @@ import { AddCardSheet } from "@/components/AddCardSheet";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
-import { pickHeadlineRaw } from "@/lib/utils/raw-price";
+import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
 import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
 import {
   buildChips,
   buildChartMatrix,
   sortByGradeDesc,
+  rangeAvailability,
+  seriesSpanDays,
   type CurrentPriceRow,
   type HistoryResponse,
 } from "./price-history-chart";
+import { VariantSelect } from "./variant-select";
 
 // ── Icons ──────────────────────────────────────────────────────────
 function ChevronLeft() {
@@ -253,7 +256,20 @@ function CardDetailInner() {
     },
   });
 
-  const currentPrices = pricesData?.prices ?? [];
+  const allPrices: CurrentPriceRow[] = useMemo(() => pricesData?.prices ?? [], [pricesData]);
+  // Variants actually stored for this card (selector shows only when > 1). The
+  // default equals the headline variant (pickDefaultVariant), so the headline
+  // does not regress; the user's pick is scoped to this card id.
+  const variants = useMemo(() => listVariants(allPrices), [allPrices]);
+  const defaultVariant = useMemo(() => pickDefaultVariant(allPrices), [allPrices]);
+  const [variantSel, setVariantSel] = useState<{ id: string; v: string } | null>(null);
+  const variant: string | null =
+    variantSel && variantSel.id === id && variants.includes(variantSel.v) ? variantSel.v : defaultVariant;
+  // Everything below (headline, chips, graded prices) follows the selected variant.
+  const currentPrices: CurrentPriceRow[] = useMemo(
+    () => (variant ? allPrices.filter((r) => (r.variant ?? "normal") === variant) : allPrices),
+    [allPrices, variant]
+  );
   // REAL 7-day % change (Scrydex trends.days_7). Null until a priced pull runs
   // → the trend row renders "—" (never a fabricated number — AGENTS.md rule 2).
   const weeklyChangePct: number | null =
@@ -261,7 +277,7 @@ function CardDetailInner() {
   // Headline raw price (26px): shared derivation — NM, else LP->MP->HP->DM, from
   // RAW rows only. Legacy graded rows carry condition "NM", so the old
   // `condition === "NM"` / `currentPrices[0]` fallbacks surfaced a PSA price.
-  const fetchedPrice = pickHeadlineRaw(currentPrices as CurrentPriceRow[]);
+  const fetchedPrice = pickBestRaw(currentPrices)?.price ?? null;
   // No fabricated fallback (AGENTS.md rule 2): when neither a live price nor a
   // tile-passed ?price= exists, price is null and every consumer renders "—".
   const price: number | null = fetchedPrice ?? (priceParam > 0 ? priceParam : null);
@@ -327,14 +343,17 @@ function CardDetailInner() {
   // feedback, and Report submissions all route through here (Phase 3).
   const [toast, setToast] = useState<string | null>(null);
 
+  // `&variant=` for the variant-aware routes (graded). Empty until a variant resolves.
+  const variantQs = variant ? `&variant=${encodeURIComponent(variant)}` : "";
+
   // Real PSA 10 price from the server graded route (routes through Scrydex +
   // the curated/multiplier fallback). Public route — no credentials needed.
   // `price` is null when the card is unknown/unpriced; we then keep the local
   // heuristic below so the UI never regresses to blank.
   const { data: gradedData } = useQuery<{ price: number | null; isFallback?: boolean }>({
-    queryKey: ["graded", id, "10"],
+    queryKey: ["graded", id, "10", variant],
     queryFn: async () => {
-      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/graded?grade=10`);
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/graded?grade=10${variantQs}`);
       if (!res.ok) throw new Error("Failed to load graded price");
       return res.json();
     },
@@ -344,9 +363,9 @@ function CardDetailInner() {
   // Real PSA 9 price — same public graded route, grade=9 — used only for the
   // PSA 9 price-history chip label (null → "—", never fabricated).
   const { data: graded9Data } = useQuery<{ price: number | null; isFallback?: boolean }>({
-    queryKey: ["graded", id, "9"],
+    queryKey: ["graded", id, "9", variant],
     queryFn: async () => {
-      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/graded?grade=9`);
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/graded?grade=9${variantQs}`);
       if (!res.ok) throw new Error("Failed to load graded price");
       return res.json();
     },
@@ -389,9 +408,13 @@ function CardDetailInner() {
   // A chip with < 2 windowed points flattens to its current price; nothing is
   // fabricated. Never errors — an empty/failed fetch just yields empty series.
   const { data: historyData, isLoading: historyLoading } = useQuery<HistoryResponse>({
-    queryKey: ["card-history", id],
+    queryKey: ["card-history", id, variant],
+    // Wait for prices so the variant is resolved (avoids a default-then-variant double fetch).
+    enabled: !pricesLoading,
     queryFn: async () => {
-      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/history`);
+      // Omit ?variant= for the default variant so the server's cached default response is used.
+      const qs = variant && variant !== defaultVariant ? `?variant=${encodeURIComponent(variant)}` : "";
+      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/history${qs}`);
       if (!res.ok) throw new Error("Failed to load history");
       return res.json();
     },
@@ -487,6 +510,25 @@ function CardDetailInner() {
     [currentPrices]
   );
 
+  // Honest range tabs: span of the longest REAL stored series among the selected
+  // chips (flat markers have < 2 real points → span 0, ignored). A tab that would
+  // reveal no more data is disabled; if the picked range is disabled (variant /
+  // chip change) fall back to the largest enabled one. Nothing is synthesized.
+  const spanDays = useMemo(
+    () =>
+      Math.max(
+        0,
+        ...allChips
+          .filter((c) => activeSeries.has(c.id))
+          .map((c) => seriesSpanDays((c.company == null ? historyData?.raw : historyData?.graded?.[c.id]) ?? []))
+      ),
+    [allChips, activeSeries, historyData]
+  );
+  const rangeAvail = rangeAvailability(spanDays);
+  const effRange = rangeAvail[range as keyof typeof rangeAvail]
+    ? range
+    : (RANGE_TABS.map(([, k]) => k).filter((k) => rangeAvail[k]).pop() ?? "1M");
+
   // Multi-series chart matrix for the user's selected chips (each plots its OWN
   // real stored per-grade history, windowed by the active range tab).
   const matrix = useMemo(
@@ -495,10 +537,10 @@ function CardDetailInner() {
         activeChips: allChips.filter((c) => activeSeries.has(c.id)),
         history: historyData,
         chipPrice,
-        rangeDays: RANGE_DAYS[range] ?? Infinity,
-        range,
+        rangeDays: RANGE_DAYS[effRange] ?? Infinity,
+        range: effRange,
       }),
-    [allChips, activeSeries, historyData, chipPrice, range]
+    [allChips, activeSeries, historyData, chipPrice, effRange]
   );
 
   return (
@@ -638,6 +680,13 @@ function CardDetailInner() {
           </div>
         )}
 
+        {/* Variant selector — only when > 1 variant is stored for this card. */}
+        <VariantSelect
+          variants={variants}
+          value={variant}
+          onChange={(v) => setVariantSel({ id, v })}
+        />
+
         <div style={{ marginTop: "16px", display: "flex", alignItems: "flex-end", gap: "12px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             {/* Batch 2B · Item 3: while the price query is loading show block
@@ -748,7 +797,7 @@ function CardDetailInner() {
               resolved the AreaChart renders — with < 2 real points it draws
               its honest flat baseline (never a fabricated curve, AGENTS.md
               #2). Item 4 fades the swap in. */}
-          {historyLoading ? (
+          {historyLoading || pricesLoading ? (
             <div className="dojo-fade-in-fast" style={{ padding: "0 22px" }}>
               <Skeleton height={280} />
             </div>
@@ -771,21 +820,30 @@ function CardDetailInner() {
           )}
         </div>
         <div style={{ display: "flex", marginTop: "4px" }}>
-          {RANGE_TABS.map(([label, key]) => (
-            <button
-              key={key}
-              onClick={() => setRange(key)}
-              style={{
-                flex: 1, textAlign: "center", padding: "9px 0 7px", cursor: "pointer",
-                background: "transparent", border: "none",
-                borderBottom: range === key ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
-                fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em",
-                color: range === key ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
-              }}
-            >
-              {label}
-            </button>
-          ))}
+          {RANGE_TABS.map(([label, key]) => {
+            const enabled = rangeAvail[key];
+            return (
+              <button
+                key={key}
+                onClick={() => setRange(key)}
+                disabled={!enabled}
+                aria-disabled={!enabled}
+                title={enabled ? undefined : "Not enough history yet"}
+                style={{
+                  flex: 1, textAlign: "center", padding: "9px 0 7px", cursor: enabled ? "pointer" : "not-allowed",
+                  background: "transparent", border: "none", opacity: enabled ? 1 : 0.4,
+                  borderBottom: effRange === key ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
+                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em",
+                  color: effRange === key ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <div data-testid="history-span" style={{ marginTop: "4px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+          {spanDays > 0 ? `${spanDays} days of history` : "No price history yet"}
         </div>
       </div>
 
