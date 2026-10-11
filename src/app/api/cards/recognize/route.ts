@@ -167,23 +167,23 @@ export async function POST(request: Request): Promise<NextResponse> {
       });
     }
 
-    // 6. Successful identify — atomically reserve one allowance slot. The
-    //    conditional update is the concurrency guard; if a parallel scan took
-    //    the last slot we refuse rather than overrun.
-    const reservation = await reserveSuccessfulScan(userId);
-    if (!reservation.ok) {
-      return NextResponse.json(
-        { success: false, error: "limit-reached", scanAllowance: reservation.allowance },
-        { status: 200 }
-      );
-    }
-
     // Resolve ALL top-N Vision matches in ONE query. findMany does NOT preserve
     // the `in` order, so we index resolved rows by externalId and re-emit in
     // Scrydex rank order (candidates[0] = Vision's top match → gold tile).
     // Dropping ids that didn't resolve to a local Card. Each candidate carries
     // the collector `number` (Card.number) + set name so the user can tap the
     // exact printing — the whole point of the top-N fix.
+    //
+    // NOTE: this resolve runs BEFORE reserveSuccessfulScan (findings E5/E6).
+    // `scrydexResult[].cardId` is the Scrydex-native id. For Pokémon those ids
+    // coincide with the local `externalId`, so the join succeeds and the path
+    // behaves exactly as before. For One Piece the local externalId is the
+    // Bandai code (e.g. "OP01-064"), which Scrydex's catalog does NOT use, so
+    // the join resolves to zero rows. If we reserved a scan + returned
+    // ocrSource:"vision" with an empty candidate list, the client's
+    // recognizeByImage would see a NON-"unavailable" result and SUPPRESS the
+    // tesseract fallback — a silent empty success that dead-ends the scan and
+    // burns an allowance slot. So an empty resolve must fall through below.
     const ids = scrydexResult.map((r) => r.cardId);
     const rows = await prisma.card.findMany({
       where: { externalId: { in: ids } },
@@ -204,6 +204,36 @@ export async function POST(request: Request): Promise<NextResponse> {
         };
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
+
+    // Vision returned matches but NONE joined to a local Card row (the One
+    // Piece Scrydex-vs-Bandai id-namespace mismatch, findings E5; also the
+    // latent Pokémon case). Treat it exactly like a no-match: do NOT consume
+    // the allowance, and return ocrSource:"unavailable" so the client falls
+    // through to the number-aware tesseract TEXT path (which honors `game` via
+    // gameWhere and can resolve "OP01-064" against the One Piece catalog).
+    // Pokémon is unaffected: its ids resolve, so candidates is non-empty and
+    // this branch is never taken.
+    if (candidates.length === 0) {
+      return NextResponse.json({
+        success: true,
+        candidates: [],
+        ocrSource: "unavailable",
+        feedbackId: null,
+        scanAllowance: allowanceBefore,
+        ...languageEcho,
+      });
+    }
+
+    // 6. Successful identify + resolve — atomically reserve one allowance slot.
+    //    The conditional update is the concurrency guard; if a parallel scan
+    //    took the last slot we refuse rather than overrun.
+    const reservation = await reserveSuccessfulScan(userId);
+    if (!reservation.ok) {
+      return NextResponse.json(
+        { success: false, error: "limit-reached", scanAllowance: reservation.allowance },
+        { status: 200 }
+      );
+    }
 
     // Log feedback (match reference only — NEVER the image bytes). Record the
     // top id (simple + stable) in the ocrText marker.

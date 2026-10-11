@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { validateScanFile, computeDownscaleSize } from "@/lib/utils/scan-image-file";
 import { readScanLanguage, writeScanLanguage, type ScanLanguage } from "@/lib/utils/scan-language";
+import { readScanGame, writeScanGame, type ScanGame } from "@/lib/utils/scan-game";
 import {
   assessScanQuality,
   statsFromImageData,
@@ -71,6 +72,16 @@ export default function ScannerPage() {
   function changeLanguage(next: ScanLanguage) {
     setLanguage(next);
     writeScanLanguage(next);
+  }
+
+  // Game context (persisted). Unlike language this is load-bearing: it scopes
+  // the recognize/search catalog so a One Piece card is matched against the
+  // One Piece catalog instead of being scanned as a Pokémon card (findings E1).
+  const [game, setGame] = useState<ScanGame>("pokemon");
+  useEffect(() => setGame(readScanGame()), []);
+  function changeGame(next: ScanGame) {
+    setGame(next);
+    writeScanGame(next);
   }
 
   // "Choose photo": object URL of the chosen file (preview) + inline error.
@@ -224,7 +235,7 @@ export default function ScannerPage() {
     const res = await fetch("/api/cards/recognize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image, game: "pokemon", language }),
+      body: JSON.stringify({ image, game, language }),
     });
     if (!res.ok) throw new Error("recognize failed");
     const data = await res.json().catch(() => null);
@@ -243,7 +254,7 @@ export default function ScannerPage() {
     const res = await fetch("/api/cards/recognize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, game: "pokemon", source, language }),
+      body: JSON.stringify({ text, game, source, language }),
     });
     if (!res.ok) throw new Error("recognize failed");
     const data = await res.json().catch(() => null);
@@ -415,7 +426,7 @@ export default function ScannerPage() {
       return;
     }
     try {
-      const res = await fetch(`/api/cards/search?game=pokemon&query=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/cards/search?game=${game}&query=${encodeURIComponent(query)}`);
       if (!res.ok) {
         setManualResults([]);
         return;
@@ -538,6 +549,31 @@ export default function ScannerPage() {
           <h1 className="dojo-heading" style={{ flex: 1, textAlign: "center", fontSize: "15px", letterSpacing: "0.16em", textTransform: "uppercase", margin: 0 }}>
             Card Scanner
           </h1>
+
+          {/* Game selector. Load-bearing: scopes the recognize/search catalog
+              to Pokémon or One Piece. Mirrors the language block's markup/a11y
+              (label + aria-describedby + .dojo-input, SQUARE corners). Sits to
+              the LEFT of the language block so the top-bar layout and e2e
+              selectors are untouched (this control is purely additive). */}
+          <div style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <label htmlFor="scan-game" style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Game</label>
+              <select
+                id="scan-game"
+                aria-describedby="scan-game-help"
+                value={game}
+                onChange={(e) => changeGame(e.target.value as ScanGame)}
+                className="dojo-input"
+                style={{ width: "auto", height: "auto", padding: "6px 8px", fontSize: "12px" }}
+              >
+                <option value="pokemon">Pokémon</option>
+                <option value="onepiece">One Piece</option>
+              </select>
+            </div>
+            <p id="scan-game-help" style={{ color: "var(--color-dojo-body)", fontSize: "10px", lineHeight: 1.3, margin: 0, maxWidth: "150px", textAlign: "right" }}>
+              Choose which catalog to match your card against.
+            </p>
+          </div>
 
           {/* Card language. Honest copy: catalog has no per-card language and
               photo reading is not language-restricted. Kept labeled + described
