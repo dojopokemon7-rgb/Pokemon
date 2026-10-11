@@ -174,16 +174,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     // the collector `number` (Card.number) + set name so the user can tap the
     // exact printing — the whole point of the top-N fix.
     //
-    // NOTE: this resolve runs BEFORE reserveSuccessfulScan (findings E5/E6).
-    // `scrydexResult[].cardId` is the Scrydex-native id. For Pokémon those ids
-    // coincide with the local `externalId`, so the join succeeds and the path
-    // behaves exactly as before. For One Piece the local externalId is the
-    // Bandai code (e.g. "OP01-064"), which Scrydex's catalog does NOT use, so
-    // the join resolves to zero rows. If we reserved a scan + returned
-    // ocrSource:"vision" with an empty candidate list, the client's
-    // recognizeByImage would see a NON-"unavailable" result and SUPPRESS the
-    // tesseract fallback — a silent empty success that dead-ends the scan and
-    // burns an allowance slot. So an empty resolve must fall through below.
+    // NOTE: this resolve runs BEFORE reserveSuccessfulScan. Both games resolve
+    // IDENTICALLY: `scrydexResult[].cardId` is matched against local
+    // Card.externalId. For Pokémon the Scrydex catalog id IS the externalId.
+    // For One Piece a live 5-credit probe CONFIRMED Scrydex Vision returns the
+    // FULL BANDAI CODE as card.id (e.g. "OP05-119") — exactly the One Piece
+    // Card.externalId format (card.service.ts sets One Piece id = Bandai code).
+    // So One Piece Vision matches resolve directly here, same as Pokémon — no
+    // id-namespace mismatch (this supersedes the earlier E5/E6 assumption).
+    // The resolve runs before reserveSuccessfulScan so a genuine no-match
+    // (below) burns no allowance.
     const ids = scrydexResult.map((r) => r.cardId);
     const rows = await prisma.card.findMany({
       where: { externalId: { in: ids } },
@@ -205,14 +205,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
 
-    // Vision returned matches but NONE joined to a local Card row (the One
-    // Piece Scrydex-vs-Bandai id-namespace mismatch, findings E5; also the
-    // latent Pokémon case). Treat it exactly like a no-match: do NOT consume
-    // the allowance, and return ocrSource:"unavailable" so the client falls
-    // through to the number-aware tesseract TEXT path (which honors `game` via
-    // gameWhere and can resolve "OP01-064" against the One Piece catalog).
-    // Pokémon is unaffected: its ids resolve, so candidates is non-empty and
-    // this branch is never taken.
+    // Vision returned matches but NONE joined to a local Card row — a GENUINE
+    // no-match for EITHER game (the catalog lacks that printing). Treat it
+    // exactly like a zero-match: do NOT consume the allowance, and return
+    // ocrSource:"unavailable" so the client falls through to the number-aware
+    // tesseract TEXT path (which honors `game` via gameWhere). This is a
+    // safety net, NOT a One-Piece-forcing device: when One Piece Vision DOES
+    // return resolvable Bandai-code ids (the normal case), candidates is
+    // non-empty and the flow stays Vision-first, same as Pokémon.
     if (candidates.length === 0) {
       return NextResponse.json({
         success: true,

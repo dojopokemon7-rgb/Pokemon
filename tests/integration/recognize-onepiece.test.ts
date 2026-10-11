@@ -6,10 +6,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  *       (set.externalId startsWith "onepiece-") when game="onepiece", and a
  *       One Piece collector-number input (e.g. "OP01-064") resolves to a One
  *       Piece Card (findings E6).
- *   (b) Vision path: a match whose Scrydex-native id does NOT join to a local
- *       Card row (the One Piece Bandai-vs-Scrydex id-namespace mismatch, E5)
- *       falls through to ocrSource:"unavailable" and consumes NO allowance,
- *       instead of a silent empty success that suppresses the fallback.
+ *   (b) Vision path (positive): a One Piece Vision match whose id is the FULL
+ *       Bandai code (e.g. "OP05-119") RESOLVES to a local Card via externalId
+ *       and returns a candidate with ocrSource:"vision" — same as Pokémon,
+ *       NOT forced to OCR — reserving exactly one allowance slot.
+ *   (c) Vision path (genuine miss): a match whose id does NOT join to any
+ *       local Card row falls through to ocrSource:"unavailable" and consumes
+ *       NO allowance, instead of a silent empty success that suppresses the
+ *       tesseract fallback. This is the safety net for a real catalog miss on
+ *       EITHER game, not a One-Piece-forcing device.
  *
  * Everything external is MOCKED: no live DB, no network, no Scrydex credits.
  */
@@ -90,6 +95,45 @@ describe("POST /api/cards/recognize One Piece", () => {
     // One Piece candidate image is the same-origin proxy, never a hot-linked
     // Bandai URL (AGENTS rule 13).
     expect(data.candidates[0].imageUrl).toBe("/api/one-piece-img/OP01-064");
+  });
+
+  it("Vision match with a Bandai-code id resolves to a local Card via externalId (Vision-first, not forced to OCR)", async () => {
+    // A live 5-credit probe confirmed Scrydex Vision returns the FULL Bandai
+    // code as card.id for One Piece, which IS the local Card.externalId. So a
+    // One Piece Vision match resolves directly, exactly like Pokémon.
+    // clampScore caps the probe's 1.135 → 1 upstream in the service, so the
+    // route consumes the already-clamped value.
+    scrydex.identifyCard.mockResolvedValue([
+      { cardId: "OP05-119", score: 1, name: "Monkey.D.Luffy" },
+    ]);
+    prismaMock.card.findMany.mockResolvedValue([
+      {
+        externalId: "OP05-119",
+        name: "Monkey.D.Luffy",
+        number: "OP05-119",
+        imageUrl: "/api/one-piece-img/OP05-119",
+        imageUrlHi: null,
+        set: { name: "Awakening of the New Era [OP-05]" },
+      },
+    ]);
+
+    const res = await POST(req({ image: JPEG_B64, game: "onepiece" }));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    // The core guarantee: Vision-first, NOT forced to the OCR fallback.
+    expect(data.ocrSource).toBe("vision");
+    // The One Piece Bandai code resolved to the local Card via externalId.
+    expect(data.candidates[0].id).toBe("OP05-119");
+    // Collector number is the full Bandai code (3329bb6 backfill) — top-N.
+    expect(data.candidates[0].number).toBe("OP05-119");
+    // RULE 13: candidate image is the same-origin proxy path from the Card
+    // ROW, never a raw Scrydex image URL.
+    expect(data.candidates[0].imageUrl).toBe("/api/one-piece-img/OP05-119");
+    // The resolve joined Scrydex match ids against local Card.externalId.
+    expect(prismaMock.card.findMany.mock.calls[0][0].where.externalId.in).toContain("OP05-119");
+    // A successful Vision scan reserves exactly one allowance slot.
+    expect(allowance.reserve).toHaveBeenCalledTimes(1);
   });
 
   it("Vision match with an unresolvable Scrydex id falls through, consuming NO allowance", async () => {
