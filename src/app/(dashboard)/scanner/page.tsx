@@ -11,12 +11,15 @@
  * engine (number + set + name). If the server has no Vision key it replies
  * `ocrSource: "unavailable"`, and the client falls back to on-device
  * tesseract.js OCR and re-submits the text. The TOP 5 candidates show as
- * tappable rows (image + name + set + confidence); picking one adds it and
- * records the choice for the recognition tuning loop.
+ * tappable rows (image + name + set + confidence). Picking one records the
+ * choice for the recognition tuning loop and opens a REVIEW sheet (the shared
+ * AddCardSheet) with editable variant/condition/quantity/collection; only the
+ * sheet's "Add to Portfolio" button actually adds the card.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AddCardSheet } from "@/components/AddCardSheet";
 import { validateScanFile, computeDownscaleSize } from "@/lib/utils/scan-image-file";
 import { readScanLanguage, writeScanLanguage, type ScanLanguage } from "@/lib/utils/scan-language";
 import { readScanGame, writeScanGame, type ScanGame } from "@/lib/utils/scan-game";
@@ -40,7 +43,7 @@ interface Candidate {
   confidence: number;
 }
 
-type Phase = "scan" | "recognizing" | "confirm" | "not-recognized";
+type Phase = "scan" | "recognizing" | "confirm" | "not-recognized" | "review";
 
 // Below this top-match confidence we don't auto-trust the result (Task 2 §4).
 const CONFIDENCE_THRESHOLD = 0.4;
@@ -65,6 +68,14 @@ export default function ScannerPage() {
   // steer the user to the "Choose photo" upload path, which works over HTTP.
   const [cameraInsecure, setCameraInsecure] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
+  // The candidate the user tapped to review before adding. Non-null drives the
+  // AddCardSheet review screen (phase "review"); the actual portfolio add only
+  // happens from that sheet's "Add to Portfolio" button, never on tile tap.
+  const [reviewCandidate, setReviewCandidate] = useState<Candidate | null>(null);
+  // Phase to return to when the review sheet is cancelled (candidates can be
+  // reached from either the "confirm" strip or the "not-recognized" manual
+  // list — cancel should return to whichever the user came from, not add).
+  const [reviewReturnPhase, setReviewReturnPhase] = useState<Phase>("confirm");
 
   // Language context (persisted). Sent to the API, which only echoes it.
   const [language, setLanguage] = useState<ScanLanguage>("all");
@@ -395,27 +406,17 @@ export default function ScannerPage() {
     }).catch(() => {});
   }
 
-  async function addCard(c: Candidate) {
-    try {
-      const payload: Record<string, unknown> = {
-        externalId: c.id,
-        name: c.name,
-        setName: c.set || undefined,
-        quantity: 1,
-        isFoil: false,
-      };
-      if (c.imageUrl && c.imageUrl.startsWith("http")) payload.imageUrl = c.imageUrl;
-      const res = await fetch("/api/users/me/collection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cards: [payload] }),
-      });
-      if (!res.ok) throw new Error("add failed");
-      logPick(c.id);
-      setAdded(`Added ${c.name} to your portfolio`);
-    } catch {
-      setError("Could not add this card. Try again.");
-    }
+  /**
+   * Tapping a candidate opens the review screen (AddCardSheet) rather than
+   * adding immediately. The pick is logged here (the tap IS the user's choice,
+   * which is what the tuning loop wants to record); the real portfolio add is
+   * performed only by the review screen's "Add to Portfolio" button.
+   */
+  function openReview(c: Candidate) {
+    logPick(c.id);
+    setReviewReturnPhase(phase === "not-recognized" ? "not-recognized" : "confirm");
+    setReviewCandidate(c);
+    setPhase("review");
   }
 
   async function runManualSearch(q: string) {
@@ -455,6 +456,7 @@ export default function ScannerPage() {
     setWarning(null);
     setAdded(null);
     setFeedbackId(null);
+    setReviewCandidate(null);
     setPreviewUrl(null); // Retake / Rescan also drops the chosen photo (URL revoked by effect)
     setFileError(null);
     setPhase("scan");
@@ -666,7 +668,7 @@ export default function ScannerPage() {
                 {candidates.map((c, i) => (
                   <button
                     key={c.id}
-                    onClick={() => addCard(c)}
+                    onClick={() => openReview(c)}
                     aria-label={`Add ${c.name} to your portfolio`}
                     style={{ flex: "none", width: "128px", display: "flex", flexDirection: "column", gap: "6px", background: "rgba(13,13,13,0.85)", border: i === 0 ? "1px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)", padding: "8px", cursor: "pointer", textAlign: "left" }}
                   >
@@ -784,9 +786,10 @@ export default function ScannerPage() {
           )}
 
           {/* RIGHT: reserved secondary-action slot. No global "next" action
-              exists today (adds happen per-candidate via addCard), so this is an
-              intentionally-empty equal-width spacer that balances the shutter —
-              NOT dead code. A real next affordance would use <ArrowRight/> here. */}
+              exists today (tapping a candidate opens the review sheet, and the
+              add happens from there), so this is an intentionally-empty
+              equal-width spacer that balances the shutter — NOT dead code. A
+              real next affordance would use <ArrowRight/> here. */}
           <span style={{ width: "44px", flex: "none" }} aria-hidden="true" />
         </div>
       </div>
@@ -811,7 +814,7 @@ export default function ScannerPage() {
           {manualResults.map((c) => (
             <button
               key={c.id}
-              onClick={() => addCard(c)}
+              onClick={() => openReview(c)}
               aria-label={`Add ${c.name} to your portfolio`}
               style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
             >
@@ -831,6 +834,39 @@ export default function ScannerPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "20px 16px" }}>
           <button onClick={resetToScan} style={goldBtn}>Scan another</button>
         </div>
+      )}
+
+      {/* ── Review before add (phase "review") — the shared AddCardSheet is the
+          review editor, driven by the tapped candidate. It owns variant/grader,
+          condition, quantity, collection, optional price-paid, the ownership-
+          scoped POST, and the ['collection']/['portfolio-collection']/
+          ['collections'] invalidations. Only its "Add to Portfolio" button
+          performs the add; tapping a tile just opens this. The candidate has no
+          real price → header shows "—" (RULE 2). A One Piece candidate's
+          imageUrl is the /api/one-piece-img proxy path — displayed here, never
+          POSTed (guarded in AddCardSheet.handleAdd; RULE 13). onClose returns to
+          the candidate list without adding; onAdded surfaces the existing
+          "Added <name> to your portfolio" feedback and returns to scan. ── */}
+      {reviewCandidate && (
+        <AddCardSheet
+          card={{
+            externalId: reviewCandidate.id,
+            name: reviewCandidate.name,
+            setName: reviewCandidate.set || null,
+            imageUrl: reviewCandidate.imageUrl || null,
+            marketPrice: null,
+            gradedPrices: [],
+          }}
+          onClose={() => {
+            setReviewCandidate(null);
+            setPhase(reviewReturnPhase);
+          }}
+          onAdded={(msg) => {
+            setReviewCandidate(null);
+            setAdded(msg);
+            setPhase("scan");
+          }}
+        />
       )}
     </div>
   );

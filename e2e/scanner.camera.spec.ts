@@ -7,7 +7,8 @@ import { test, expect } from "@playwright/test";
  * the captured image is POSTed to /api/cards/recognize (mocked here), which
  * would OCR it with Google Cloud Vision server-side and run the multi-signal
  * matching engine → "Tap your card to add it" confirmation list of the TOP 5
- * matches (image + name + set + confidence) → tap a candidate to add it.
+ * matches (image + name + set + confidence) → tap a candidate to open the
+ * review sheet → "Add to Portfolio" there performs the add.
  *
  * Runs under the `camera` project (fake media stream). The recognize API is
  * mocked so the test is deterministic and never calls Vision or loads the
@@ -33,6 +34,15 @@ test("scanner recognizes a card and offers the top candidates to add", async ({ 
       }),
     })
   );
+  // The review sheet (AddCardSheet) loads the user's collections and performs
+  // the add. Mock both so the review-then-add flow resolves deterministically
+  // without a live DB write.
+  await page.route("**/api/collections", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) })
+  );
+  await page.route("**/api/users/me/collection", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ added: 1 }) })
+  );
 
   await page.goto("/scanner");
 
@@ -47,15 +57,30 @@ test("scanner recognizes a card and offers the top candidates to add", async ({ 
   // confirm-phase marker is the "Tap your card to add it" heading, and each
   // candidate is an "Add <name> to your portfolio" button.
   await expect(page.getByText(/tap your card to add it/i)).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /add charizard to your portfolio/i }).first()
-  ).toBeVisible();
+  const candidate = page
+    .getByRole("button", { name: /add charizard to your portfolio/i })
+    .first();
+  await expect(candidate).toBeVisible();
   // …with a percentage confidence shown.
   await expect(page.getByText(/%\s*match/i).first()).toBeVisible();
   // …and a manual-search escape hatch.
   await expect(
     page.getByRole("button", { name: /search manually/i })
   ).toBeVisible();
+
+  // Tapping the candidate must NOT add it directly — it opens a review sheet
+  // first (modeled on Collectr "Review Your Matches"). The add only happens
+  // from the sheet's "Add to Portfolio" button.
+  await candidate.click();
+  const review = page.getByRole("dialog", { name: /add card to portfolio/i });
+  await expect(review).toBeVisible();
+  // Nothing added yet — the success feedback must only appear after the
+  // explicit review-screen action.
+  await expect(page.getByText(/added charizard to your portfolio/i)).toHaveCount(0);
+
+  // The explicit review action performs the real add and returns to scan.
+  await review.getByRole("button", { name: /add to portfolio/i }).click();
+  await expect(page.getByText(/added charizard to your portfolio/i)).toBeVisible();
 });
 
 /**

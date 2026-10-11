@@ -194,7 +194,11 @@ export function AddCardSheet({
       if (collectionId) cardPayload.collectionId = collectionId;
       const paid = Number.parseFloat(pricePaid);
       if (showPayment && Number.isFinite(paid) && paid > 0) cardPayload.purchasePrice = paid;
-      if (imgSrc && typeof imgSrc === "string" && imgSrc.trim().length > 0) {
+      // Only POST an absolute http(s) image URL. A same-origin proxy path
+      // (One Piece's /api/one-piece-img/<id>, RULE 13) is fine to DISPLAY in
+      // the header above but would fail AddCardSchema.imageUrl's url() check,
+      // so it is never sent as the imageUrl.
+      if (imgSrc && typeof imgSrc === "string" && imgSrc.startsWith("http")) {
         cardPayload.imageUrl = imgSrc;
       }
 
