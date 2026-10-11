@@ -1310,3 +1310,41 @@ body {
     padding-right: clamp(24px, 5vw, 64px);
   }
 }
+
+/* ── Reading-width cap for detail / confirmation columns (desktop only) ──
+   Base = nothing (mobile + tablet unchanged). padding-inline:22px makes the
+   detail page's margin:12px -22px chart bleed land flush with the 560px edges. */
+@media (min-width: 1024px) {
+  .dojo-detail-col {
+    max-width: 560px;
+    margin-inline: auto;
+    padding-inline: 22px;
+  }
+}
+
+/* ── Multi-select fixed action bar: respect the desktop sidebar + content cap ──
+   Base reproduces the outer div's existing inline position:fixed; bottom:70px;
+   left:0; right:0 so <768px is byte-for-byte unchanged. */
+.dojo-multi-actionbar {
+  position: fixed;
+  bottom: 70px;
+  left: 0;
+  right: 0;
+}
+@media (min-width: 768px) {
+  .dojo-multi-actionbar {
+    left: 260px;
+    right: 0;
+    bottom: 0;
+  }
+  .dojo-multi-actionbar-inner {
+    max-width: 1280px;
+    margin-inline: auto;
+  }
+}
+@media (min-width: 1024px) {
+  .dojo-multi-actionbar-inner {
+    padding-left: clamp(24px, 5vw, 64px);
+    padding-right: clamp(24px, 5vw, 64px);
+  }
+}

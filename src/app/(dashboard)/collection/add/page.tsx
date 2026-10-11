@@ -79,7 +79,7 @@ export default function CollectionAddPage() {
   // to search rather than showing an empty confirmation screen.
   if (cards !== null && cards.length === 0 && !mutation.isSuccess) {
     return (
-      <div style={{ padding: "24px 22px", color: "var(--color-dojo-ink)" }}>
+      <div className="dojo-detail-col" style={{ padding: "24px 22px", color: "var(--color-dojo-ink)" }}>
         <p className="dojo-heading" style={{ fontSize: "22px", marginBottom: "10px" }}>
           nothing to add
         </p>
@@ -94,7 +94,7 @@ export default function CollectionAddPage() {
   }
 
   return (
-    <div style={{ padding: "24px 22px 32px", color: "var(--color-dojo-ink)" }}>
+    <div className="dojo-detail-col" style={{ padding: "24px 22px 32px", color: "var(--color-dojo-ink)" }}>
       <button
         onClick={() => router.back()}
         disabled={mutation.isPending}

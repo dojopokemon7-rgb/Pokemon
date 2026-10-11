@@ -21,8 +21,8 @@ export default function PortfolioLoading() {
       <div style={{ marginTop: "8px", height: "32px", width: "50%", background: "var(--color-dojo-raised)", animation: pulse }} />
 
       {/* Card grid (2-col) */}
-      <div style={{ marginTop: "24px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-        {Array.from({ length: 4 }).map((_, i) => (
+      <div className="dojo-card-grid" style={{ marginTop: "24px", gap: "12px" }}>
+        {Array.from({ length: 10 }).map((_, i) => (
           <div key={i} style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "11px" }}>
             <div style={{ width: "100%", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", animation: pulse }} />
             <div style={{ marginTop: "9px", height: "13px", width: "75%", background: "var(--color-dojo-raised)", animation: pulse }} />

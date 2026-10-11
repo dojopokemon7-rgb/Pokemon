@@ -434,6 +434,7 @@ function SearchMultiInner() {
           Solid card background + z-index below the shell's nav (50). */}
       {selectedIds.size > 0 && (
         <div
+          className="dojo-multi-actionbar"
           style={{
             position: "fixed",
             bottom: "70px",
@@ -444,6 +445,7 @@ function SearchMultiInner() {
           }}
         >
           <div
+            className="dojo-multi-actionbar-inner"
             style={{
               background: "var(--color-dojo-card)",
               border: "1px solid var(--color-dojo-stroke)",

@@ -1054,8 +1054,8 @@ export default function PortfolioPage() {
 
       {/* ── Content ── */}
       {isLoading ? (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="dojo-card-grid" style={{ gap: "12px" }}>
+          {Array.from({ length: 10 }).map((_, i) => (
             <div key={i} style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "11px" }}>
               <div style={{ width: "100%", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", animation: "dojo-pulse 1.5s ease-in-out infinite" }} />
             </div>
@@ -1081,7 +1081,7 @@ export default function PortfolioPage() {
           )}
         </div>
       ) : view === "grid" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+        <div className="dojo-card-grid" style={{ gap: "12px" }}>
           {filteredItems.map((item) => (
             <CardGrid
               key={item.id}

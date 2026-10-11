@@ -544,7 +544,7 @@ function CardDetailInner() {
   );
 
   return (
-    <div style={{ paddingBottom: "24px" }}>
+    <div className="dojo-detail-col" style={{ paddingBottom: "24px" }}>
       {/* ── Hero art with overlaid controls ── */}
       <div style={{ position: "relative", display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
         <img
