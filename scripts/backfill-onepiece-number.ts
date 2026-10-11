@@ -23,6 +23,7 @@
  * `externalId.split("-").pop()` (e.g. "OP01-064" -> "064"). No manifest needed
  * because the source value (externalId) is never mutated and is lossless.
  */
+import "dotenv/config";
 import { prisma } from "../src/lib/db";
 
 const APPLY = process.argv.slice(2).includes("--apply");
