@@ -449,51 +449,57 @@ export default function ScannerPage() {
     background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)",
     border: "1px solid var(--color-dojo-stroke)", cursor: "pointer",
   };
+  // Square icon button used in the floating top bar (close) and bottom bar
+  // (gallery). Dojo card surface + stroke, radius 0 (AGENTS §5 rule 10).
+  const iconBtn: React.CSSProperties = {
+    width: "44px", height: "44px", flex: "none",
+    border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)",
+    color: "var(--color-dojo-ink)", cursor: "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+  };
+  // Translucent overlay surface for the floating top/bottom bars so the camera
+  // reads through behind them (Collectr-style floating controls).
+  const overlayBar: React.CSSProperties = {
+    position: "absolute", left: 0, right: 0, zIndex: 3,
+    display: "flex", alignItems: "center", gap: "10px",
+    padding: "12px 14px", background: "rgba(13,13,13,0.55)",
+  };
+
+  // The live camera path is only usable when the context is secure AND
+  // permission wasn't denied. In the other two states the viewport stays black
+  // and the shutter can't capture, so we steer the user to "Choose photo".
+  const cameraUsable = !cameraInsecure && !cameraDenied;
 
   return (
     <div
       style={{
-        // Flow naturally and size to content — the SCROLL lives on the
-        // full-bleed wrapper in dashboard-client-shell.tsx (minHeight:100dvh +
-        // overflowY:auto). This inner div must NOT also be a 100dvh scroller or
-        // the two nested scroll regions fight on mobile; it just lays out the
-        // camera + results in a column and lets the wrapper scroll them.
+        // Full-bleed phone-first stage. The SCROLL lives on the full-bleed
+        // wrapper in dashboard-client-shell.tsx (position:fixed; inset:0;
+        // overflowY:auto, width-capped at 480 and centered). This root must NOT
+        // be its own 100dvh scroller or the two nested scroll regions fight on
+        // mobile; it fills the wrapper width and lays the camera + results out
+        // in a column, letting the wrapper scroll them (preserves the
+        // mobile-scroll bugfix).
         position: "relative",
-        padding: "24px 22px", color: "var(--color-dojo-ink)",
-        display: "flex", flexDirection: "column", gap: "16px",
+        width: "100%", minHeight: "100dvh",
+        background: "var(--color-dojo-app)", color: "var(--color-dojo-ink)",
+        display: "flex", flexDirection: "column",
       }}
     >
-      <button
-        onClick={() => router.back()}
-        aria-label="Close"
-        title="Close"
-        style={{ position: "absolute", top: "18px", right: "22px", zIndex: 3, width: "38px", height: "38px", border: "1px solid var(--color-dojo-stroke)", background: "var(--color-dojo-card)", color: "var(--color-dojo-ink)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-      >
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
-          <line x1="3" y1="3" x2="15" y2="15" />
-          <line x1="15" y1="3" x2="3" y2="15" />
-        </svg>
-      </button>
-
-      <h1 className="dojo-heading" style={{ fontSize: "24px", margin: 0, paddingRight: "48px" }}>
-        Card Scanner
-      </h1>
-      <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", margin: 0 }}>
-        Line the card up inside the frame, then tap Scan.
-      </p>
-
-      {/* Camera preview with a card-shaped framing outline overlay. */}
-      <div style={{ position: "relative", width: "100%", maxHeight: "360px", flex: "none" }}>
+      {/* ── Region A — Camera stage (first screenful, video as background) ── */}
+      <div style={{ position: "relative", flex: "1 1 auto", minHeight: "68dvh", overflow: "hidden" }}>
         <video
           ref={videoRef}
           data-testid="camera-preview"
           autoPlay
           muted
           playsInline
-          style={{ width: "100%", maxHeight: "360px", background: "#000", border: "1px solid var(--color-dojo-stroke)", objectFit: "cover", display: "block" }}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", background: "#000", objectFit: "cover", display: "block" }}
         />
+
         {/* Guide outline — a portrait card box centered in the frame, matching
-            the CARD_CROP region the capture step crops to. */}
+            the CARD_CROP region the capture step crops to. The prominent
+            Collectr-style frame: solid gold, square corners, dark scrim. */}
         <div
           data-testid="card-outline"
           aria-hidden="true"
@@ -503,176 +509,246 @@ export default function ScannerPage() {
             left: `${((1 - CARD_CROP.wFrac) / 2) * 100}%`,
             width: `${CARD_CROP.wFrac * 100}%`,
             height: `${CARD_CROP.hFrac * 100}%`,
-            border: "2px dashed var(--color-dojo-gold)",
-            borderRadius: "10px",
-            boxShadow: "0 0 0 100vmax rgba(0,0,0,0.35)",
+            border: "2px solid var(--color-dojo-gold)",
+            borderRadius: 0,
+            boxShadow: "0 0 0 100vmax rgba(0,0,0,0.45)",
             pointerEvents: "none",
           }}
         />
-      </div>
 
-      {cameraInsecure ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          <p style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>
-            Live camera needs a secure (HTTPS) connection, so it&apos;s unavailable here.
-            Use &ldquo;Choose photo&rdquo; below to scan a card from an image instead.
-          </p>
-        </div>
-      ) : cameraDenied ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          <p style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>
-            Camera access denied. Allow camera access to scan a card.
-          </p>
-          <button onClick={startCamera} style={{ ...goldBtn, alignSelf: "flex-start" }}>
-            Enable Camera
-          </button>
-        </div>
-      ) : phase === "scan" ? (
-        <button onClick={handleScan} style={goldBtn}>Scan</button>
-      ) : phase === "recognizing" ? (
-        <button disabled style={{ ...goldBtn, cursor: "default", opacity: 0.7 }}>Scanning…</button>
-      ) : null}
-
-      {/* Language context. Honest copy: catalog has no per-card language and
-          photo reading is not language-restricted. */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          <label htmlFor="scan-language" style={{ fontSize: "13px", fontWeight: 700 }}>Card language</label>
-          <select
-            id="scan-language"
-            aria-describedby="scan-language-help"
-            value={language}
-            onChange={(e) => changeLanguage(e.target.value as ScanLanguage)}
-            className="dojo-input"
+        {/* ── Floating top bar: close (LEFT) · title (CENTER) · language (RIGHT) ── */}
+        <div style={{ ...overlayBar, top: 0, borderBottom: "1px solid var(--color-dojo-stroke)" }}>
+          <button
+            onClick={() => router.back()}
+            aria-label="Close"
+            title="Close"
+            style={iconBtn}
           >
-            <option value="all">All</option>
-            <option value="en">English</option>
-            <option value="ja">Japanese</option>
-          </select>
-          {language !== "all" && (
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="square" aria-hidden="true">
+              <line x1="3" y1="3" x2="15" y2="15" />
+              <line x1="15" y1="3" x2="3" y2="15" />
+            </svg>
+          </button>
+
+          <h1 className="dojo-heading" style={{ flex: 1, textAlign: "center", fontSize: "15px", letterSpacing: "0.16em", textTransform: "uppercase", margin: 0 }}>
+            Card Scanner
+          </h1>
+
+          {/* Card language. Honest copy: catalog has no per-card language and
+              photo reading is not language-restricted. Kept labeled + described
+              so the a11y wiring survives the move into the bar. */}
+          <div style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "4px", minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <label htmlFor="scan-language" style={{ fontSize: "11px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>Lang</label>
+              <select
+                id="scan-language"
+                aria-describedby="scan-language-help"
+                value={language}
+                onChange={(e) => changeLanguage(e.target.value as ScanLanguage)}
+                className="dojo-input"
+                style={{ width: "auto", height: "auto", padding: "6px 8px", fontSize: "12px" }}
+              >
+                <option value="all">All</option>
+                <option value="en">English</option>
+                <option value="ja">Japanese</option>
+              </select>
+            </div>
+            {language !== "all" && (
+              <button
+                type="button"
+                onClick={() => changeLanguage("all")}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}
+              >
+                Reset to All
+              </button>
+            )}
+            <p id="scan-language-help" style={{ color: "var(--color-dojo-body)", fontSize: "10px", lineHeight: 1.3, margin: 0, maxWidth: "150px", textAlign: "right" }}>
+              Narrows catalog matches only where a card&apos;s language is known. Reading your photo is not limited to this language.
+            </p>
+          </div>
+        </div>
+
+        {/* ── State overlays, centered over the (black) video ── */}
+        {cameraInsecure ? (
+          <div style={{ position: "absolute", inset: 0, zIndex: 2, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "10px", padding: "0 32px", textAlign: "center", pointerEvents: "none" }}>
+            <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", margin: 0, maxWidth: "320px" }}>
+              Live camera needs a secure (HTTPS) connection, so it&apos;s unavailable here.
+              Use &ldquo;Choose photo&rdquo; below to scan a card from an image instead.
+            </p>
+          </div>
+        ) : cameraDenied ? (
+          <div style={{ position: "absolute", inset: 0, zIndex: 2, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "14px", padding: "0 32px", textAlign: "center" }}>
+            <p style={{ color: "var(--color-dojo-body)", fontSize: "14px", margin: 0, maxWidth: "320px" }}>
+              Camera access denied. Allow camera access to scan a card.
+            </p>
+            <button onClick={startCamera} style={goldBtn}>
+              Enable Camera
+            </button>
+          </div>
+        ) : null}
+
+        {/* ── Status / error overlays — visible in all three camera states.
+            Floated just under the top bar so they clear the controls. ── */}
+        {(warning || error || fileError || added) && (
+          <div style={{ position: "absolute", top: "72px", left: "14px", right: "14px", zIndex: 4, display: "flex", flexDirection: "column", gap: "6px", pointerEvents: "none" }}>
+            {warning && (
+              <p role="status" style={{ background: "rgba(13,13,13,0.75)", padding: "8px 10px", color: "var(--color-dojo-gold)", fontSize: "13px", margin: 0 }}>{warning}</p>
+            )}
+            {error && (
+              <p role="alert" style={{ background: "rgba(13,13,13,0.75)", padding: "8px 10px", color: "var(--color-dojo-ink)", fontSize: "13px", margin: 0 }}>{error}</p>
+            )}
+            {fileError && (
+              <p role="alert" style={{ background: "rgba(13,13,13,0.75)", padding: "8px 10px", color: "var(--color-dojo-ink)", fontSize: "13px", margin: 0 }}>{fileError}</p>
+            )}
+            {added && (
+              <p role="status" style={{ background: "rgba(13,13,13,0.75)", padding: "8px 10px", color: "var(--color-dojo-jade)", fontSize: "13px", margin: 0 }}>{added}</p>
+            )}
+          </div>
+        )}
+
+        {/* ── Region B — Candidate / recently-scanned strip (floats over camera,
+            just above the bottom bar). Horizontal, square tiles, Collectr-style.
+            The detailed not-recognized mode flows below the stage instead. ── */}
+        {(phase === "recognizing" || (phase === "confirm" && !added)) && (
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: "104px", zIndex: 3, padding: "0 12px" }}>
+            {phase === "confirm" && (
+              <p style={{ margin: "0 0 8px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-dojo-ink)", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
+                Tap your card to add it
+              </p>
+            )}
+            {phase === "recognizing" ? (
+              <div role="status" style={{ background: "rgba(13,13,13,0.75)", border: "1px solid var(--color-dojo-stroke)", padding: "14px", color: "var(--color-dojo-body)", fontSize: "13px" }}>
+                Loading…
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: "10px", overflowX: "auto", paddingBottom: "4px" }}>
+                {candidates.map((c, i) => (
+                  <button
+                    key={c.id}
+                    onClick={() => addCard(c)}
+                    aria-label={`Add ${c.name} to your portfolio`}
+                    style={{ flex: "none", width: "128px", display: "flex", flexDirection: "column", gap: "6px", background: "rgba(13,13,13,0.85)", border: i === 0 ? "1px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)", padding: "8px", cursor: "pointer", textAlign: "left" }}
+                  >
+                    {/* Candidate thumbnail (initials fallback when no image). */}
+                    <div style={{ width: "100%", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                      {c.imageUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={c.imageUrl} alt={c.name} decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "16px", color: "var(--color-dojo-gold)" }}>
+                          {c.name.slice(0, 2).toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ margin: 0, fontWeight: 700, fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</p>
+                    {/* set/number + confidence; price rendered only when a real
+                        value exists on the candidate (none today → omitted; we
+                        never invent a price, AGENTS §5 rule 2). */}
+                    <p style={{ margin: 0, fontSize: "11px", color: "var(--color-dojo-body)" }}>
+                      {c.set ? `${c.set} · ` : ""}{Math.round(c.confidence * 100)}% match
+                    </p>
+                  </button>
+                ))}
+                {/* Not your card? Search manually. */}
+                <button
+                  onClick={() => { setCandidates([]); setPhase("not-recognized"); }}
+                  style={{ flex: "none", width: "128px", background: "rgba(13,13,13,0.85)", border: "1px solid var(--color-dojo-stroke)", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.12em", textTransform: "uppercase", padding: "8px" }}
+                >
+                  Not your card? Search manually
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Region C — Bottom control bar: gallery (LEFT) · shutter (CENTER) ·
+            reserved slot (RIGHT) ── */}
+        <div style={{ ...overlayBar, bottom: 0, justifyContent: "space-between", paddingBottom: "max(14px, env(safe-area-inset-bottom))" }}>
+          {/* Hidden file input (unchanged) — triggered by the gallery button. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            hidden
+            data-testid="scan-file-input"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void handleChosenFile(f);
+            }}
+          />
+
+          {/* LEFT: gallery / photo-picker icon-button → same handler as the old
+              "Choose photo" text button. When a photo is chosen, show its small
+              preview + "Retake" (resetToScan) in this slot. */}
+          {previewUrl ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={previewUrl} alt="Chosen card photo preview" style={{ height: "44px", width: "auto", border: "1px solid var(--color-dojo-stroke)" }} />
+              <button
+                type="button"
+                onClick={resetToScan}
+                disabled={phase === "recognizing"}
+                style={{ ...goldBtn, padding: "10px 14px" }}
+              >
+                Retake
+              </button>
+            </div>
+          ) : (
             <button
               type="button"
-              onClick={() => changeLanguage("all")}
-              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Choose photo"
+              title="Choose photo"
+              style={iconBtn}
             >
-              Reset to All
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="square" strokeLinejoin="miter" aria-hidden="true">
+                <rect x="2.5" y="4.5" width="17" height="13" />
+                <path d="M2.5 14l5-4 4 3 3-2.5 5 4" />
+                <circle cx="8" cy="8.5" r="1.4" />
+              </svg>
             </button>
           )}
+
+          {/* CENTER: circular shutter — the ONE allowed rounded element. Hidden
+              when the live camera can't capture (insecure/denied), steering to
+              the gallery button. Disabled + dimmed while recognizing (keeps the
+              "Scanning…" semantics via aria-label; still named "Scan" at rest so
+              the e2e /^scan$/i matcher resolves it). */}
+          {cameraUsable ? (
+            <button
+              onClick={handleScan}
+              disabled={phase === "recognizing"}
+              aria-label={phase === "recognizing" ? "Scanning…" : "Scan"}
+              style={{
+                width: "72px", height: "72px", flex: "none", borderRadius: "50%",
+                background: "var(--color-dojo-gold)", color: "var(--color-dojo-app)",
+                border: "4px solid var(--color-dojo-app)",
+                boxShadow: "0 0 0 2px var(--color-dojo-gold)",
+                cursor: phase === "recognizing" ? "default" : "pointer",
+                opacity: phase === "recognizing" ? 0.7 : 1,
+                fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px",
+                letterSpacing: "0.08em", textTransform: "uppercase",
+              }}
+            >
+              {phase === "recognizing" ? "…" : ""}
+            </button>
+          ) : (
+            // Keep the shutter's footprint so the gallery button stays left-anchored.
+            <span style={{ width: "72px", flex: "none" }} aria-hidden="true" />
+          )}
+
+          {/* RIGHT: reserved secondary-action slot. No global "next" action
+              exists today (adds happen per-candidate via addCard), so this is an
+              intentionally-empty equal-width spacer that balances the shutter —
+              NOT dead code. A real next affordance would use <ArrowRight/> here. */}
+          <span style={{ width: "44px", flex: "none" }} aria-hidden="true" />
         </div>
-        <p id="scan-language-help" style={{ color: "var(--color-dojo-body)", fontSize: "12px", margin: 0 }}>
-          Narrows catalog matches only where a card&apos;s language is known. Reading your photo is not limited to this language.
-        </p>
       </div>
 
-      {/* Choose photo: existing image from the device (hidden input). */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/jpeg,image/png,image/webp"
-        hidden
-        data-testid="scan-file-input"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) void handleChosenFile(f);
-        }}
-      />
-      {phase !== "recognizing" && !previewUrl && (
-        <button type="button" onClick={() => fileInputRef.current?.click()} style={{ ...goldBtn, background: "var(--color-dojo-card)", color: "var(--color-dojo-ink)" }}>
-          Choose photo
-        </button>
-      )}
-      {previewUrl && (
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={previewUrl} alt="Chosen card photo preview" style={{ height: "72px", width: "auto", border: "1px solid var(--color-dojo-stroke)" }} />
-          <button
-            type="button"
-            onClick={resetToScan}
-            disabled={phase === "recognizing"}
-            style={{ ...goldBtn, padding: "10px 14px" }}
-          >
-            Retake
-          </button>
-        </div>
-      )}
-      {fileError && (
-        <p role="alert" style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>{fileError}</p>
-      )}
-
-      {warning && (
-        <p role="status" style={{ color: "var(--color-dojo-gold)", fontSize: "13px", margin: 0 }}>{warning}</p>
-      )}
-      {error && (
-        <p role="alert" style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>{error}</p>
-      )}
-      {added && (
-        <p role="status" style={{ color: "var(--color-dojo-jade)", fontSize: "13px", margin: 0 }}>{added}</p>
-      )}
-
-      {/* Confirmation: top-5 candidates. Each row is a single-tap "add" action.
-          UX: the row carries an explicit "+ Add" affordance + a clear
-          instruction so users know ONE tap adds it (previously the row looked
-          like read-only info, so people tapped twice / didn't know to tap). */}
-      {phase === "confirm" && !added && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto" }}>
-          <p style={{ margin: 0, fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "13px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-dojo-body)" }}>
-            Tap your card to add it
-          </p>
-          {candidates.map((c, i) => (
-            <button
-              key={c.id}
-              onClick={() => addCard(c)}
-              aria-label={`Add ${c.name} to your portfolio`}
-              style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: i === 0 ? "1px solid var(--color-dojo-gold)" : "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
-            >
-              {/* Candidate thumbnail (initials fallback when no image). */}
-              <div style={{ flex: "none", width: "40px", aspectRatio: "660 / 921", background: "var(--color-dojo-raised)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-                {c.imageUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={c.imageUrl} alt={c.name} decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                ) : (
-                  <span style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", color: "var(--color-dojo-gold)" }}>
-                    {c.name.slice(0, 2).toUpperCase()}
-                  </span>
-                )}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ margin: 0, fontWeight: 700 }}>{c.name}</p>
-                <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--color-dojo-body)" }}>
-                  {c.set ? `${c.set} · ` : ""}{Math.round(c.confidence * 100)}% match
-                </p>
-              </div>
-              {/* Explicit add affordance so the tap target reads as an action,
-                  not read-only info. Gold on the best match (first row). */}
-              <span
-                aria-hidden="true"
-                style={{
-                  flex: "none", display: "inline-flex", alignItems: "center", gap: "4px",
-                  padding: "7px 12px",
-                  background: i === 0 ? "var(--color-dojo-gold)" : "transparent",
-                  color: i === 0 ? "var(--color-dojo-app)" : "var(--color-dojo-gold)",
-                  border: i === 0 ? "none" : "1px solid var(--color-dojo-gold)",
-                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px",
-                  letterSpacing: "0.1em", textTransform: "uppercase", whiteSpace: "nowrap",
-                }}
-              >
-                + Add
-              </span>
-            </button>
-          ))}
-          {/* Not your card? Search manually. */}
-          <button
-            onClick={() => { setCandidates([]); setPhase("not-recognized"); }}
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--color-dojo-gold)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", alignSelf: "flex-start" }}
-          >
-            Not your card? Search manually
-          </button>
-        </div>
-      )}
-
-      {/* Not recognized / manual search fallback. */}
+      {/* ── Not recognized / manual search fallback (flows below the stage;
+          a distinct mode, reachable by scrolling the shell wrapper). ── */}
       {phase === "not-recognized" && !added && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "20px 16px" }}>
           <p role="alert" style={{ margin: 0, fontWeight: 700 }}>Card not recognized</p>
           <p style={{ margin: 0, fontSize: "13px", color: "var(--color-dojo-body)" }}>
             Search for it manually, or rescan.
@@ -690,6 +766,7 @@ export default function ScannerPage() {
             <button
               key={c.id}
               onClick={() => addCard(c)}
+              aria-label={`Add ${c.name} to your portfolio`}
               style={{ display: "flex", alignItems: "center", gap: "12px", background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "10px", cursor: "pointer", textAlign: "left", width: "100%" }}
             >
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -700,6 +777,13 @@ export default function ScannerPage() {
             </button>
           ))}
           <button onClick={resetToScan} style={goldBtn}>Rescan</button>
+        </div>
+      )}
+
+      {/* ── Added confirmation (flows below the stage) with a way back to scan. ── */}
+      {added && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "20px 16px" }}>
+          <button onClick={resetToScan} style={goldBtn}>Scan another</button>
         </div>
       )}
     </div>
