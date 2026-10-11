@@ -1099,6 +1099,12 @@ body {
   }
 }
 
+@media (min-width: 1536px) {
+  .dojo-card-grid {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
+
 /* --- Interactive card tile hover state (Phase 3.2) ---
    Subtle lift + shadow on hover for every clickable card tile
    (search results, trending grid, portfolio grid/list, dashboard
@@ -1294,8 +1300,8 @@ body {
   /* Desktop Grid utilities */
   .dojo-desktop-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 32px;
+    grid-template-columns: 1fr;
+    gap: 24px;
     align-items: start;
   }
 }
@@ -1303,22 +1309,66 @@ body {
 @media (min-width: 1024px) {
   .dojo-shell-main,
   .dojo-shell-header {
-    max-width: 1280px;
+    max-width: 1680px;
     margin: 0 auto;
     width: 100%;
-    padding-left: clamp(24px, 5vw, 64px);
-    padding-right: clamp(24px, 5vw, 64px);
+    padding-left: clamp(24px, 4vw, 72px);
+    padding-right: clamp(24px, 4vw, 72px);
   }
 }
 
-/* ── Reading-width cap for detail / confirmation columns (desktop only) ──
-   Base = nothing (mobile + tablet unchanged). padding-inline:22px makes the
-   detail page's margin:12px -22px chart bleed land flush with the 560px edges. */
+/* ── Reading-width cap for the collection/add confirmation column (desktop) ──
+   Base = nothing (mobile + tablet unchanged). padding-inline:22px keeps the
+   margin:12px -22px bleeds flush with the column edges. The old 560px detail
+   cap moved onto the two-column .dojo-detail-grid layout below. */
 @media (min-width: 1024px) {
   .dojo-detail-col {
-    max-width: 560px;
+    max-width: 720px;
     margin-inline: auto;
     padding-inline: 22px;
+  }
+}
+
+/* ── Card-detail two-column product layout (desktop only) ──
+   Base reproduces current mobile stacking (block / unstyled page wrapper) so
+   <1024px is byte-for-byte unchanged. At >=1024px the hero sits sticky on the
+   left and the info/price/chart/controls column flows on the right. */
+.dojo-detail-grid {
+  display: block;
+}
+.dojo-detail-page {
+}
+
+@media (min-width: 1024px) {
+  .dojo-detail-grid {
+    display: grid;
+    grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+    gap: 48px;
+    align-items: start;
+    padding-top: 8px;
+  }
+  .dojo-detail-hero {
+    position: sticky;
+    top: 8px;
+  }
+  .dojo-detail-grid .dojo-detail-hero img {
+    width: 100% !important;
+    max-width: 360px;
+  }
+  .dojo-detail-info {
+    padding-left: 22px;
+    padding-right: 22px;
+    min-width: 0;
+  }
+  .dojo-detail-info [role="img"][aria-label="Price history chart"] {
+    max-width: none;
+  }
+}
+
+@media (min-width: 1536px) {
+  .dojo-detail-grid {
+    grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
+    gap: 64px;
   }
 }
 
@@ -1338,13 +1388,38 @@ body {
     bottom: 0;
   }
   .dojo-multi-actionbar-inner {
-    max-width: 1280px;
+    max-width: 1680px;
     margin-inline: auto;
   }
 }
 @media (min-width: 1024px) {
   .dojo-multi-actionbar-inner {
-    padding-left: clamp(24px, 5vw, 64px);
-    padding-right: clamp(24px, 5vw, 64px);
+    padding-left: clamp(24px, 4vw, 72px);
+    padding-right: clamp(24px, 4vw, 72px);
+  }
+}
+
+/* ── Dashboard stat card: cap width on desktop so a single-column stat
+   doesn't stretch edge-to-edge across the wide shell. */
+@media (min-width: 1024px) {
+  .dojo-dash-statcard {
+    max-width: 520px;
+  }
+}
+
+/* ── Narrow content cap for list/form pages on tablet+ ──
+   Base = nothing (mobile unchanged); centred reading column from 768px up. */
+@media (min-width: 768px) {
+  .dojo-content-narrow {
+    max-width: 860px;
+    margin-inline: auto;
+  }
+}
+
+/* ── Portfolio comparison chart: release the 560px cap inside the desktop
+   two-column grid so it fills its column. */
+@media (min-width: 1024px) {
+  .dojo-desktop-grid [role="img"][aria-label="Portfolio comparison chart"] {
+    max-width: none;
   }
 }
