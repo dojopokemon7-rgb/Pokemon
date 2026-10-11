@@ -111,7 +111,8 @@ docker-compose.override.yml
 # Strix pentest run output (local scratch — reports, logs, SARIF)
 strix_runs/
 
-# Local test/report scratch output (coverage already covered above)
+# Local test/report scratch output
+coverage/
 reports/
 
 # k6 load-test run artifacts (keep the reusable script, ignore the outputs)

@@ -53,6 +53,11 @@ export default function ScannerPage() {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [cameraDenied, setCameraDenied] = useState(false);
+  // Browsers block getUserMedia on insecure origins (plain HTTP on an IP/host,
+  // not localhost). That's a hard platform rule, NOT a permission the user can
+  // grant — so we distinguish it from a real denial to show honest copy and
+  // steer the user to the "Choose photo" upload path, which works over HTTP.
+  const [cameraInsecure, setCameraInsecure] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
 
   // Language context (persisted). Sent to the API, which only echoes it.
@@ -79,6 +84,19 @@ export default function ScannerPage() {
   const [manualResults, setManualResults] = useState<Candidate[]>([]);
 
   const startCamera = useCallback(async () => {
+    // Insecure context (HTTP on a non-localhost origin) → the camera API is
+    // either absent or will reject. Surface the real reason up front instead of
+    // a misleading "access denied", and skip the getUserMedia attempt.
+    if (typeof window !== "undefined" && window.isSecureContext === false) {
+      setCameraInsecure(true);
+      setCameraDenied(true);
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraInsecure(true);
+      setCameraDenied(true);
+      return;
+    }
     try {
       let stream: MediaStream;
       try {
@@ -102,6 +120,7 @@ export default function ScannerPage() {
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
       setCameraDenied(false);
+      setCameraInsecure(false);
     } catch {
       setCameraDenied(true);
     }
@@ -492,7 +511,14 @@ export default function ScannerPage() {
         />
       </div>
 
-      {cameraDenied ? (
+      {cameraInsecure ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <p style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>
+            Live camera needs a secure (HTTPS) connection, so it&apos;s unavailable here.
+            Use &ldquo;Choose photo&rdquo; below to scan a card from an image instead.
+          </p>
+        </div>
+      ) : cameraDenied ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           <p style={{ color: "var(--color-dojo-body)", fontSize: "13px", margin: 0 }}>
             Camera access denied. Allow camera access to scan a card.
