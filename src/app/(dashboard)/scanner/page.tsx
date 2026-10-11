@@ -720,7 +720,7 @@ export default function ScannerPage() {
                       <p style={{ margin: 0, fontSize: "12px", fontWeight: 700, color: "var(--color-dojo-gold)" }}>#{c.number}</p>
                     ) : null}
                     <p style={{ margin: 0, fontSize: "11px", color: "var(--color-dojo-body)" }}>
-                      {c.set ? `${c.set} · ` : ""}{Math.round(c.confidence * 100)}% match
+                      {c.set ? `${c.set} · ` : ""}{c.confidence > 0 ? `${Math.round(c.confidence * 100)}% match` : "Alternate printing"}
                     </p>
                   </button>
                 ))}

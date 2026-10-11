@@ -43,6 +43,9 @@ import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 // multi-thousand-row catalog per scan would be wasteful.
 const SCORE_POOL = 500;
 const TOP_N = 5;
+// ONE PIECE ONLY: how many same-name sibling printings to append after the
+// Vision-ranked matches (local-DB expansion, no Scrydex credits).
+const SIBLING_CAP = 10;
 
 /** Reads the session if present; recognition works anonymously too. */
 async function optionalUserId(request: Request): Promise<string | null> {
@@ -204,6 +207,47 @@ export async function POST(request: Request): Promise<NextResponse> {
         };
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
+
+    // ONE PIECE ONLY — "which printing?" expansion (local DB, NO Scrydex
+    // credits). Vision pins the character but often the WRONG exact printing
+    // (right art, wrong Bandai code/set). So for One Piece we append the OTHER
+    // local printings sharing the resolved card `name` as additional pickable
+    // candidates. This is gated STRICTLY on game === "onepiece"; the Pokémon
+    // path is byte-for-byte unchanged. Siblings carry a sentinel
+    // confidence: 0 — NOT a fabricated % (AGENTS §5 rule 2) — so they sort
+    // AFTER every real Vision match (clamped 0..1, realistically > 0) and the
+    // scanner renders them as "Alternate printing" rather than "0% match".
+    // One efficient findMany scoped to onepiece- sets, excluding already-
+    // included externalIds. Candidate shape mirrors the Vision map above, so
+    // imageUrl is the same /api/one-piece-img proxy path from the Card row —
+    // never a hot-linked Bandai URL (AGENTS §5 rule 13).
+    if (game === "onepiece" && candidates.length > 0) {
+      const resolvedNames = [...new Set(candidates.map((c) => c.name))];
+      const includedIds = new Set(candidates.map((c) => c.id));
+      const siblings = await prisma.card.findMany({
+        where: {
+          name: { in: resolvedNames },
+          set: { externalId: { startsWith: "onepiece-" } },
+          externalId: { notIn: [...includedIds] },
+        },
+        include: { set: true },
+      });
+      let appended = 0;
+      for (const card of siblings) {
+        if (appended >= SIBLING_CAP) break;
+        if (includedIds.has(card.externalId)) continue; // defensive dedupe
+        includedIds.add(card.externalId);
+        candidates.push({
+          id: card.externalId,
+          name: card.name,
+          number: card.number,
+          set: card.set?.name ?? "",
+          imageUrl: card.imageUrl ?? card.imageUrlHi ?? "",
+          confidence: 0, // sentinel — sorts after real matches; renders as "Alternate printing"
+        });
+        appended++;
+      }
+    }
 
     // Vision returned matches but NONE joined to a local Card row — a GENUINE
     // no-match for EITHER game (the catalog lacks that printing). Treat it
