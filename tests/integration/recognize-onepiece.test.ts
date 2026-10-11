@@ -56,9 +56,12 @@ describe("POST /api/cards/recognize One Piece", () => {
   it("TEXT path scopes the pool to One Piece sets and resolves OP01-064", async () => {
     prismaMock.card.findMany.mockResolvedValue([
       {
-        // One Piece rows store the Bandai code as both externalId AND the
-        // collector `number` (apitcg uses `p.code` like "OP01-064") — so the
-        // engine's +50 number signal fires on the "OP01-064" set-code reading.
+        // One Piece rows store the FULL Bandai code in `number` because the
+        // write path runs deriveStoredCardNumber(externalId, isOnePiece=true),
+        // which returns the externalId unchanged (NOT apitcg mapping — apitcg
+        // never sets `number`). This is what makes the recognizer's +50 number
+        // signal fire on the "OP01-064" set-code reading; storing the bare tail
+        // ("064") would never match normalizeNumber("OP01-064") = "op01-064".
         externalId: "OP01-064",
         name: "Monkey.D.Luffy",
         number: "OP01-064",
@@ -78,6 +81,12 @@ describe("POST /api/cards/recognize One Piece", () => {
     expect(whereArg.set.externalId.startsWith).toBe("onepiece-");
     // The One Piece row resolves (externalId is the Bandai code — AGENTS rule 3).
     expect(data.candidates[0].id).toBe("OP01-064");
+    // Regression guard: the +50 number signal fired because the stored `number`
+    // is the FULL Bandai code. If a future change reverts to the bare tail
+    // ("064"), the number would no longer match the parsed "op01-064" and this
+    // card would drop below the confidence gate — so assert the full code is the
+    // resolved candidate's number.
+    expect(data.candidates[0].number).toBe("OP01-064");
     // One Piece candidate image is the same-origin proxy, never a hot-linked
     // Bandai URL (AGENTS rule 13).
     expect(data.candidates[0].imageUrl).toBe("/api/one-piece-img/OP01-064");

@@ -14,6 +14,7 @@ import { assignBulkAddOrder } from "@/lib/utils/bulk-add-order";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
 import { getOrCreateMainCollection } from "@/lib/services/collection.service";
+import { deriveStoredCardNumber, isOnePieceCode } from "@/lib/utils/card-number";
 
 // RULE 4: the exact shape the GET caches (`{ items }`). Used ONLY to re-validate
 // the Redis blob on READ — a parse failure = stale shape = treat as a miss.
@@ -171,12 +172,6 @@ const AddCollectionRequestSchema = z.object({
   onExisting: z.enum(["increment", "skip"]).default("increment"),
 });
 
-/** Derives an in-set card number the same way prisma/seed.ts does. */
-function deriveCardNumber(externalId: string): string {
-  const parts = externalId.split("-");
-  return parts.length > 1 ? parts[parts.length - 1] : externalId;
-}
-
 /** Lowercases, strips non-alphanumerics, hyphenates — for a stable set key. */
 function slugifySetName(input: string): string {
   const slug = input
@@ -304,7 +299,10 @@ export async function POST(request: Request): Promise<NextResponse> {
           data: {
             externalId: item.externalId,
             name: item.name,
-            number: deriveCardNumber(item.externalId),
+            // Game-gated collector number. The add payload carries no `game`,
+            // so One Piece is detected by the Bandai code shape (OP/ST/EB/PRB
+            // prefix) — Pokémon ids ("base1-4") fall through to the hyphen-tail.
+            number: deriveStoredCardNumber(item.externalId, isOnePieceCode(item.externalId)),
             rarity: item.rarity ?? "Unknown",
             types: item.types ?? [],
             imageUrl: item.imageUrl ?? null,

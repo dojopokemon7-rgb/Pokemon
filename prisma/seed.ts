@@ -39,6 +39,7 @@ import {
 } from "@/lib/services/card.service";
 import type { NormalizedCard } from "@/lib/validators/card.validator";
 import { buildTags } from "@/lib/utils/card-tags";
+import { deriveStoredCardNumber } from "@/lib/utils/card-number";
 import { backfillPrices } from "../scripts/backfill-prices";
 
 // =============================================================
@@ -137,19 +138,6 @@ function slugify(input: string): string {
   return slug || "unknown-set";
 }
 
-/**
- * Derives an in-set card number from the normalized card id.
- *
- * Source ids typically look like `base1-4` (Pokémon TCG API) or
- * `swsh4-20` — the segment after the final hyphen is the printed
- * card number. If the id has no hyphen (e.g. mock/One Piece ids),
- * the full id is used so `number` is never empty.
- */
-function deriveCardNumber(id: string): string {
-  const parts = id.split("-");
-  return parts.length > 1 ? parts[parts.length - 1] : id;
-}
-
 interface SeedStats {
   cardsUpserted: number;
   setsUpserted: number;
@@ -201,12 +189,18 @@ async function upsertCard(
       ? { marketPrice: card.marketPrice, lastPricedAt: new Date() }
       : {};
 
+  // Game-gated collector number: One Piece stores the FULL Bandai code
+  // (so it equals the recognizer's normalized parse "op01-064"), Pokémon
+  // keeps the post-hyphen tail ("base1-4" -> "4"). The `game` arg is known
+  // at write time, so gate directly on it.
+  const storedNumber = deriveStoredCardNumber(card.id, game === "onepiece");
+
   // Searchable keyword tags from the card/set metadata (shared with
   // scripts/backfill-tags.ts) so new cards are searchable-by-tag on import.
   const tags = buildTags({
     rarity: card.rarity ?? null,
     types: card.types ?? [],
-    number: deriveCardNumber(card.id),
+    number: storedNumber,
     set: { name: setName, series: null },
   });
 
@@ -214,7 +208,7 @@ async function upsertCard(
     where: { externalId: card.id },
     update: {
       name: card.name,
-      number: deriveCardNumber(card.id),
+      number: storedNumber,
       rarity: card.rarity,
       types: card.types,
       tags,
@@ -225,7 +219,7 @@ async function upsertCard(
     create: {
       externalId: card.id,
       name: card.name,
-      number: deriveCardNumber(card.id),
+      number: storedNumber,
       rarity: card.rarity,
       types: card.types,
       tags,

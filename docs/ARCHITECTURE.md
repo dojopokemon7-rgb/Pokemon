@@ -169,6 +169,21 @@ camera frame → crop/2×/grayscale/contrast → glare check (warning only)
 Scanner inputs: live camera, or **Choose photo** (JPEG/PNG/WebP, ≤20 MB; client `validateScanFile` checks MIME + magic bytes, decodes with EXIF orientation, downscales to ≤1600px, then feeds the same Vision → Tesseract → text flow; object URLs revoked on retake/unmount; image data never logged). A **Card language** select (All/English/Japanese, `localStorage` `dojo:scan-language`) is sent as `language`; it is echoed only (`languageApplied:false`) because the catalog has no per-card language column.
 The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measured, never guessed.
 
+- **Game-gated `Card.number` (One Piece scan fix).** The write paths derive the stored
+  collector number via `src/lib/utils/card-number.ts` `deriveStoredCardNumber`: One Piece
+  stores the FULL Bandai code (`"OP01-064"`), Pokémon keeps the post-hyphen tail
+  (`"base1-4"`→`"4"`). This is required for recognition — `scoreCards` compares
+  `normalizeNumber(card.number) === parsed.number`, and the recognizer parses/normalizes the
+  full set-serial code to `"op01-064"` (the digit→digit hyphen is kept). Storing the bare tail
+  (`"064"`) made the +50 number signal never fire for ANY One Piece card, so a perfect name-only
+  match capped at `30/80 = 0.375 < 0.4` → deterministic "card not recognized". `prisma/seed.ts`
+  gates on the `game` arg; the collection add route (no `game` in the payload) infers One Piece
+  from the Bandai code shape via `isOnePieceCode`. Existing rows are migrated by the OWNER-RUN
+  `scripts/backfill-onepiece-number.ts` (One-Piece-scoped, idempotent, no credits/network — see
+  `scripts/BACKFILL-onepiece-number.md`). Pokémon behavior is unchanged. (`Card.externalId`
+  stays the id — AGENTS RULE 3; `Card.number` is display/matching only, so the add-payload
+  contract is untouched.)
+
 
 **7-day change provenance (FEAT-003):** `Card.weeklyChangeAbs/Pct` are written only by the Scrydex pricing pull from `trends.days_7` (each independently, only when numeric). There is NO staleness column (`Card.weeklyChangeAt` is deferred, needs an owner DB change), so values reflect the last provider refresh. Search/trending sort them DB-side (`nulls: last`); the portfolio sorts in memory with `sortByWeeklyChange`. Chart/`PricingHistory`/synthetic data is never used for this sort.
 
