@@ -4,10 +4,13 @@
  * Card Scanner (/scanner) — F-14, multi-signal recognition.
  *
  * Flow: rear-camera live preview with a card-shaped framing outline →
- * "Scan" captures a frame → auto-crop to the outline → preprocess (2x
- * upscale, grayscale, contrast) → a glare/brightness check warns if the
- * shot is unusable → the base64 image is POSTed to /api/cards/recognize,
- * which OCRs it with Google Cloud Vision and runs the multi-signal matching
+ * "Scan" captures a frame → auto-crop to the outline → 2x upscale. A
+ * glare/brightness check (on the raw/color pixels) warns if the shot is
+ * unusable → the COLOR base64 image is POSTed to /api/cards/recognize
+ * (Scrydex Vision is trained on color, like the upload path). A separate
+ * grayscale+contrast canvas is kept only for the on-device tesseract OCR
+ * fallback. The recognize route OCRs the image with Google Cloud Vision and
+ * runs the multi-signal matching
  * engine (number + set + name). If the server has no Vision key it replies
  * `ocrSource: "unavailable"`, and the client falls back to on-device
  * tesseract.js OCR and re-submits the text. The TOP 5 candidates show as
@@ -161,11 +164,22 @@ export default function ScannerPage() {
   }, [startCamera]);
 
   /**
-   * Capture → auto-crop to the card outline → 2x upscale → grayscale +
-   * contrast. Returns the processed canvas plus the quality stats fed to the
-   * pre-upload gate (brightness, contrast spread, sharpness, size).
+   * Capture → auto-crop to the card outline → 2x upscale. Returns TWO canvases
+   * plus the quality stats fed to the pre-upload gate:
+   *  - `colorCanvas`: the cropped + 2x-upscaled COLOR frame, sent to Scrydex
+   *    Vision (which is trained on COLOR card images — this matches the working
+   *    "Choose photo" upload path, which also sends color).
+   *  - `ocrCanvas`: a SEPARATE grayscale + 1.4-contrast-stretched canvas, used
+   *    ONLY by the on-device tesseract OCR fallback (Vision-unavailable path);
+   *    the grayscale boosts small set/number text for OCR but must NOT reach
+   *    Vision.
+   * Quality-gate stats are computed on the RAW/color pixels BEFORE grayscale.
    */
-  function captureProcessedCanvas(): { canvas: HTMLCanvasElement; stats: ScanQualityStats } | null {
+  function captureProcessedCanvas(): {
+    colorCanvas: HTMLCanvasElement;
+    ocrCanvas: HTMLCanvasElement;
+    stats: ScanQualityStats;
+  } | null {
     const video = videoRef.current;
     if (!video) return null;
     const vw = video.videoWidth || 320;
@@ -179,26 +193,30 @@ export default function ScannerPage() {
 
     // 2x upscale so small set/number text survives OCR.
     const scale = 2;
-    const canvas = document.createElement("canvas");
-    canvas.width = cropW * scale;
-    canvas.height = cropH * scale;
-    const ctx = canvas.getContext("2d");
+    const colorCanvas = document.createElement("canvas");
+    colorCanvas.width = cropW * scale;
+    colorCanvas.height = cropH * scale;
+    const ctx = colorCanvas.getContext("2d");
     if (!ctx) return null;
     try {
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, colorCanvas.width, colorCanvas.height);
     } catch {
       /* proceed with a blank canvas (synthetic/not-ready source) */
     }
 
     // Compute the quality-gate stats on the RAW drawn frame BEFORE the
     // contrast stretch (so brightness/contrast/sharpness reflect the real
-    // capture, not the OCR-boosted pixels).
-    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    // capture, not the OCR-boosted pixels). This also leaves the colorCanvas
+    // pixels untouched — that COLOR canvas is what Vision receives.
+    const img = ctx.getImageData(0, 0, colorCanvas.width, colorCanvas.height);
     const stats = statsFromImageData(img);
 
-    // Grayscale + contrast in place to boost small set/number text for OCR.
+    // Build a SEPARATE grayscale + contrast canvas for the tesseract OCR
+    // fallback ONLY, so the Vision image stays color. Mutate the imageData
+    // buffer in place (it is a copy owned by this capture, not shared with the
+    // colorCanvas) and paint it onto a fresh canvas.
     const d = img.data;
     const contrast = 1.4;
     const intercept = 128 * (1 - contrast);
@@ -207,9 +225,14 @@ export default function ScannerPage() {
       const v = Math.max(0, Math.min(255, contrast * gray + intercept));
       d[i] = d[i + 1] = d[i + 2] = v;
     }
-    ctx.putImageData(img, 0, 0);
+    const ocrCanvas = document.createElement("canvas");
+    ocrCanvas.width = colorCanvas.width;
+    ocrCanvas.height = colorCanvas.height;
+    const ocrCtx = ocrCanvas.getContext("2d");
+    if (!ocrCtx) return null;
+    ocrCtx.putImageData(img, 0, 0);
 
-    return { canvas, stats };
+    return { colorCanvas, ocrCanvas, stats };
   }
 
   /** Maps a quality-gate rejection reason to friendly retake copy. */
@@ -294,7 +317,7 @@ export default function ScannerPage() {
         setPhase("scan");
         return;
       }
-      await recognizeCanvas(captured.canvas);
+      await recognizeCanvas(captured.colorCanvas, captured.ocrCanvas);
     } catch {
       setError("Scanner error, please try again.");
       setPhase("scan");
@@ -302,11 +325,15 @@ export default function ScannerPage() {
   }
 
   /** Shared by camera + Choose photo. Vision-first; falls back to on-device
-   *  tesseract when the server has no Vision key or Vision returned nothing. */
-  async function recognizeCanvas(canvas: HTMLCanvasElement) {
-    let result = await recognizeByImage(canvas);
+   *  tesseract when the server has no Vision key or Vision returned nothing.
+   *  `colorCanvas` goes to Vision (color — matches the working upload path);
+   *  `ocrCanvas` (grayscale/contrast) feeds the tesseract fallback when the
+   *  camera path supplies it. The upload path passes only a color canvas, so
+   *  its rare fallback reuses it (upload already works). */
+  async function recognizeCanvas(colorCanvas: HTMLCanvasElement, ocrCanvas?: HTMLCanvasElement) {
+    let result = await recognizeByImage(colorCanvas);
     if (result == null) {
-      const text = await runTesseract(canvas);
+      const text = await runTesseract(ocrCanvas ?? colorCanvas);
       result = await recognizeByText(text, "tesseract");
     }
     const top = result.candidates[0];
