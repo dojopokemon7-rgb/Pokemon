@@ -82,8 +82,8 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ### `POST /api/cards/recognize` — scanner OCR + ranking
 - Body: `{ image?: base64 (Vision), text?: pre-extracted OCR, game?: "pokemon"|"onepiece", source?: "tesseract"|"manual" }`. Invalid JSON → 400.
-- Vision unavailable → `200 { success: true, candidates: [], ocrSource: "unavailable", feedbackId: null }` (client-side tesseract signal).
-- 200 `{ success: true, candidates: [{ id, name, set, imageUrl, confidence }], feedbackId, ocrSource: "vision"|"tesseract"|"manual" }`. Top 5; DB prefilter ≤500 rows; errors never 500.
+- Vision unavailable / no match → `200 { success: true, candidates: [], ocrSource: "unavailable", feedbackId: null }` (client-side tesseract signal; consumes NO scan allowance).
+- 200 `{ success: true, candidates: [{ id, name, number, set, imageUrl, confidence }], feedbackId, ocrSource: "vision"|"tesseract"|"manual" }`. Top 5 candidates. **Vision branch now returns the TOP-5 matches in Scrydex rank order** (`candidates[0]` = Vision's top match), each resolved via one `findMany({ where:{ externalId:{ in } } })` and re-sorted to Vision order (unresolved ids dropped) — not just `matches[0]` — so same-art reprints (e.g. 081/182 vs promo 205) are selectable. `number` is the collector number (`Card.number`, display-only, never an id; omitted on candidates that lack a real value). `confidence` is normalized to `0–1` (Vision scores are clamped so the UI never shows >100%). DB prefilter ≤500 rows on the text path; errors never 500.
 - Optional `language`: `"all"|"en"|"ja"` (absent = `"all"`; old bodies unchanged). Invalid value → `400 { success: false, error: "invalid-language" }`. Success responses echo `language` and `languageApplied: false` — `Card` has no language column and OCR is not language-restricted, so it is validated and echoed only, never used to filter.
 
 ### `PATCH /api/cards/recognize` — feedback label

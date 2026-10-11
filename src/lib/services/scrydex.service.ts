@@ -122,16 +122,17 @@ export interface ScrydexGradedPrice {
 }
 
 /**
- * FR-2d Vision identify result. The id field is `cardId` and carries the
- * EXTERNAL catalog id (NFR-3) — the name recognize/route.ts already reads
- * (`scrydexResult.cardId` → `where: { externalId }`), so the route stays
- * UNCHANGED. The value is an externalId despite the field name.
+ * FR-2d Vision identify result — ONE candidate match. `cardId` carries the
+ * Scrydex catalog id (recognize/route.ts resolves it via `where: { externalId }`).
+ * identifyCard() returns an ARRAY of these in Scrydex rank order (top-N), so the
+ * route can surface sibling same-art reprints (e.g. 081/182 vs promo 205) as
+ * pickable candidates instead of silently committing to matches[0]. `score` is
+ * normalized to 0–1 (see identifyCard clamp).
  */
 export interface ScrydexIdentifyResult {
   cardId: string;
-  confidence: number;
+  score: number;
   name: string;
-  setCode: string;
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -727,10 +728,12 @@ const VisionResponseSchema = z.object({
  * `POST /vision/v1/cards/identify` (multipart/form-data; JPEG/PNG/WebP; 20MB;
  * 5 credits — docs/SCRYDEX_AUDIT.md). Server-side only (uses scrydexHeaders).
  *
- * Returns ScrydexIdentifyResult where `cardId` is the Scrydex-returned catalog
- * id for the top match (load-bearing: recognize/route.ts reads this field).
- * Returns null on no-match, missing credentials, or any failure so the route
- * degrades to on-device Tesseract and NEVER fabricates a match.
+ * Returns an ARRAY of ScrydexIdentifyResult (top-N, N=5, in Scrydex rank order)
+ * where each `cardId` is a Scrydex-returned catalog id (load-bearing:
+ * recognize/route.ts resolves these via `where: { externalId }`). Returns `null`
+ * on missing credentials or any failure, and `[]` on an honest no-match — both
+ * falsy-length cases make the route degrade to on-device Tesseract and NEVER
+ * fabricate a match.
  *
  * CREDIT SAFETY: this is a 5-credit live call. It MUST NOT be invoked unless the
  * caller has (a) confirmed the per-account scan allowance and (b) passed the
@@ -741,11 +744,28 @@ const VisionResponseSchema = z.object({
  * @param mime   validated MIME type (e.g. "image/jpeg").
  * @param games  optional TCG scope (e.g. ["pokemon"]) for faster/accurate match.
  */
+// Top-N Vision matches to surface. Matches the tesseract branch's TOP_N=5 so
+// both recognition paths return the same max candidate count and the UI strip
+// renders them identically.
+const VISION_TOP_N = 5;
+
+// Scrydex Vision scores run ~0.7–1.3+ (a confident match can exceed 1.0), so a
+// raw `score * 100` renders ">100% match" in the UI. Clamp to a sane 0–1 so the
+// displayed confidence is honest. This does NOT change the CONFIDENCE_THRESHOLD
+// (0.4) gate: clamping only lowers values that were already ≥1 (well above 0.4)
+// down to exactly 1 — a match that cleared the gate still clears it — and leaves
+// sub-0.4 scores untouched. Clamping here is the single source of truth so every
+// consumer gets a 0–1 value.
+function clampScore(s: unknown): number {
+  const n = typeof s === "number" && Number.isFinite(s) ? s : 0;
+  return Math.min(Math.max(n, 0), 1);
+}
+
 export async function identifyCard(
   image: Buffer,
   mime: string,
   games?: string[]
-): Promise<ScrydexIdentifyResult | null> {
+): Promise<ScrydexIdentifyResult[] | null> {
   if (!process.env.SCRYDEX_API_KEY || !process.env.SCRYDEX_TEAM_ID) return null;
   try {
     const form = new FormData();
@@ -771,14 +791,18 @@ export async function identifyCard(
       console.warn(`[scrydex] vision parse failed: ${parsed.error.issues[0]?.message}`);
       return null;
     }
-    const top = parsed.data.data.matches[0];
-    if (!top?.card?.id) return null; // honest no-match
-    return {
-      cardId: top.card.id,
-      confidence: typeof top.score === "number" ? top.score : 0,
-      name: top.card.name ?? "",
-      setCode: "",
-    };
+    // Keep the TOP-N matches (in Scrydex rank order), dropping any without a
+    // card id. An empty result is an honest no-match → route falls back to
+    // Tesseract. (Was: only matches[0], which discarded sibling reprints and
+    // caused the wrong-printing bug — see scan-recognition-accuracy-findings.md.)
+    return parsed.data.data.matches
+      .slice(0, VISION_TOP_N)
+      .filter((m) => !!m.card?.id)
+      .map((m) => ({
+        cardId: m.card!.id,
+        score: clampScore(m.score),
+        name: m.card!.name ?? "",
+      }));
   } catch (err) {
     console.warn("[scrydex] vision identify error:", err instanceof Error ? err.message : err);
     return null;

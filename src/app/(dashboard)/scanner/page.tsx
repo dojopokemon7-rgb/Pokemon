@@ -29,6 +29,11 @@ import {
 interface Candidate {
   id: string;
   name: string;
+  // Collector number (Card.number, e.g. "081/182") — DISPLAY-ONLY, never an id.
+  // Shown on each tile so the user can pick the exact printing among same-art
+  // reprints (081/182 SV10 vs promo 205). Optional: the tesseract/manual
+  // branches may omit it.
+  number?: string | null;
   set: string;
   imageUrl: string;
   confidence: number;
@@ -641,9 +646,14 @@ export default function ScannerPage() {
                       )}
                     </div>
                     <p style={{ margin: 0, fontWeight: 700, fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</p>
-                    {/* set/number + confidence; price rendered only when a real
-                        value exists on the candidate (none today → omitted; we
-                        never invent a price, AGENTS §5 rule 2). */}
+                    {/* Collector number (prominent — the disambiguator between
+                        same-art reprints) + set + confidence. Number shown only
+                        when the candidate carries a real Card.number (never
+                        fabricated — AGENTS §5 rule 2); price omitted (no real
+                        value on the candidate today). */}
+                    {c.number ? (
+                      <p style={{ margin: 0, fontSize: "12px", fontWeight: 700, color: "var(--color-dojo-gold)" }}>#{c.number}</p>
+                    ) : null}
                     <p style={{ margin: 0, fontSize: "11px", color: "var(--color-dojo-body)" }}>
                       {c.set ? `${c.set} · ` : ""}{Math.round(c.confidence * 100)}% match
                     </p>

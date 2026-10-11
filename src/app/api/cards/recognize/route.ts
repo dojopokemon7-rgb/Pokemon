@@ -153,9 +153,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       games
     );
 
-    if (!scrydexResult || !scrydexResult.cardId) {
-      // No match / provider failure — NOT an allowance consumption. Tell the
-      // client to try on-device Tesseract and re-submit as `text`.
+    if (!scrydexResult || scrydexResult.length === 0) {
+      // No match / provider failure — NOT an allowance consumption (this check
+      // stays ABOVE reserveSuccessfulScan). Tell the client to try on-device
+      // Tesseract and re-submit as `text`.
       return NextResponse.json({
         success: true,
         candidates: [],
@@ -177,30 +178,41 @@ export async function POST(request: Request): Promise<NextResponse> {
       );
     }
 
-    const matchedCard = await prisma.card.findUnique({
-      where: { externalId: scrydexResult.cardId },
+    // Resolve ALL top-N Vision matches in ONE query. findMany does NOT preserve
+    // the `in` order, so we index resolved rows by externalId and re-emit in
+    // Scrydex rank order (candidates[0] = Vision's top match → gold tile).
+    // Dropping ids that didn't resolve to a local Card. Each candidate carries
+    // the collector `number` (Card.number) + set name so the user can tap the
+    // exact printing — the whole point of the top-N fix.
+    const ids = scrydexResult.map((r) => r.cardId);
+    const rows = await prisma.card.findMany({
+      where: { externalId: { in: ids } },
       include: { set: true },
     });
+    const byId = new Map(rows.map((r) => [r.externalId, r]));
+    const candidates = scrydexResult
+      .map((match) => {
+        const card = byId.get(match.cardId);
+        if (!card) return null;
+        return {
+          id: card.externalId,
+          name: card.name,
+          number: card.number,
+          set: card.set?.name ?? "",
+          imageUrl: card.imageUrl ?? card.imageUrlHi ?? "",
+          confidence: match.score,
+        };
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null);
 
-    const candidates = matchedCard
-      ? [
-          {
-            id: matchedCard.externalId,
-            name: matchedCard.name,
-            set: matchedCard.set?.name ?? "",
-            imageUrl: matchedCard.imageUrl ?? matchedCard.imageUrlHi ?? "",
-            confidence: scrydexResult.confidence,
-          },
-        ]
-      : [];
-
-    // Log feedback (match reference only — NEVER the image bytes).
+    // Log feedback (match reference only — NEVER the image bytes). Record the
+    // top id (simple + stable) in the ocrText marker.
     let feedbackId: string | null = null;
     try {
       const row = await prisma.scanFeedback.create({
         data: {
           userId,
-          ocrText: `SCRYDEX_MATCH:${scrydexResult.cardId}`,
+          ocrText: `SCRYDEX_MATCH:${scrydexResult[0].cardId}`,
           ocrSource: "vision",
           candidates,
         },
@@ -269,6 +281,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const candidates = scored.map((c) => ({
       id: c.id,
       name: c.name,
+      number: c.number,
       set: c.set,
       imageUrl: c.imageUrl,
       confidence: c.confidence,
