@@ -40,6 +40,7 @@ import {
 import type { NormalizedCard } from "@/lib/validators/card.validator";
 import { buildTags } from "@/lib/utils/card-tags";
 import { deriveStoredCardNumber } from "@/lib/utils/card-number";
+import { slugify } from "@/lib/utils/set-key";
 import { backfillPrices } from "../scripts/backfill-prices";
 
 // =============================================================
@@ -126,16 +127,6 @@ type Game = "pokemon" | "onepiece";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Lowercases, strips non-alphanumerics, and hyphenates for a stable set key. */
-function slugify(input: string): string {
-  const slug = input
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "unknown-set";
 }
 
 interface SeedStats {

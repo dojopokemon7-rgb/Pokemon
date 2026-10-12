@@ -100,6 +100,11 @@ const ScrydexCardSchema = z.object({
   name: z.string(),
   number: z.string().nullish(), // collector number — the match key
   printed_number: z.string().nullish(),
+  // Catalog metadata read by the full One Piece ingest (nullish so a card
+  // missing any of these still parses — resolve/pricing paths ignore them).
+  rarity: z.string().nullish(),
+  hp: z.union([z.string(), z.number()]).nullish(),
+  types: z.array(z.string()).nullish(),
   expansion: z
     .object({ id: z.string().nullish(), name: z.string().nullish(), code: z.string().nullish() })
     .nullish(), // set code/name — the match key
@@ -258,6 +263,68 @@ export async function fetchScrydexCardById(
     return parsed.data.data;
   } catch (err) {
     console.warn(`[scrydex] fetchById ${scrydexId} error:`, err);
+    return null;
+  }
+}
+
+// --- Paged catalog list (full-catalog ingest) ------------------------------
+
+/**
+ * One page of the catalog-list endpoint
+ * `GET /{slug}/v1/cards?q=&include=prices&pageSize=<n>&page=<p>`.
+ *
+ * Reuses `ScrydexCardSchema` (which commit 66c97c4 extended with
+ * `variants[].images` + base `images`), so every card carries its per-variant
+ * art for the One Piece alt-art fix. `total_count`/`page_size` are read from the
+ * documented top-level fields (same place `ScrydexSearchResponseSchema` reads
+ * `total_count`); the apply loop uses `total_count` to derive its max-pages cap.
+ */
+const ScrydexCatalogPageSchema = z.object({
+  data: z.array(ScrydexCardSchema).default([]),
+  total_count: z.number().nullish(),
+  page_size: z.number().nullish(),
+});
+
+export interface ScrydexCatalogPage {
+  cards: ScrydexCard[];
+  totalCount: number | null;
+  pageSize: number | null;
+}
+
+/**
+ * Fetch ONE page of the game's full catalog (THIN: fetch + Zod only — no
+ * Prisma, no credit gate; the caller gates). Mirrors `fetchScrydexCardById`'s
+ * try/catch-return-null style: on `!res.ok` or a parse failure it warn-logs and
+ * returns `null` so the caller stops honestly without fabricating. Powers the
+ * owner-run `scripts/ingest-onepiece-catalog.ts` full One Piece ingest.
+ */
+export async function fetchScrydexCatalogPage(
+  game: Game,
+  page: number,
+  pageSize = 100
+): Promise<ScrydexCatalogPage | null> {
+  const slug = gameSlug(game);
+  try {
+    const res = await fetch(
+      `${SCRYDEX_BASE_URL}/${slug}/v1/cards?q=&include=prices&pageSize=${pageSize}&page=${page}`,
+      { headers: scrydexHeaders() }
+    );
+    if (!res.ok) {
+      console.warn(`[scrydex] catalog page ${page} HTTP ${res.status}`);
+      return null;
+    }
+    const parsed = ScrydexCatalogPageSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      console.warn(`[scrydex] catalog page ${page} parse failed: ${parsed.error.issues[0]?.message}`);
+      return null;
+    }
+    return {
+      cards: parsed.data.data,
+      totalCount: parsed.data.total_count ?? null,
+      pageSize: parsed.data.page_size ?? null,
+    };
+  } catch (err) {
+    console.warn(`[scrydex] catalog page ${page} error:`, err instanceof Error ? err.message : err);
     return null;
   }
 }

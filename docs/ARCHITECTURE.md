@@ -98,6 +98,8 @@ Vercel Cron 02:00 UTC ──GET /api/cron/sync-cards (Bearer CRON_SECRET)──�
 ```
 Idempotent everywhere (`upsert` keyed on `externalId`). Sources: Pokémon → pokemontcg.io (`POKEMON_TCG_API_KEY` optional, raises 30/min → 20k/day); One Piece → apitcg (`APITCG_API_KEY` required for OP sync).
 
+**Full One Piece catalog ingest (owner-run, NOT a cron).** The complete One Piece catalog is populated by `scripts/ingest-onepiece-catalog.ts`, which pages the Scrydex catalog-list endpoint (`fetchScrydexCatalogPage` → `GET /onepiece/v1/cards?q=&include=prices&pageSize=100&page=N`) and per-card upserts keyed on `externalId` (the Bandai code), with `game: ONE_PIECE` set explicitly, `number` = full Bandai code (`deriveStoredCardNumber`), set via `onePieceSetExternalId` (`onepiece-<slug>`), and every variant's images via `pickVariantImages`; invalid cards are dropped through `NormalizedCardSchema`. It is **credit-gated** (`assertScrydexCreditsApproved("standard", ceil(total_count/100))` ≈ 29 credits, budget ~35; the dry-run default makes ONE gated page-1 fetch and no writes) and **idempotent** (re-run → all `skipped`). This is what lets the scanner match arbitrary One Piece cards — it **supersedes** the thin ~45-query One Piece name-seed in `prisma/seed.ts`. It is One Piece only (Pokémon untouched), owner-run against the Mumbai DB, and is **never auto-run** in build/verify. See `scripts/INGEST-onepiece-catalog.md`.
+
 ### 4.2 Read path (search)
 
 ```
