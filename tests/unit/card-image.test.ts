@@ -5,6 +5,9 @@ import {
   isOnePieceCode,
   proxiedCardImage,
   cardImgById,
+  parseVariantImages,
+  onePieceVariantImageUrl,
+  VariantImagesReadSchema,
 } from "@/lib/utils/card-image";
 
 /**
@@ -141,5 +144,87 @@ describe("cardImgById", () => {
     expect(cardImgById("sv3pt5-199/ foo")).toBe(
       "/api/card-img/" + encodeURIComponent("sv3pt5-199/ foo")
     );
+  });
+});
+
+/**
+ * One Piece ALTERNATE-ART variant-image resolvers (the alt-art fix). The hero
+ * on the card-detail page must show the SELECTED variant's real art, falling
+ * back to the base-art chain when a variant has no stored image. These guard
+ * the single shared parser (never-throw) + the hero resolver (select +
+ * fallback). Uses the REAL OP08-023 shape (foil/altArt/reprint/specialAltArt).
+ */
+const OP08_023_MAP = {
+  foil: {
+    small: "https://images.scrydex.com/onepiece/op08-023-foil/small",
+    medium: "https://images.scrydex.com/onepiece/op08-023-foil/medium",
+    large: "https://images.scrydex.com/onepiece/op08-023-foil/large",
+  },
+  altArt: {
+    small: "https://images.scrydex.com/onepiece/op08-023-altart/small",
+    medium: "https://images.scrydex.com/onepiece/op08-023-altart/medium",
+    large: "https://images.scrydex.com/onepiece/op08-023-altart/large",
+  },
+  reprint: {
+    large: "https://images.scrydex.com/onepiece/op08-023-reprint/large",
+  },
+  specialAltArt: {
+    medium: "https://images.scrydex.com/onepiece/op08-023-specialaltart/medium",
+  },
+};
+
+describe("parseVariantImages", () => {
+  it("round-trips a valid OP08-023-style map (keeps only string URL fields)", () => {
+    const parsed = parseVariantImages(OP08_023_MAP);
+    expect(parsed.altArt).toEqual({
+      small: "https://images.scrydex.com/onepiece/op08-023-altart/small",
+      medium: "https://images.scrydex.com/onepiece/op08-023-altart/medium",
+      large: "https://images.scrydex.com/onepiece/op08-023-altart/large",
+    });
+    expect(parsed.reprint).toEqual({
+      large: "https://images.scrydex.com/onepiece/op08-023-reprint/large",
+    });
+    expect(parsed.specialAltArt).toEqual({
+      medium: "https://images.scrydex.com/onepiece/op08-023-specialaltart/medium",
+    });
+    // VariantImagesReadSchema itself accepts the same shape.
+    expect(VariantImagesReadSchema.safeParse(OP08_023_MAP).success).toBe(true);
+  });
+
+  it("returns {} for garbage / null / wrong-typed input WITHOUT throwing", () => {
+    expect(parseVariantImages(null)).toEqual({});
+    expect(parseVariantImages(undefined)).toEqual({});
+    expect(parseVariantImages(42)).toEqual({});
+    expect(parseVariantImages("nope")).toEqual({});
+    expect(parseVariantImages([1, 2, 3])).toEqual({});
+    // A wrong-typed URL field fails the schema → the whole map safely degrades
+    // to {} (never throws; caller falls back to base art). Extra unknown keys
+    // on an otherwise-valid entry are tolerated and simply ignored.
+    expect(parseVariantImages({ foil: { large: 123 } })).toEqual({});
+    expect(parseVariantImages({ foil: { small: "ok", extra: 1 } })).toEqual({
+      foil: { small: "ok" },
+    });
+  });
+});
+
+describe("onePieceVariantImageUrl", () => {
+  it("returns the selected variant's image (prefers large → medium → small)", () => {
+    expect(onePieceVariantImageUrl(OP08_023_MAP, "altArt")).toBe(
+      "https://images.scrydex.com/onepiece/op08-023-altart/large"
+    );
+    expect(onePieceVariantImageUrl(OP08_023_MAP, "foil")).toBe(
+      "https://images.scrydex.com/onepiece/op08-023-foil/large"
+    );
+    // specialAltArt has only `medium` → that is returned.
+    expect(onePieceVariantImageUrl(OP08_023_MAP, "specialAltArt")).toBe(
+      "https://images.scrydex.com/onepiece/op08-023-specialaltart/medium"
+    );
+  });
+
+  it("returns null for a variant with no stored image or a null variant (caller falls back)", () => {
+    expect(onePieceVariantImageUrl(OP08_023_MAP, "nonexistent")).toBeNull();
+    expect(onePieceVariantImageUrl(OP08_023_MAP, null)).toBeNull();
+    expect(onePieceVariantImageUrl(null, "altArt")).toBeNull();
+    expect(onePieceVariantImageUrl({}, "altArt")).toBeNull();
   });
 });

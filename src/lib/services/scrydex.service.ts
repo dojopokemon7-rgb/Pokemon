@@ -77,9 +77,22 @@ const PriceEntrySchema = z.object({
     .nullish(),
 });
 
+// Per-variant / base-card images (small/medium/large). RESILIENT: the whole
+// object is .nullish() and every URL is .nullish(), so a variant/card with no
+// images parses fine (never throws). Only used for the One Piece alt-art hero.
+const ScrydexImageSchema = z
+  .object({
+    small: z.string().nullish(),
+    medium: z.string().nullish(),
+    large: z.string().nullish(),
+  })
+  .nullish();
+
 const VariantSchema = z.object({
   name: z.string().default("normal"),
   prices: z.array(PriceEntrySchema).default([]),
+  // Per-variant art (alt-art fix). Absent on cards Scrydex has no image for.
+  images: ScrydexImageSchema,
 });
 
 const ScrydexCardSchema = z.object({
@@ -90,6 +103,8 @@ const ScrydexCardSchema = z.object({
   expansion: z
     .object({ id: z.string().nullish(), name: z.string().nullish(), code: z.string().nullish() })
     .nullish(), // set code/name — the match key
+  // Base-card art (fallback vocabulary); nullish so a card with no images parses.
+  images: ScrydexImageSchema,
   variants: z.array(VariantSchema).default([]),
 });
 
@@ -691,6 +706,36 @@ export function pickGradedPrice(
     }
   }
   return null;
+}
+
+// --- Variant images (One Piece alt-art fix) --------------------------------
+
+/**
+ * Build a display-only per-variant image map from a Scrydex card. Keyed by
+ * `variant.name` — the SAME vocabulary as the CurrentPrice.variant rows the
+ * price writer stores and as listVariants() on the detail page, so a selected
+ * variant looks up its art directly.
+ *
+ * RULE 2: only REAL Scrydex URLs are kept — a variant with no usable image URL
+ * is OMITTED (never a fabricated/placeholder URL). The result may be an empty
+ * `{}` when no variant has an image; the One-Piece-gated writer then skips the
+ * write so a prior backfilled map is never clobbered.
+ */
+export function pickVariantImages(
+  card: ScrydexCard
+): Record<string, { small?: string; medium?: string; large?: string }> {
+  const out: Record<string, { small?: string; medium?: string; large?: string }> = {};
+  for (const variant of card.variants) {
+    const img = variant.images;
+    if (!img) continue;
+    const entry: { small?: string; medium?: string; large?: string } = {};
+    if (typeof img.small === "string" && img.small) entry.small = img.small;
+    if (typeof img.medium === "string" && img.medium) entry.medium = img.medium;
+    if (typeof img.large === "string" && img.large) entry.large = img.large;
+    if (Object.keys(entry).length === 0) continue; // no usable URL → omit (RULE 2)
+    out[variant.name || "normal"] = entry;
+  }
+  return out;
 }
 
 // --- Vision ----------------------------------------------------------------

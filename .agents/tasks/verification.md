@@ -1,100 +1,101 @@
-# Verification — Dojo Performance Optimization (perf-optimize)
+# Verification — One Piece ALTERNATE-ART variant-image fix (op-altart)
 
-First iteration (no `review.json` present). Implemented the plan at
-`.agents/tasks/plan.md` against the evidence in `.agents/tasks/perf-findings.md`.
-All work done in the worktree `.worktrees/perf-optimize` on branch `perf-optimize`
-(baseline HEAD `165a26f`). Windows/PowerShell; `.env` copied into the worktree from
-the parent (gitignored, NOT committed) so the DB-dependent gates could run honestly.
+Worktree `d:\Pokemon\Pokemon\.worktrees\op-altart`, branch `op-altart`. Windows /
+PowerShell; the repo path contains a space — all paths quoted.
 
----
+## Iteration note
 
-## Changes implemented (smallest targeted diffs)
+The `.agents/tasks/review.json` on disk at the start of this run was a STALE copy
+from an unrelated `perf-optimize` task (its only finding + `reviewDoc` point at a
+`perf-optimize` worktree and an e2e portfolio-chart spec, nothing alt-art). The
+alt-art `design.md`/`requirements.md` the step prompt references do NOT exist in
+this worktree (the on-disk `design.md`/`requirements.md` are the earlier
+"External API Integration" task). Per `.agents/tasks/plan.md`'s own "Context note",
+the alt-art **plan.md step prompt is the authoritative spec**, and this was treated
+as the FIRST implementation iteration of the 14-step alt-art plan (none of those
+steps had been implemented on the branch — the branch HEAD was desktop/admin work).
 
-| Plan step | File(s) | What changed | Invariant kept |
-|---|---|---|---|
-| 1 — Want to Buy optimistic UI (USER-REPORTED) | `src/lib/hooks/useWantToBuy.ts` | Added `onMutate`/`onError` to BOTH add+remove mutations: `cancelQueries(["want-list"])`, snapshot `["want-list","BUY"]`, optimistic `setQueryData` (synthetic row on add / filter-out on remove), revert on error. Kept `onSettled: invalidate(["want-list"])`. The star now flips on tap instead of after POST + refetch. Fixed once at the shared hook → all 3 callers benefit. | No API/Zod/ownership/credit change; `["want-list"]` family invalidate preserved (ARCHITECTURE.md §7). |
-| 2 — composite index for `addedAt desc` | `prisma/schema.prisma` | Added `@@index([userId, addedAt])` on `UserCollection` (+ load-bearing comment). Pushed via `npm run db:push`. | Additive index only — no query/API/result-shape change. |
-| 3 — parallelize trending page-1 `count` | `src/app/api/cards/trending/route.ts` | Kick off the independent `card.count` (used for `hasMore`) BEFORE awaiting the ranked chain; `await` it only when computing `hasMore`. One fewer serial round-trip on the cold Explore load. | Pure await-reorder; identical result set, cursor math, Redis cache, offset pagination (AGENTS.md rule 12). |
-| test pin | `tests/unit/use-want-to-buy.test.tsx` (NEW) | Pins the optimistic behavior: isWanted flips true while the POST is held in-flight (deterministic deferred), and reverts on a 500. | — |
-| docs | `docs/ARCHITECTURE.md`, `docs/PERFORMANCE.md` | Added the new index to the "Indexes worth knowing" list; documented the three changes in PERFORMANCE.md "Added this pass". | AGENTS.md doc-sync rule. |
+## What was implemented (plan steps 1–13)
 
-### Not implemented (deliberate)
-- **Plan step 4 (optional) — collapse card-detail graded 9+10 into one request.**
-  Skipped. It is explicitly optional ("only if you want to halve the detail
-  page's graded network"). The two queries ALREADY run in parallel (independent
-  `useQuery`, not a waterfall) and the second server call is freshness-gated
-  (usually no HTTP/credit). Implementing it safely requires changing the route
-  response contract (`grades` CSV → `{prices:{...}}`), and the `graded-add-flow`
-  e2e intercepts ALL `**/graded**` calls returning the single `{price}` shape —
-  so the collapse would need either e2e-mock edits or dual-shape client handling.
-  Risk/complexity outweighs a micro-win on an already-parallel path. Left for a
-  follow-up if the detail-page graded HTTP is ever measured as a real cost.
+| Step | File(s) | Change |
+|---|---|---|
+| 1 Schema | `prisma/schema.prisma` | `variantImages Json?` on `Card` (next to image fields) + load-bearing comment; `npx prisma generate` OK. |
+| 2 Migration | `prisma/migrations/20250111000000_card_variant_images/{migration.sql,APPLY.md}` | Additive `ALTER TABLE "card" ADD COLUMN IF NOT EXISTS "variantImages" JSONB;` + APPLY.md (prefer `prisma migrate deploy`, Docker-psql fallback, verify query). Verified LOCALLY on throwaway `postgres:17-alpine` (see below). NOT applied to Mumbai. |
+| 3 Resolvers | `src/lib/utils/card-image.ts` | `VariantImagesReadSchema` (the ONE shared Zod schema), type `VariantImagesMap`, `parseVariantImages` (never-throws → `{}`), `onePieceVariantImageUrl` (select large→medium→small; null → fallback). |
+| 4 Scrydex schema | `src/lib/services/scrydex.service.ts` | `ScrydexImageSchema` (`.nullish()`); `images` added to `VariantSchema` + `ScrydexCardSchema` (resilient — no-images parses). |
+| 5 Mapper | `src/lib/services/scrydex.service.ts` | `pickVariantImages(card)` keyed by `variant.name`; RULE 2 (real URLs only, imageless omitted, may be `{}`). |
+| 6 Ingest | `src/lib/services/scrydex-pricing.service.ts` | After price write: write `Card.variantImages` ONLY when `game===ONE_PIECE` AND non-empty; best-effort/non-fatal; never Pokémon, never null/empty. |
+| 7 Cache schema | `src/app/api/cards/[id]/prices/route.ts` | `PricesCacheSchema.variantImages` = `VariantImagesReadSchema.nullable()` (REQUIRED-nullable → stale blob misses); `variantImages` added to both cached payloads + the catch payload. |
+| 8 Integration test | `tests/integration/scrydex-variant-images.test.ts` | REAL OP08-023 shape (foil/altArt/reprint/specialAltArt). Asserts schema parse, `pickVariantImages` captures altArt + omits imageless, write stores for One Piece / never Pokémon / never empty. Mocked Prisma + fetchers; no network/credits. |
+| 9 Unit test | `tests/unit/card-image.test.ts` | `parseVariantImages` round-trip + never-throw on garbage; `onePieceVariantImageUrl` select + fallback. |
+| 10 Display | `src/app/(dashboard)/search/[id]/page.tsx` | Hero resolves `onePieceVariantImageUrl(variantImages, variant)` for One Piece, falling back to `onePieceImageUrl(id) ?? PLACEHOLDER`; `variantImages` read from prices payload; `useEffect` resets `heroError` on src change. PRESERVED: hero `<img>` `maxWidth:"100%"`, single-hop `onError`, Pokémon `cardImgById` branch, VariantSelect/`listVariants`/`pickDefaultVariant`. |
+| 11 Selectability ceiling | `src/app/(dashboard)/search/[id]/page.tsx` | `ponytail:` comment at VariantSelect: priced-variant-only; upgrade = union `variantImages` keys into `listVariants`. Did NOT list unpriced variants. |
+| 12 Backfill | `scripts/backfill-onepiece-variant-images.ts` + `scripts/BACKFILL-onepiece-variant-images.md` | DRY-RUN default, One-Piece-scoped (`set.externalId` startsWith `"onepiece-"`), idempotent (canonical deep-equal, `{}`≡`null`), credit-GATED via `@/lib/services/scrydex-credit-gate` `assertScrydexCreditsApproved("standard", n)`, OWNER-RUN banner. NOT run; no live Scrydex calls in build/verify. |
+| 13 Docs | `docs/CODE_MAP.md`, `docs/ARCHITECTURE.md` | `Card.variantImages`, `pickVariantImages`, ingest write, `card-image.ts` resolvers + shared schema, prices-route payload/cache, detail hero flow, migration + backfill entries, accepted selectability ceiling. |
 
----
-
-## Commands run and results
-
-Run from the worktree root (`.worktrees/perf-optimize`).
+## Commands run and results (from the worktree root)
 
 | Command | Result |
 |---|---|
-| `npm run lint` | PASS (0 errors) |
-| `npm run type-check` (`tsc --noEmit`) | PASS |
-| `npm run test:unit` | PASS — **17 files, 101 tests** (was 16/99; +1 file +2 tests from the new optimistic test) |
-| `npm run test:integration` | PASS — **12 files, 92 tests** |
-| `npm run test:chart-accuracy` | PASS — 60/60 points within ±10% of the MOCKED Collectr reference (mean \|Δ\| 2.3%, max 5.0%). Run via `npx tsx --env-file=.env scripts/compare-chart-accuracy.ts` because the script does not import dotenv and a bare `npm run` leaves `DATABASE_URL` unset. |
-| `npm run db:push` | PASS — "Your database is now in sync" (applied `@@index([userId, addedAt])` to Supabase; Prisma Client regenerated). |
-| `npm run build` | PASS — production build compiles clean. |
-| `npm run test:e2e` | 39 passed, **1 failed** — the single failure is `portfolio-real-chart.spec.ts` (FR-5), UNRELATED to these changes (see below). All want-list (F-07) and show-more/trending (F-04) specs PASS. |
+| `npx prisma generate` | PASS — client regenerated with `variantImages`. |
+| `npm run type-check` (`tsc --noEmit`) | PASS — exit 0. |
+| `npm run lint` (`eslint .`) | PASS — exit 0, 0 errors. |
+| `npm run build` | PASS — exit 0, production build compiles clean (`/search/[id]` 7.79 kB / 143 kB First Load). |
+| `npm run test:unit` | PASS — **54 files, 407 tests** (includes the 6 new card-image alt-art cases). |
+| `npm run test:integration` | PASS — **52 files, 358 tests** (includes the 4 new `scrydex-variant-images` tests; `cache-revalidate-read` "valid blob" case updated to carry the new required-nullable `variantImages` key — a direct consequence of step 7, no behavior change). |
 
-### Environment note
-The worktree had an INCOMPLETE `node_modules` (`next/dist/shared`,`/lib`,`/client`
-missing) that broke `next build` with internal module-not-found errors. Ran
-`npm install` in the worktree to complete the install; build then succeeded. This
-was a pre-existing environment issue, not a code change.
+No pre-existing unrelated unit/integration failures were observed in this run; all
+suites are fully green. (e2e was NOT run here — it needs a reachable remote
+`DATABASE_URL` + standalone build; the schema migration is authored-not-applied, so
+e2e against Mumbai is out of scope for this build/verify.)
 
----
+## Local migration verification (throwaway postgres:17-alpine — NOT Mumbai)
 
-## Before / after bundle (First Load JS) — unchanged by design
+Ran a disposable container (`docker run -e POSTGRES_PASSWORD=pw postgres:17-alpine`),
+created a minimal `card` table, piped
+`prisma/migrations/20250111000000_card_variant_images/migration.sql` through
+`psql -v ON_ERROR_STOP=1`, then ran the APPLY.md verify query. Results:
 
-The findings proved bundle size was NOT the bottleneck; these changes are
-server/DB/cache-timing only, so first-load JS is unchanged.
+```
+CREATE TABLE
+ALTER TABLE
+=== VERIFY: column_name ===
+variantImages
+=== VERIFY: type/nullable ===
+jsonb|YES
+=== idempotency re-run ===
+NOTICE:  column "variantImages" of relation "card" already exists, skipping
+ALTER TABLE
+```
 
-| Route | Before (findings) | After (this build) |
-|---|---|---|
-| First Load JS shared by all | 103 kB | 103 kB |
-| `/search` | 128 kB | 129 kB |
-| `/dashboard` | 124 kB | 124 kB |
-| `/portfolio` | 125 kB | 125 kB |
-| `/search/[id]` | 121 kB | 122 kB |
-| Middleware | 34.2 kB | 34.1 kB |
+Column exists as `jsonb`, nullable, and the migration is idempotent on re-run. The
+container was stopped + removed afterward. **The migration was NOT applied to Mumbai**
+— the orchestrator runs `npx prisma migrate deploy` per APPLY.md.
 
-(The small per-route deltas are routine build-to-build chunk-hash variance, not a
-regression — shared JS is identical.)
+## Backfill status
 
-## Performance effect (what the changes remove)
+`scripts/backfill-onepiece-variant-images.ts` is authored, DRY-RUN-default,
+credit-gated, and was **NOT run** (no live Scrydex/Vision calls were made anywhere in
+build/verify; the tests mock Scrydex + Prisma). Owner runs it per
+`scripts/BACKFILL-onepiece-variant-images.md`.
 
-- **Want to Buy:** the star/label now reflects the tap IMMEDIATELY (optimistic
-  cache write) instead of after POST → `["want-list"]` invalidate → GET refetch
-  (two sequential round-trips on a phone). This is the user-reported symptom.
-- **Collection reads:** `where userId + orderBy addedAt desc` on the dashboard
-  SSR / portfolio / collection GET is now served by the composite index instead
-  of a per-request sort of the matched rows.
-- **Explore cold load:** trending page-1 does one fewer serial DB round-trip (the
-  `count` runs concurrently with the ranked/backfill fetch).
+## Accepted deviations (per step prompt)
 
----
+1. **scrydex-credit-gate path.** The backfill imports the credit gate from
+   `@/lib/services/scrydex-credit-gate` (it lives under `src/lib/services/`, NOT
+   `src/lib/utils/`) — the correct path used throughout the codebase.
+2. **Scanner candidate strip INTENTIONALLY NOT changed** — `src/app/api/cards/recognize/route.ts`
+   is untouched. Owner-approved descope: Scrydex Vision's `variant` cannot be reliably
+   mapped to a catalog variant name without a forbidden 5-credit probe, so the scan
+   candidate strip keeps showing the variant-blind base art. **FR-5 / AC-7 are NOT
+   blocking.** scan-allowance + credit-gate ordering untouched.
 
-## E2E failure analysis (not caused by this work)
+## Load-bearing invariants preserved
 
-`portfolio-real-chart.spec.ts > after adding a card, the portfolio chart renders a
-real series or the empty state` times out waiting for `role="img"` "Portfolio
-comparison chart". The error-context DOM snapshot shows the dashboard rendered
-fine (Market Value $350.00) with the **"Main"** collection selected showing "No
-cards in this collection yet" — the probe card was added to the default/uncat set,
-so the selected-collection chart shows the empty state, and the stricter
-`added → chart visible` assertion fails. This is a pre-existing expectation tied to
-collection selection on the dashboard. None of this pass's changes touch the
-portfolio page, the dashboard chart, collection selection, or the add route; the
-same assertion failed when the spec was re-run in isolation. Documented, not
-fabricated as passing.
+- Pokémon ingest/display byte-for-byte unchanged (every new write/read is One-Piece-gated).
+- RULE 2 (only real Scrydex URLs; absent stays absent — imageless variant omitted, empty map not written).
+- RULE 3 (`variantImages` is display data, not an id).
+- RULE 4 (Zod at every boundary incl. cache re-parse via the ONE shared `VariantImagesReadSchema`).
+- RULE 13 (images.scrydex.com flows through the existing proxy; no CSP/SSRF change).
+- e2e selectors/testids/text intact: `data-testid="variant-select"`, `ariaLabel="Price history chart"`,
+  want-to-buy-btn, hero `maxWidth:"100%"` + single-hop `onError`. No new dependency; square corners / `--color-dojo-*` tokens unchanged.

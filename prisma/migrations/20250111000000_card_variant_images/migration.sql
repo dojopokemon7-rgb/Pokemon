@@ -1,0 +1,29 @@
+-- Add Card.variantImages — per-variant image map for One Piece alt-art fix.
+-- =============================================================================
+-- WHY
+-- -----------------------------------------------------------------------------
+-- The One Piece card-detail hero was built from onePieceImageUrl(externalId),
+-- which is VARIANT-BLIND — it always resolved the base-art Bandai proxy, so an
+-- ALTERNATE-ART variant showed the base image. Scrydex returns per-variant
+-- `images` (small/medium/large) alongside each variant's prices; we persist
+-- that map here (keyed by the SAME variant vocabulary as CurrentPrice.variant)
+-- so the detail page can show the SELECTED variant's real art.
+--
+-- SHAPE: nullable JSONB. Written ONLY for One Piece cards and ONLY when the map
+-- is non-empty (the price writer never writes null; the backfill is the sole
+-- null-clearer). RULE 2 — only real images.scrydex.com URLs, absent stays
+-- absent. RULE 3 — display data, NOT an id.
+--
+-- This change is ADDITIVE (one new nullable column, no backfill, no drop, no
+-- type narrowing) — non-destructive. Reversal is simply:
+--   ALTER TABLE "card" DROP COLUMN "variantImages";
+--
+-- APPLY (orchestrator only — NEVER auto-run against Mumbai in any step):
+--   npx prisma migrate deploy
+-- See APPLY.md in this directory for the exact command + Docker-psql fallback
+-- and the verify query. This file only AUTHORS the migration; there is no live
+-- DB in the build sandbox. Verified LOCALLY against a throwaway postgres:17-alpine.
+--
+-- IDEMPOTENT: uses IF NOT EXISTS so a repeat `migrate deploy` is safe.
+
+ALTER TABLE "card" ADD COLUMN IF NOT EXISTS "variantImages" JSONB;

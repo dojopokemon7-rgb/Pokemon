@@ -28,6 +28,7 @@ import {
   fetchScrydexSoldListings,
   resolveScrydexCard,
   pickRawPrice,
+  pickVariantImages,
   type ScrydexCard,
 } from "./scrydex.service";
 import { redis, RedisKeys } from "@/lib/redis";
@@ -353,6 +354,31 @@ export async function pullAndStoreScrydexPrice(
       // no collision, but this also guards the delete→create race.
       prisma.currentPrice.createMany({ data: priceRows, skipDuplicates: true }),
     ]);
+  }
+
+  // --- 4b. One Piece per-variant images (alt-art fix) ----------------------
+  // Reuse the already-fetched scrydexCard (NO extra HTTP). Write Card.variantImages
+  // ONLY when BOTH hold: (a) this is a ONE PIECE card, and (b) the map is
+  // NON-EMPTY. The price writer is NEVER a null-clearer — only the backfill
+  // clears via canonical equality — so a transient imageless pull can never
+  // clobber a previously backfilled map. The Pokémon path is byte-for-byte
+  // untouched (gated out here). Best-effort: a failure must NOT fail the pull
+  // (mirrors the weeklyChange / scrydexId updates above).
+  if (card.game === Game.ONE_PIECE) {
+    const vimg = pickVariantImages(scrydexCard);
+    if (Object.keys(vimg).length > 0) {
+      try {
+        await prisma.card.update({
+          where: { id: card.id },
+          data: { variantImages: vimg },
+        });
+      } catch (imgErr) {
+        console.warn(
+          `[scrydex-pricing] variantImages update failed for ${card.externalId} (non-fatal):`,
+          imgErr instanceof Error ? imgErr.message : imgErr
+        );
+      }
+    }
   }
 
   // --- 5. Credit metering --------------------------------------------------

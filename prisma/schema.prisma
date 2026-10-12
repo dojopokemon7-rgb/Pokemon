@@ -187,6 +187,14 @@ model Card {
   tags       String[]   @default([])
   imageUrl   String?
   imageUrlHi String? // High-res image URL
+  // Display-only per-variant image map, keyed by Scrydex variant name (SAME
+  // vocabulary as CurrentPrice.variant / listVariants) → { small?, medium?,
+  // large? } of images.scrydex.com URLs. Additive, nullable; written ONLY for
+  // One Piece cards and ONLY when non-empty (pickVariantImages, scrydex-pricing
+  // single writer). RULE 2: only real Scrydex URLs, absent stays absent. RULE 3:
+  // this is DISPLAY DATA, never an id. Fixes the alt-art hero showing the base
+  // art because onePieceImageUrl(id) is variant-blind.
+  variantImages Json?
 
   // Pricing snapshot (latest market price cache).
   //   marketPrice   = last-known "Dojo Value" (our aggregated market price)

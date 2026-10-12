@@ -26,6 +26,74 @@
  * so a 404/blocked source at any tier automatically tries the next.
  */
 
+import { z } from "zod";
+
+// --- One Piece per-variant images (alt-art fix) ----------------------------
+//
+// Card.variantImages is a display-only map keyed by Scrydex variant name →
+// { small?, medium?, large? } of images.scrydex.com URLs. These URLs flow
+// through the existing CardImage/proxiedCardImage proxy (images.scrydex.com is
+// already CSP-allowlisted), so there is NO CSP/SSRF change here — this module
+// never fetches or proxies, it only RESOLVES which stored URL to show.
+//
+// VariantImagesReadSchema is the ONE source of truth for the stored shape; the
+// prices-route cache schema (PricesCacheSchema) reuses it so the two never
+// drift (RULE 4 — Zod at every boundary, incl. the Redis-cache re-parse).
+
+/** One entry's images — lenient: unknown keys tolerated, each URL optional. */
+const VariantImageEntrySchema = z
+  .object({
+    small: z.string().optional(),
+    medium: z.string().optional(),
+    large: z.string().optional(),
+  })
+  .catchall(z.unknown());
+
+/** The stored map: variant name → image entry. The single shared read schema. */
+export const VariantImagesReadSchema = z.record(VariantImageEntrySchema);
+
+export type VariantImagesMap = Record<
+  string,
+  { small?: string; medium?: string; large?: string }
+>;
+
+/**
+ * Parse a stored Card.variantImages blob into a VariantImagesMap. The ONE
+ * parser (reused everywhere). NEVER THROWS (RULE 4 never-throw contract):
+ * null / garbage / wrong-typed input → `{}`.
+ */
+export function parseVariantImages(raw: unknown): VariantImagesMap {
+  const parsed = VariantImagesReadSchema.safeParse(raw);
+  if (!parsed.success) return {};
+  const out: VariantImagesMap = {};
+  for (const [variant, entry] of Object.entries(parsed.data)) {
+    const e: { small?: string; medium?: string; large?: string } = {};
+    if (typeof entry.small === "string") e.small = entry.small;
+    if (typeof entry.medium === "string") e.medium = entry.medium;
+    if (typeof entry.large === "string") e.large = entry.large;
+    out[variant] = e;
+  }
+  return out;
+}
+
+/**
+ * Resolve the best stored image URL for a SELECTED One Piece variant, or null
+ * when that variant has no stored image (caller then falls back to the base-art
+ * chain). Prefers large → medium → small. A null variant returns null. Does NOT
+ * proxy — the caller passes the result through CardImage/proxiedCardImage, which
+ * already fronts images.scrydex.com (CSP-allowlisted; no CSP/SSRF change).
+ */
+export function onePieceVariantImageUrl(
+  variantImages: unknown,
+  variant: string | null
+): string | null {
+  if (!variant) return null;
+  const map = parseVariantImages(variantImages);
+  const entry = map[variant];
+  if (!entry) return null;
+  return entry.large ?? entry.medium ?? entry.small ?? null;
+}
+
 // Pokémon art CDNs we front with the same-origin /api/card-img proxy (anti-
 // hotlink + edge cache + SSRF-safe allowlist). MUST stay in exact sync with
 // the server allowlist in src/app/api/card-img/route.ts — exact host match,

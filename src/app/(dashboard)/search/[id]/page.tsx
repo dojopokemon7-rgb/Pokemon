@@ -28,7 +28,7 @@
  * curve. Population data + add-rows still follow the reference shape.
  */
 
-import { useState, useMemo, Suspense } from "react";
+import { useState, useMemo, useEffect, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
@@ -39,7 +39,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
-import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
+import { cardImgById, onePieceImageUrl, onePieceVariantImageUrl } from "@/lib/utils/card-image";
 import {
   buildChips,
   buildChartMatrix,
@@ -257,6 +257,9 @@ function CardDetailInner() {
   });
 
   const allPrices: CurrentPriceRow[] = useMemo(() => pricesData?.prices ?? [], [pricesData]);
+  // One Piece per-variant image map (null for Pokémon / un-backfilled cards).
+  // The hero resolves the SELECTED variant's art from it below.
+  const variantImages = pricesData?.variantImages ?? null;
   // Variants actually stored for this card (selector shows only when > 1). The
   // default equals the headline variant (pickDefaultVariant), so the headline
   // does not regress; the user's pick is scoped to this card id.
@@ -317,11 +320,24 @@ function CardDetailInner() {
   // If the proxy 404s (live-search card with no stored row) the plain <img>'s
   // onError swaps in the local placeholder, so no raw url ever leaks.
   const PLACEHOLDER = "/cards/card-front.webp";
+  // One Piece hero: when the SELECTED variant has a stored image, show THAT
+  // (alt-art fix — onePieceImageUrl(id) is variant-blind and always resolved
+  // the base art). Otherwise fall back to the variant-blind base-art Bandai
+  // proxy (then PLACEHOLDER). The URL is images.scrydex.com, rendered through
+  // the plain <img> → it's already CSP-allowlisted via the card-img proxy host
+  // list; no CSP/SSRF change. Pokémon branch (cardImgById) is unchanged.
   const heroSrc =
     game === "onepiece"
-      ? onePieceImageUrl(id) ?? PLACEHOLDER
+      ? onePieceVariantImageUrl(variantImages, variant) ??
+        onePieceImageUrl(id) ??
+        PLACEHOLDER
       : cardImgById(id);
   const [heroError, setHeroError] = useState(false);
+  // Reset the single-hop onError flag whenever the resolved src changes (e.g.
+  // the user switches variant) so a prior failed load re-attempts the new art.
+  useEffect(() => {
+    setHeroError(false);
+  }, [heroSrc]);
 
   const [flipped, setFlipped] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -681,7 +697,16 @@ function CardDetailInner() {
           </div>
         )}
 
-        {/* Variant selector — only when > 1 variant is stored for this card. */}
+        {/* Variant selector — only when > 1 variant is stored for this card.
+            ponytail: VariantSelect lists only PRICED variants (listVariants
+            derives from CurrentPrice rows, and the price writer drops
+            all-null-price variants), so an alt-art variant that has a stored
+            image but NO priced CurrentPrice row will NOT appear here — its art
+            is captured in variantImages but it's unselectable. Accepted
+            boundary. Ceiling: priced-variant-only selectability. Upgrade path:
+            surface image-only variants by unioning variantImages keys into
+            listVariants (a parallel variant source). Do NOT list unpriced
+            variants casually — it changes what the user can pick. */}
         <VariantSelect
           variants={variants}
           value={variant}
