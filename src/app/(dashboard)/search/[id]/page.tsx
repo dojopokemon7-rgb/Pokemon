@@ -561,6 +561,7 @@ function CardDetailInner() {
           title="Flip the card"
           style={{
             width: "206px",
+            maxWidth: "100%",
             aspectRatio: "660 / 921",
             objectFit: "cover",
             cursor: "pointer",

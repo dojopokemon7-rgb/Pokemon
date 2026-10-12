@@ -1322,7 +1322,7 @@ body {
    detail page's margin:12px -22px chart bleed land flush with the 560px edges. */
 @media (min-width: 1024px) {
   .dojo-detail-col {
-    max-width: 560px;
+    max-width: 960px;
     margin-inline: auto;
     padding-inline: 22px;
   }
