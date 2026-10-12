@@ -59,7 +59,18 @@ import { pullAndStoreScrydexPrice } from "@/lib/services/scrydex-pricing.service
 // Zod schema (same module) parses the raw payload before we hand the typed card
 // around — proven by fetchScrydexCardById in the real client. Here we assert the
 // mapper against a typed fixture matching the REAL OP08-023 shape.
-const img = (slug: string) => ({
+// REAL Scrydex shape: `images` is an ARRAY of { type, small, medium, large };
+// the display art is the type:"front" entry. `img()` builds that single-front
+// array; `expectedMap()` is the { small, medium, large } the mapper extracts.
+const img = (slug: string) => [
+  {
+    type: "front",
+    small: `https://images.scrydex.com/onepiece/${slug}/small`,
+    medium: `https://images.scrydex.com/onepiece/${slug}/medium`,
+    large: `https://images.scrydex.com/onepiece/${slug}/large`,
+  },
+];
+const expectedMap = (slug: string) => ({
   small: `https://images.scrydex.com/onepiece/${slug}/small`,
   medium: `https://images.scrydex.com/onepiece/${slug}/medium`,
   large: `https://images.scrydex.com/onepiece/${slug}/large`,
@@ -81,10 +92,12 @@ const OP08_023: ScrydexCard = {
       ],
     },
     { name: "altArt", images: img("op08-023-altart"), prices: [] },
-    // reprint has ONLY a large URL (partial image object).
+    // reprint's front entry has ONLY a large URL (partial image entry).
     {
       name: "reprint",
-      images: { large: "https://images.scrydex.com/onepiece/op08-023-reprint/large" },
+      images: [
+        { type: "front", large: "https://images.scrydex.com/onepiece/op08-023-reprint/large" },
+      ],
       prices: [],
     },
     // specialAltArt has NO images → must be OMITTED from the map.
@@ -130,9 +143,9 @@ beforeEach(() => {
 describe("Scrydex schema + pickVariantImages (OP08-023)", () => {
   it("captures per-variant images and omits an imageless variant (RULE 2)", () => {
     const map = pickVariantImages(OP08_023);
-    // altArt image captured (prefers all three sizes).
-    expect(map.altArt).toEqual(img("op08-023-altart"));
-    expect(map.foil).toEqual(img("op08-023-foil"));
+    // altArt front-entry image captured (prefers all three sizes).
+    expect(map.altArt).toEqual(expectedMap("op08-023-altart"));
+    expect(map.foil).toEqual(expectedMap("op08-023-foil"));
     // reprint keeps only its single present URL.
     expect(map.reprint).toEqual({
       large: "https://images.scrydex.com/onepiece/op08-023-reprint/large",

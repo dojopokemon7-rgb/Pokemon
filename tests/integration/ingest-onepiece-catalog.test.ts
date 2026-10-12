@@ -30,9 +30,10 @@ import {
 import { fetchScrydexCatalogPage, type ScrydexCard } from "@/lib/services/scrydex.service";
 import { Game } from "@prisma/client";
 
-// A real-shaped OP08-023 catalog card: real images.scrydex.com base art +
-// two variants (normal + alt-art) each with images, the variants[].images
-// shape commit 66c97c4 added.
+// A real-shaped OP08-023 catalog card: REAL Scrydex `images` ARRAY shape — each
+// `images` is [{ type:"front", small, medium, large }] (base + each variant),
+// the live contract this fix corrects (the old object shape only "worked" in
+// the mock). Two variants (normal + alt-art) carry their own front-entry art.
 const OP08_023: ScrydexCard = {
   id: "OP08-023",
   name: "Monkey D. Luffy",
@@ -40,17 +41,17 @@ const OP08_023: ScrydexCard = {
   rarity: "Super Rare",
   types: ["Red"],
   expansion: { name: "Two Legends" },
-  images: { large: "https://images.scrydex.com/onepiece/OP08-023_large.webp" },
+  images: [{ type: "front", large: "https://images.scrydex.com/onepiece/OP08-023_large.webp" }],
   variants: [
     {
       name: "normal",
       prices: [{ type: "raw", market: 12.5, currency: "USD" }],
-      images: { large: "https://images.scrydex.com/onepiece/OP08-023_large.webp" },
+      images: [{ type: "front", large: "https://images.scrydex.com/onepiece/OP08-023_large.webp" }],
     },
     {
       name: "alt-art",
       prices: [],
-      images: { large: "https://images.scrydex.com/onepiece/OP08-023_alt_large.webp" },
+      images: [{ type: "front", large: "https://images.scrydex.com/onepiece/OP08-023_alt_large.webp" }],
     },
   ],
 } as unknown as ScrydexCard;

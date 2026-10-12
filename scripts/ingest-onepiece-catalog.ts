@@ -39,6 +39,7 @@ import { prisma } from "../src/lib/db";
 import {
   fetchScrydexCatalogPage,
   pickVariantImages,
+  pickImageEntry,
   pickRawPrice,
   type ScrydexCard,
 } from "../src/lib/services/scrydex.service";
@@ -76,9 +77,12 @@ export interface MappedOnePieceCard {
   variantImages: VariantImageMap;
 }
 
-/** First non-empty of the base card's large/medium/small image URLs. */
+/**
+ * First non-empty of the base card's large/medium/small image URLs. Real
+ * Scrydex shape: card.images is an ARRAY — read the front entry (pickImageEntry).
+ */
 function pickBaseImageUrl(card: ScrydexCard): string | null {
-  const img = card.images;
+  const img = pickImageEntry(card.images);
   if (!img) return null;
   if (typeof img.large === "string" && img.large) return img.large;
   if (typeof img.medium === "string" && img.medium) return img.medium;

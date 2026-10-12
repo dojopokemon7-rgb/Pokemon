@@ -77,16 +77,32 @@ const PriceEntrySchema = z.object({
     .nullish(),
 });
 
-// Per-variant / base-card images (small/medium/large). RESILIENT: the whole
-// object is .nullish() and every URL is .nullish(), so a variant/card with no
-// images parses fine (never throws). Only used for the One Piece alt-art hero.
-const ScrydexImageSchema = z
-  .object({
-    small: z.string().nullish(),
-    medium: z.string().nullish(),
-    large: z.string().nullish(),
-  })
-  .nullish();
+// Per-variant / base-card images. REAL Scrydex shape (verified live): `images`
+// is an ARRAY of entries { type, small, medium, large } — the front art is the
+// entry with type:"front" (else take the first entry). RESILIENT: the whole
+// array is .nullish() and every field is .nullish(), so a variant/card with no
+// images (absent or []) parses fine (never throws). Only used for the One Piece
+// alt-art hero. Read via pickImageEntry() below.
+const ScrydexImageEntrySchema = z.object({
+  type: z.string().nullish(),
+  small: z.string().nullish(),
+  medium: z.string().nullish(),
+  large: z.string().nullish(),
+});
+const ScrydexImageSchema = z.array(ScrydexImageEntrySchema).nullish();
+
+/**
+ * Pick the display image entry from a Scrydex `images` array: the type:"front"
+ * entry if present, else the first entry, else null. Shared by every consumer
+ * that reads a card/variant's art — never throws, returns null for an absent or
+ * empty array (RULE 2: no fabrication).
+ */
+export function pickImageEntry(
+  images: z.infer<typeof ScrydexImageSchema>
+): z.infer<typeof ScrydexImageEntrySchema> | null {
+  if (!images || images.length === 0) return null;
+  return images.find((i) => i.type === "front") ?? images[0];
+}
 
 const VariantSchema = z.object({
   name: z.string().default("normal"),
@@ -793,7 +809,8 @@ export function pickVariantImages(
 ): Record<string, { small?: string; medium?: string; large?: string }> {
   const out: Record<string, { small?: string; medium?: string; large?: string }> = {};
   for (const variant of card.variants) {
-    const img = variant.images;
+    // Real Scrydex shape: variant.images is an ARRAY — take the front entry.
+    const img = pickImageEntry(variant.images);
     if (!img) continue;
     const entry: { small?: string; medium?: string; large?: string } = {};
     if (typeof img.small === "string" && img.small) entry.small = img.small;
