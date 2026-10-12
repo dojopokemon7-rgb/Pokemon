@@ -146,7 +146,7 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 | Dashboard chart data | Real-history-only (scrydex-migration removed `generateMockChartData`): dashboard + portfolio charts are built from real `PricingHistory` via `buildCollectionHistories` (no synthetic PRNG); seeded `PricingHistory` exists only for 10 harness cards |
 | Chart accuracy gate | Validates against a MOCKED Collectr reference in `scripts/compare-chart-accuracy.ts` |
 | Graded metadata | Stored in `UserCollection.condition` ("PSA 10") + `Card.rarity`; dedicated grade columns are the planned migration |
-| `/admin/transactions` | Mock ledger mixing real users + synthetic rows, clearly banner-labeled |
+| `/admin/transactions` | DE-MOCKED (admin-reskin): now "Recorded Sales" — real `UserCollection` rows where `isSold` (orderBy `soldAt` desc, take 100). Mock ledger / synthetic rows / demo banner removed; honest "No recorded sales yet." empty state (RULE 2) |
 | Onboarding | NOW account-persisted (scrydex-migration): `User.onboardingCompletedAt` + `GET/POST /api/users/me/onboarding` (idempotent; continue→/collection/add, skip→/dashboard). Replaces the old localStorage flag — survives across devices |
 | `PATCH /api/users/me` | 501 stub (profile edit still pending; `User.displayCurrency` column added for USD/EUR but PATCH not yet wired) |
 | OTP/phone auth | Plugin disabled for MVP (no SMS provider); `/otp`, `/verify-otp` redirect to `/profile` |

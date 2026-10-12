@@ -120,7 +120,7 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 | `cards/_components/EditCardButton.tsx` | — | C | Modal editing Market Price + Image URL → `useMutation` `PATCH /api/admin/cards/{id}` → `router.refresh()`. |
 | `users/page.tsx` | `/admin/users` | S | User list + `getPortfolioValuesByUser(ids)` (one grouped SQL — avoids N+1). |
 | `users/[id]/page.tsx` | `/admin/users/[id]` | S | `getUserFinancials(id)` (value/invested/P&L) + portfolio table. "Suspend Account" is a disabled placeholder. |
-| `transactions/page.tsx` | `/admin/transactions` | S | **Mock ledger** (real users + synthetic rows), gold "Demo data" banner. |
+| `transactions/page.tsx` | `/admin/transactions` | S | **Recorded Sales** — real `UserCollection` rows where `isSold` (orderBy `soldAt` desc, take 100). User / Card / Sale Price / Sold columns; honest "No recorded sales yet." empty state. No mock ledger, no synthetic rows, no demo banner (de-mocked). |
 | `audit-logs/page.tsx` | `/admin/audit-logs` | S | Real `AuditLog` rows (take 100) written by `writeAuditLog`; `ACTION_LABELS` map + change summaries. |
 
 ---
