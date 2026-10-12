@@ -1319,7 +1319,7 @@ body {
 
 /* ── Reading-width cap for detail / confirmation columns (desktop only) ──
    Base = nothing (mobile + tablet unchanged). padding-inline:22px makes the
-   detail page's margin:12px -22px chart bleed land flush with the 560px edges. */
+   detail page's margin:12px -22px chart bleed land flush with the 960px edges. */
 @media (min-width: 1024px) {
   .dojo-detail-col {
     max-width: 960px;
