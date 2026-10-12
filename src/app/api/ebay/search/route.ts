@@ -27,6 +27,7 @@ import {
   type NormalizedEbayListing,
 } from "@/lib/services/ebay.service";
 import { redis, RedisKeys } from "@/lib/redis";
+import { enforceRateLimit, searchTier, clientIp } from "@/lib/utils/rate-limit";
 
 interface EbaySearchOk {
   listings: NormalizedEbayListing[];
@@ -54,6 +55,12 @@ function badRequest(message: string): NextResponse {
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
+  // F-2: per-IP rate limit FIRST — public/anonymous compare-on-eBay route (no
+  // auth wall). Fail-open on Redis outage (RULE 1). Keyed by IP only; shares the
+  // `search` bucket with cards/search's IP fallback.
+  const limited = await enforceRateLimit(request, searchTier(), { kind: "ip", id: clientIp(request) });
+  if (limited) return limited;
+
   const sp = request.nextUrl.searchParams;
 
   const nameParam = (sp.get("name") ?? sp.get("q") ?? "").trim();

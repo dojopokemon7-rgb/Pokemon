@@ -407,8 +407,13 @@ export async function PATCH(request: Request): Promise<NextResponse> {
     return NextResponse.json({ success: true }); // nothing to record
   }
   try {
-    await prisma.scanFeedback.update({
-      where: { id: feedbackId },
+    // F-3: scope the write to the caller — a non-owned/cross-user feedbackId
+    // now matches 0 rows (silent no-op), closing the cross-user write while
+    // preserving the best-effort contract. An anonymous caller (userId null)
+    // still labels its own anonymous rows (ScanFeedback.userId IS NULL).
+    const userId = await optionalUserId(request);
+    await prisma.scanFeedback.updateMany({
+      where: { id: feedbackId, userId },
       data: { pickedCardId },
     });
   } catch (err) {
