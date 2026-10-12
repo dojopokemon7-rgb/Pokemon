@@ -544,9 +544,7 @@ function CardDetailInner() {
   );
 
   return (
-    <div className="dojo-detail-page" style={{ paddingBottom: "24px" }}>
-      <div className="dojo-detail-grid">
-      <div className="dojo-detail-hero">
+    <div className="dojo-detail-col" style={{ paddingBottom: "24px" }}>
       {/* ── Hero art with overlaid controls ── */}
       <div style={{ position: "relative", display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
         <img
@@ -642,8 +640,6 @@ function CardDetailInner() {
           )}
         </div>
       </div>
-      </div>
-      <div className="dojo-detail-info">
 
       {/* ── Info block — full-bleed dark strip ── */}
       <div style={{ margin: "22px 0 0", padding: "18px 22px 10px", background: "var(--color-dojo-card)", borderTop: "1px solid var(--color-dojo-stroke)", borderBottom: "1px solid var(--color-dojo-stroke)" }}>
@@ -920,8 +916,6 @@ function CardDetailInner() {
       {/* Single toast channel — add confirmations, favorites feedback,
           and Report submissions (Phase 3). */}
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
-      </div>
-      </div>
     </div>
   );
 }

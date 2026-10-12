@@ -250,7 +250,7 @@ export function AreaChart({
     }));
     return (
       <div
-        style={{ width: "100%", maxWidth: w, fontFamily: FONT_BODY }}
+        style={{ width: "100%", fontFamily: FONT_BODY }}
         role={ariaLabel ? "img" : undefined}
         aria-label={ariaLabel}
       >
@@ -441,7 +441,7 @@ export function AreaChart({
 
   return (
     <div
-      style={{ width: "100%", maxWidth: w, fontFamily: FONT_BODY }}
+      style={{ width: "100%", fontFamily: FONT_BODY }}
       role={ariaLabel ? "img" : undefined}
       aria-label={ariaLabel}
     >

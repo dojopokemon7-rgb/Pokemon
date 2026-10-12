@@ -1317,58 +1317,14 @@ body {
   }
 }
 
-/* ── Reading-width cap for the collection/add confirmation column (desktop) ──
-   Base = nothing (mobile + tablet unchanged). padding-inline:22px keeps the
-   margin:12px -22px bleeds flush with the column edges. The old 560px detail
-   cap moved onto the two-column .dojo-detail-grid layout below. */
+/* ── Reading-width cap for detail / confirmation columns (desktop only) ──
+   Base = nothing (mobile + tablet unchanged). padding-inline:22px makes the
+   detail page's margin:12px -22px chart bleed land flush with the 560px edges. */
 @media (min-width: 1024px) {
   .dojo-detail-col {
-    max-width: 720px;
+    max-width: 560px;
     margin-inline: auto;
     padding-inline: 22px;
-  }
-}
-
-/* ── Card-detail two-column product layout (desktop only) ──
-   Base reproduces current mobile stacking (block / unstyled page wrapper) so
-   <1024px is byte-for-byte unchanged. At >=1024px the hero sits sticky on the
-   left and the info/price/chart/controls column flows on the right. */
-.dojo-detail-grid {
-  display: block;
-}
-.dojo-detail-page {
-}
-
-@media (min-width: 1024px) {
-  .dojo-detail-grid {
-    display: grid;
-    grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
-    gap: 48px;
-    align-items: start;
-    padding-top: 8px;
-  }
-  .dojo-detail-hero {
-    position: sticky;
-    top: 8px;
-  }
-  .dojo-detail-grid .dojo-detail-hero img {
-    width: 100% !important;
-    max-width: 360px;
-  }
-  .dojo-detail-info {
-    padding-left: 22px;
-    padding-right: 22px;
-    min-width: 0;
-  }
-  .dojo-detail-info [role="img"][aria-label="Price history chart"] {
-    max-width: none;
-  }
-}
-
-@media (min-width: 1536px) {
-  .dojo-detail-grid {
-    grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
-    gap: 64px;
   }
 }
 
@@ -1413,13 +1369,5 @@ body {
   .dojo-content-narrow {
     max-width: 860px;
     margin-inline: auto;
-  }
-}
-
-/* ── Portfolio comparison chart: release the 560px cap inside the desktop
-   two-column grid so it fills its column. */
-@media (min-width: 1024px) {
-  .dojo-desktop-grid [role="img"][aria-label="Portfolio comparison chart"] {
-    max-width: none;
   }
 }
