@@ -963,7 +963,7 @@ export default function DashboardClient({
           <div className="dojo-desktop-grid">
             <div>
               {/* ── Stat Card (Collectr-style matching Image 1) ── */}
-              <div style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "16px 18px", marginTop: "14px" }}>
+              <div className="dojo-dash-statcard" style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "16px 18px", marginTop: "14px" }}>
                 {/* Header: Collection indicator + Eye toggle */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>

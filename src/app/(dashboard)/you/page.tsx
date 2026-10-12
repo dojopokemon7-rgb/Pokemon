@@ -175,7 +175,7 @@ export default function YouAccountPage() {
   }
 
   return (
-    <div style={{ padding: "6px 22px 24px" }}>
+    <div className="dojo-content-narrow" style={{ padding: "6px 22px 24px" }}>
       {/* ── Profile header ── */}
       <div style={{ display: "flex", gap: "15px", alignItems: "center", marginTop: "16px" }}>
         <div

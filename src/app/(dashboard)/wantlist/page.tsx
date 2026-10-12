@@ -12,7 +12,7 @@ import { WantList } from "@/components/WantList";
 
 export default function WantListPage() {
   return (
-    <div style={{ padding: "18px 22px 24px" }}>
+    <div className="dojo-content-narrow" style={{ padding: "18px 22px 24px" }}>
       <WantList />
     </div>
   );
