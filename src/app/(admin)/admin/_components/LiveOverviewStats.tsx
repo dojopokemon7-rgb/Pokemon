@@ -150,7 +150,8 @@ function StatCard({
         className="dojo-count-up"
         style={{
           marginTop: "14px",
-          fontFamily: "var(--font-serif)",
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
           fontSize: "38px",
           lineHeight: 1.1,
           color: highlight

@@ -259,7 +259,9 @@ function StatCard({
       <div
         style={{
           marginTop: "14px",
-          fontFamily: "var(--font-serif)",
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontVariantNumeric: "tabular-nums",
           fontSize: "30px",
           lineHeight: 1.1,
           color: highlight

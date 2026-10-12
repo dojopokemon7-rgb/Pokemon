@@ -262,7 +262,8 @@ function StatCard({
         className="dojo-count-up"
         style={{
           marginTop: "12px",
-          fontFamily: "var(--font-serif)",
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
           fontSize: "32px",
           lineHeight: 1.15,
           color: highlight
@@ -313,7 +314,8 @@ function ProfitLossCard({ profitLoss }: { profitLoss: number | null }) {
         className="dojo-count-up"
         style={{
           marginTop: "12px",
-          fontFamily: "var(--font-serif)",
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
           fontSize: "32px",
           lineHeight: 1.15,
           color,
