@@ -262,6 +262,13 @@ export function AreaChart({
           <div style={{ position: "relative", marginLeft: showYLabels ? Y_AXIS_GUTTER : 0 }}>
           <svg
             viewBox={`0 0 ${w} ${h}`}
+            // preserveAspectRatio="none": stretch the 560-unit viewBox to the
+            // full container width (not the default "xMidYMid meet", which
+            // would letterbox the graphics at 560px centered inside a wider
+            // box and desync them from the full-width %-based HTML overlays —
+            // tooltip + x-axis ticks). "none" keeps the SVG graphics in the
+            // SAME horizontal coordinate space as those overlays at any width.
+            preserveAspectRatio="none"
             width="100%"
             height={h}
             style={{ display: "block", overflow: "visible" }}
@@ -453,6 +460,13 @@ export function AreaChart({
         <div style={{ position: "relative", marginLeft: showYLabels ? Y_AXIS_GUTTER : 0 }}>
         <svg
           viewBox={`0 0 ${w} ${h}`}
+          // preserveAspectRatio="none": stretch the 560-unit viewBox to the
+          // full container width (not the default "xMidYMid meet", which would
+          // letterbox the graphics at 560px centered inside a wider box and
+          // desync them from the full-width %-based HTML overlays — tooltip +
+          // x-axis ticks). "none" keeps the SVG graphics in the SAME horizontal
+          // coordinate space as those overlays at any width.
+          preserveAspectRatio="none"
           width="100%"
           height={h}
           style={{ display: "block", overflow: "visible" }}
