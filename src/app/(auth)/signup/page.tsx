@@ -104,8 +104,13 @@ export default function SignUpPage() {
       return;
     }
 
-    // Successful sign-up — redirect to Create Profile (Screen 05)
-    router.push("/profile");
+    // Successful sign-up — under requireEmailVerification the account is now
+    // CREATED but UNVERIFIED (signUp.email returns NO session, so we do no
+    // session-dependent work here). Better Auth already dispatched the 6-digit
+    // verification code (sendVerificationOnSignUp) before this redirect fires.
+    // Send the user to /verify-otp to enter it; verifying logs them in and
+    // continues to /profile → /search.
+    router.push(`/verify-otp?email=${encodeURIComponent(email)}`);
   }
 
   return (

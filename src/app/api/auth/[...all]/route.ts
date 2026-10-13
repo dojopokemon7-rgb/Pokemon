@@ -38,7 +38,15 @@ export const GET = handlers.GET;
  */
 export async function POST(request: Request): Promise<Response> {
   const { pathname } = new URL(request.url);
-  if (pathname.startsWith("/api/auth/sign-in") || pathname.startsWith("/api/auth/sign-up")) {
+  if (
+    pathname.startsWith("/api/auth/sign-in") ||
+    pathname.startsWith("/api/auth/sign-up") ||
+    // Email-OTP verification: send-verification-otp + verify-email. The plugin
+    // also registers its own 3/60s per-path cap, but that is in-memory /
+    // per-instance; this shared Redis authTier IP cap is the cross-instance net
+    // and also covers dev (where the plugin cap is off). See design.md §5.
+    pathname.startsWith("/api/auth/email-otp")
+  ) {
     const limited = await enforceRateLimit(request, authTier(), {
       kind: "ip",
       id: clientIp(request),

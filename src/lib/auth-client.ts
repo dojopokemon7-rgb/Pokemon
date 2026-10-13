@@ -18,6 +18,7 @@
 "use client";
 
 import { createAuthClient } from "better-auth/react";
+import { emailOTPClient } from "better-auth/client/plugins";
 
 // Use the current browser origin at runtime so the auth client always
 // calls the same domain the page is served from. Falls back to
@@ -33,9 +34,15 @@ export const authClient = createAuthClient({
   baseURL: getBaseUrl(),
 
   // Client-side plugins MUST mirror the server-side plugins in `lib/auth.ts`.
-  // Phone Number / OTP is disabled for MVP — re-enable in Week 4.
   plugins: [
-    // ----- Phone Number / OTP (client) — disabled for MVP -----
+    // ----- Email OTP (client) — mirrors the server emailOTP plugin -----
+    // The plugin id "email-otp" maps to the client namespace `emailOtp`
+    // (lowercase), exposing authClient.emailOtp.sendVerificationOtp(...) and
+    // authClient.emailOtp.verifyEmail(...). NOTE: authClient.emailOTP
+    // (uppercase) is UNDEFINED at runtime — always use the lowercase namespace.
+    emailOTPClient(),
+
+    // ----- Phone Number / OTP (client) — still disabled for MVP -----
     // import { phoneNumberClient } from "better-auth/client/plugins";
     // phoneNumberClient(),
 

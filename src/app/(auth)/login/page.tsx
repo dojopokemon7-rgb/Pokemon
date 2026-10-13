@@ -128,6 +128,14 @@ function LoginContent() {
     });
 
     if (authError) {
+      // Unverified credential account (Phase A gate) → 403 EMAIL_NOT_VERIFIED.
+      // Re-send a fresh code (the signup code may have expired / been lost) and
+      // route to /verify-otp instead of showing a generic error.
+      if (authError.code === "EMAIL_NOT_VERIFIED") {
+        await authClient.emailOtp.sendVerificationOtp({ email, type: "email-verification" });
+        router.push(`/verify-otp?email=${encodeURIComponent(email)}`);
+        return;
+      }
       setError(authError.message ?? "Sign in failed. Please try again.");
       setLoading(false);
       return;

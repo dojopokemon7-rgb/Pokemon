@@ -1,6 +1,7 @@
 import { test as setup, expect } from "@playwright/test";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { execSync } from "node:child_process";
 import { STORAGE_STATE } from "./constants";
 
 /**
@@ -34,6 +35,13 @@ setup("authenticate", async ({ request }) => {
     headers,
     failOnStatusCode: false,
   });
+
+  // Phase A gate: requireEmailVerification:true makes the sign-in below 403
+  // unless the address is verified. The prod e2e build has no dev-log OTP to
+  // read, so mark THIS dedicated test user verified out-of-band (same seam the
+  // setup already uses to provision the credentialed user). Prod security is
+  // untouched — only this test user is flipped.
+  execSync("npx tsx e2e/fixtures/verify-e2e-user.ts", { stdio: "inherit" });
 
   // Sign in to set the session cookie ON THIS SAME request context.
   const signIn = await request.post("/api/auth/sign-in/email", {

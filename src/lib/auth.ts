@@ -35,9 +35,11 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { APIError } from "better-auth/api";
+import { emailOTP } from "better-auth/plugins";
 import { prisma } from "@/lib/db";
 import { isSignupAllowed } from "@/lib/utils/signup-allowlist";
 import { chooseResetDelivery } from "@/lib/utils/reset-email";
+import { sendOtpEmail } from "@/lib/utils/ses-email";
 
 // =============================================================
 // SMS Dispatch Function (plug-and-play)
@@ -207,8 +209,13 @@ export const auth = betterAuth({
   // --------------------------------------------------------
   emailAndPassword: {
     enabled: true,
-    // Require email verification before login (set to false for faster local dev)
-    requireEmailVerification: false,
+    // Phase A: require a verified email before a CREDENTIAL sign-in succeeds.
+    // Read ONLY on the email/password sign-in path (sign-in.mjs:312) — Google
+    // OAuth (pre-verified by the provider) and admins (created with
+    // `emailVerified: true` by scripts/create-admin.ts) are unaffected. An
+    // unverified credential sign-in 403s with code "EMAIL_NOT_VERIFIED"; the
+    // login page catches that and routes to /verify-otp (see login/page.tsx).
+    requireEmailVerification: true,
     // Minimum password length
     minPasswordLength: 8,
     // Maximum password length (bcrypt limit is 72 bytes)
@@ -292,6 +299,23 @@ export const auth = betterAuth({
   },
 
   // --------------------------------------------------------
+  // Core: Email Verification
+  // --------------------------------------------------------
+  // Create the session + set the cookie when /email-otp/verify-email succeeds,
+  // so a correct OTP logs the user in. This is REQUIRED under the Phase A gate:
+  // with requireEmailVerification:true the signUp.email response carries NO
+  // session, so verify is the only point a credential user gets one before
+  // their first real sign-in. Read ONLY on the verify-email path
+  // (plugins/email-otp/routes.mjs:327) — WITHOUT it, verify marks the user
+  // verified but returns token:null and sets no cookie, leaving them logged OUT.
+  // We deliberately do NOT set `sendVerificationEmail` here: leaving it unset
+  // keeps the credential sign-in gate on its hard EMAIL_NOT_VERIFIED 403 branch
+  // (sign-in.mjs:313) rather than the softer resend-and-continue branch.
+  emailVerification: {
+    autoSignInAfterVerification: true,
+  },
+
+  // --------------------------------------------------------
   // Social Providers (OAuth)
   // --------------------------------------------------------
   // Registering Google here makes Better Auth expose the social sign-in
@@ -310,10 +334,37 @@ export const auth = betterAuth({
   // Plugins (plug-and-play — append to this array to add auth methods)
   // --------------------------------------------------------
   plugins: [
-    // ----- 1. Phone Number / OTP -----
-    // Disabled for MVP — re-enable in Week 4 when SMS provider is configured.
-    // To re-enable: uncomment the import above and the phoneNumber() entry below,
-    // and populate SMS_PROVIDER_* vars in .env.
+    // ----- 1. Email OTP (email-verification at registration — Phase A) -----
+    // Emails a 6-digit code on sign-up (sendVerificationOnSignUp) that the user
+    // enters on /verify-otp to verify their email. Codes are stored in the
+    // existing `Verification` table (value `${otp}:0`, trailing attempt
+    // counter) — no schema change. Delivery routes through sendOtpEmail (SES
+    // in Phase B; dev-log console in Phase A). storeOTP is left at its default
+    // "plain" (the e2e read-otp fixture depends on it); disableSignUp is NOT
+    // set (it only governs the sign-IN-via-OTP account-creation path, unused
+    // here).
+    emailOTP({
+      otpLength: 6,
+      // 10-minute validity — long enough for real inbox latency, short enough
+      // that a leaked code expires fast (upper end of the 300–600s envelope;
+      // email is slower than SMS).
+      expiresIn: 600,
+      // Brute-force cap: the 4th wrong guess invalidates the code and the user
+      // must request a new one. Layered on top of the per-IP rate limiter.
+      allowedAttempts: 3,
+      sendVerificationOnSignUp: true,
+      // Invoked as sendVerificationOTP({ email, otp, type }, ctx). On the
+      // sign-up auto-send path `type` is always "email-verification"; we accept
+      // `ctx` for signature fidelity but Phase A does not use it.
+      sendVerificationOTP: async ({ email, otp, type }, _ctx) => {
+        await sendOtpEmail({ to: email, code: otp, type });
+      },
+    }),
+
+    // ----- Phone Number / OTP (SMS) — still disabled for MVP -----
+    // No SMS provider wired; the phoneNumber plugin + sendSmsOtp stay dormant.
+    // To re-enable: uncomment the import and the phoneNumber() entry below and
+    // populate SMS_PROVIDER_* vars in .env.
     //
     // phoneNumber({
     //   sendOTP: sendSmsOtp,

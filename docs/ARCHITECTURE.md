@@ -414,11 +414,21 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `TCGCOLLECTOR_API_KEY`, `TCGCOLLECTOR_API_BASE`, `CARDMARKET_APP_TOKEN` | no | clean One Piece images |
 | `SMS_PROVIDER_*` | no | OTP plugin disabled MVP |
 | `RESEND_API_KEY` + `EMAIL_FROM` (or `EMAIL_PROVIDER_API_KEY` + `EMAIL_PROVIDER_BASE_URL` + `EMAIL_FROM`) | prod (password reset) | configured → reset links emailed via Resend REST; dev w/o provider logs link; prod w/o provider logs a clear error (never silent) |
+| `AWS_SES_REGION` + `AWS_SES_ACCESS_KEY_ID` + `AWS_SES_SECRET_ACCESS_KEY` (+ `EMAIL_FROM`) | prod (email-OTP, Phase B) | email-OTP verification sender (`ses-email.ts` → `sendOtpEmail`); `hasProvider` = all four set. Phase A: unset → dev-logs the code (dev) / loud code-free error (prod); the real SES call is a throwing stub until Phase B. `EMAIL_FROM` is the shared reset sender (reused). |
 | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` | no | client base URL / future uploads |
 | `ADMIN_INITIAL_PASSWORD` | for create-admin script | |
 | `RATELIMIT_CREDIT_PER_MIN` | no | per-USER cap on Scrydex-credit routes (recognize/enrich/reprice/ebay-sold POST/portfolio refresh); default **10**/min |
 | `RATELIMIT_AUTH_PER_MIN` | no | per-IP cap on auth sign-in/sign-up POSTs (get-session never limited); default **10**/min |
 | `RATELIMIT_SEARCH_PER_MIN` | no | per-user-if-authed-else-IP cap on `/api/cards/search`; default **60**/min |
+
+**Email-OTP verification (Phase A):** email/password registration uses Better
+Auth's `emailOTP` plugin (`src/lib/auth.ts`) — a 6-digit code (10-min expiry,
+3 attempts) emailed on sign-up (`sendVerificationOnSignUp`) and verified on
+`/verify-otp`. Codes are stored in the existing `Verification` table (no schema
+change); delivery routes through `ses-email.ts` (`sendOtpEmail`: dev-log in
+Phase A, SES in Phase B). `requireEmailVerification:true` gates the credential
+sign-in path only (OAuth/admin unaffected); `emailVerification.autoSignInAfterVerification:true`
+mints the session on a successful verify.
 
 ## 11. Pattern catalog (the house style)
 
