@@ -174,6 +174,10 @@ camera frame → crop/2×/grayscale/contrast → glare check (warning only)
   → parseOcr (collector number + set-code regexes, name lines ≥50% letters)
   → scoreCards: +50 number, +20 set, +30×fuzzy name similarity (0.6 floor, sliding windows)
   → top 5 candidates, confidence = score/100; client gate = 0.4
+  → PHASE 2 (One Piece alt-art, ON-DEVICE — no credit/allowance): if candidates[0] carries
+      variantImages with >1 distinct art → lazy-load CLIP, embed scanned canvas + base & each
+      variant URL, selectBestVariant (cosine) → confident ⇒ swap tile image to matched variant;
+      any failure/low-confidence/single-image ⇒ base art unchanged (graceful fallback)
   → ScanFeedback row (ocrText, candidates) → feedbackId
   → user picks → POST /api/users/me/collection + PATCH /api/cards/recognize {feedbackId, pickedCardId}
 ```
@@ -200,6 +204,32 @@ The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measu
   auto-add). Pokémon is unchanged (opportunistic — a cleanly-read Pokémon set-code may exact-match,
   otherwise Vision as before). Phase 1 reads the existing `ocrCanvas` once (no multi-region slab/
   corner crop sweep — noted future work).
+
+- **Phase 2 — on-device visual variant match (One Piece alt-art).** OCR narrows to ONE card
+  by its collector code, but that card may have 2–4 distinct art variants (base + alt-arts) and
+  OCR alone can't tell which was scanned. So after candidates resolve (and BEFORE the confirm
+  phase), the scanner client runs an ON-DEVICE visual match: it lazily `import()`s a CLIP image
+  embedder (`src/lib/utils/clip-embedder.ts`, `@xenova/transformers` pinned `2.17.2`,
+  `Xenova/clip-vit-base-patch32`), embeds the user's scanned COLOR canvas plus the base image +
+  each DISTINCT variant image URL, and the PURE selector `selectBestVariant`
+  (`src/lib/utils/variant-visual-match.ts`, cosine similarity, embedder INJECTED so it unit-tests
+  with controlled vectors — never real CLIP) auto-selects the best match. On a confident match the
+  top tile's image is swapped to the matched variant art so the candidate strip + `AddCardSheet`
+  review show the exact variant. **RULE 3:** the variant choice changes only the shown/POSTed
+  IMAGE, never the `externalId` add payload. **Dependency:** `@xenova/transformers` is the one new
+  app dependency — pinned EXACT, lazy (nothing in the initial scanner bundle; the ~90MB ONNX model
+  downloads once from the Hugging Face Hub and is browser-cached on first disambiguation);
+  variant-image embeddings are cached in-memory by URL. The step is entirely on-device: NO Scrydex
+  credit, NO scan allowance, and it never touches the recognize route's credit-gate/allowance
+  ordering. The recognize response carries the card's `variantImages` (base + variant map) as an
+  OPTIONAL field (`variantImagesForCandidate`, One Piece + >1 distinct art only; RULE 2 only-real
+  URLs; backward-compatible). **CSP:** `connect-src` in `next.config.ts` is extended for the model
+  download hosts (`huggingface.co`, `*.hf.co`, `cdn-lfs*.huggingface.co`) and `images.scrydex.com`
+  (transformers.js FETCHES the variant image URLs to embed them — that is connect-src, not img-src;
+  the `<img>` display of scrydex art was already img-src-allowlisted). **Fallback (RULE 7-style):**
+  any CLIP load failure, CSP block, low-confidence/near-tie match, or single-image card leaves the
+  base art shown — never an error. Pokémon is unaffected; Phase 1 and the Scrydex Vision fallback
+  are preserved. **Test seam:** `window.__mockClipEmbedder` (mirrors `window.__mockOcrText`).
 
 - **Game-gated `Card.number` (One Piece scan fix).** The write paths derive the stored
   collector number via `src/lib/utils/card-number.ts` `deriveStoredCardNumber`: One Piece

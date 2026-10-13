@@ -120,10 +120,18 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               // Landing font files load from Google's font CDN (default-src would block them).
               "font-src 'self' https://fonts.gstatic.com",
-              // App fetches hit same-origin /api/* (sec-audit-2 #14); the ONE
-              // cross-origin fetch is tesseract.js pulling its WASM core +
-              // `eng` traineddata from cdn.jsdelivr.net (scanner OCR fallback).
-              "connect-src 'self' https://cdn.jsdelivr.net",
+              // App fetches hit same-origin /api/* (sec-audit-2 #14). The
+              // cross-origin fetches are:
+              //   1. tesseract.js pulling its WASM core + `eng` traineddata
+              //      from cdn.jsdelivr.net (scanner OCR fallback).
+              //   2. The scanner's Phase 2 on-device visual variant match
+              //      (@xenova/transformers CLIP): the ~90MB model is fetched
+              //      ONCE from the Hugging Face Hub (huggingface.co, whose LFS
+              //      weights redirect to cdn-lfs*.huggingface.co), and each One
+              //      Piece variant IMAGE is fetched from images.scrydex.com to
+              //      embed it. Both are fetch()/connect-src (NOT img-src — the
+              //      variant <img> display is already covered by img-src above).
+              "connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://images.scrydex.com",
               // tesseract.js runs OCR in a blob-URL Web Worker.
               "worker-src 'self' blob:",
               "frame-ancestors 'none'",

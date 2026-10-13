@@ -15,6 +15,31 @@ import { base64ToBytes, validateScanUpload } from "@/lib/utils/scan-upload";
 import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
 import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
 import { ScanLanguageSchema } from "@/lib/utils/scan-language";
+import { parseVariantImages, type VariantImagesMap } from "@/lib/utils/card-image";
+
+/**
+ * Phase 2 (visual variant match): attach a One Piece card's stored
+ * `variantImages` map to a recognize candidate ONLY when it is worth
+ * disambiguating — the card is One Piece and has MORE THAN ONE distinct variant
+ * image URL. Returns null otherwise (single image / Pokémon / no map), so the
+ * client no-ops the on-device CLIP step and just shows the base art. RULE 2: we
+ * only ever return the REAL stored map, never a fabricated URL. Backward-
+ * compatible: the field is optional, so existing clients ignore it.
+ */
+function variantImagesForCandidate(
+  setExternalId: string | null | undefined,
+  rawVariantImages: unknown
+): VariantImagesMap | null {
+  if (!setExternalId?.startsWith("onepiece-")) return null;
+  const map = parseVariantImages(rawVariantImages);
+  // Count DISTINCT image URLs across every variant entry (large→medium→small).
+  const urls = new Set<string>();
+  for (const entry of Object.values(map)) {
+    const url = entry.large ?? entry.medium ?? entry.small;
+    if (url) urls.add(url);
+  }
+  return urls.size > 1 ? map : null;
+}
 
 /**
  * POST /api/cards/recognize
@@ -208,6 +233,9 @@ export async function POST(request: Request): Promise<NextResponse> {
           set: card.set?.name ?? "",
           imageUrl: card.imageUrl ?? card.imageUrlHi ?? "",
           confidence: match.score,
+          // Phase 2: One Piece variant-image map for the client CLIP visual
+          // match (null for single-image / Pokémon). Optional → backward-compat.
+          variantImages: variantImagesForCandidate(card.set?.externalId, card.variantImages),
         };
       })
       .filter((c): c is NonNullable<typeof c> => c !== null);
@@ -248,6 +276,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           set: card.set?.name ?? "",
           imageUrl: card.imageUrl ?? card.imageUrlHi ?? "",
           confidence: 0, // sentinel — sorts after real matches; renders as "Alternate printing"
+          variantImages: variantImagesForCandidate(card.set?.externalId, card.variantImages),
         });
         appended++;
       }
@@ -348,6 +377,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       set: string;
       imageUrl: string;
       confidence: number;
+      // Phase 2: present (and multi-image) ONLY for a One Piece match with >1
+      // distinct variant art, so the client runs the on-device CLIP visual
+      // variant match. Optional → response stays backward-compatible.
+      variantImages?: VariantImagesMap | null;
     } | null = null;
     const codes = extractCardCodes(text);
     if (codes.length > 0) {
@@ -366,6 +399,10 @@ export async function POST(request: Request): Promise<NextResponse> {
           // never a hot-linked Bandai URL.
           imageUrl: exact.imageUrl ?? exact.imageUrlHi ?? "",
           confidence: 1, // exact print = highest confidence; sorts first in the strip
+          // Phase 2: attach the One Piece variant-image map (base + alt-arts)
+          // so the client can auto-select the scanned art variant. null for
+          // single-image / Pokémon cards (client no-ops the visual step).
+          variantImages: variantImagesForCandidate(exact.set?.externalId, exact.variantImages),
         };
       }
     }

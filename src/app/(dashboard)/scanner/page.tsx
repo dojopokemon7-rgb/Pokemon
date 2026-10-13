@@ -33,6 +33,14 @@ import {
   type ScanQualityReason,
   type ScanQualityStats,
 } from "@/lib/utils/scan-image-quality";
+import {
+  parseVariantImages,
+  type VariantImagesMap,
+} from "@/lib/utils/card-image";
+import {
+  selectBestVariant,
+  type VariantEmbedding,
+} from "@/lib/utils/variant-visual-match";
 
 interface Candidate {
   id: string;
@@ -45,6 +53,11 @@ interface Candidate {
   set: string;
   imageUrl: string;
   confidence: number;
+  // Phase 2 (One Piece visual variant match): the card's stored variant-image
+  // map (base + alt-arts), present ONLY when the server deems it worth
+  // disambiguating (One Piece + >1 distinct art). Drives the on-device CLIP
+  // visual match in recognizeCanvas; absent/null for Pokémon + single-image.
+  variantImages?: VariantImagesMap | null;
 }
 
 type Phase = "scan" | "recognizing" | "confirm" | "not-recognized" | "review";
@@ -325,6 +338,65 @@ export default function ScannerPage() {
     }
   }
 
+  /**
+   * Phase 2 — on-device CLIP visual variant match (One Piece alt-art only).
+   *
+   * Given the resolved candidates and the user's scanned COLOR canvas, if the
+   * top candidate is a One Piece card with >1 distinct variant art, embed the
+   * scan + each distinct variant image URL and auto-select the best match,
+   * returning a NEW candidate list whose top tile's `imageUrl` is the matched
+   * variant art. On a single image, a non-One-Piece card, a low-confidence
+   * match, or ANY CLIP/network failure it returns the candidates UNCHANGED
+   * (fall back to base art — graceful degradation, never throws). On-device:
+   * no Scrydex credit, no scan allowance.
+   */
+  async function applyVisualVariantMatch(
+    cands: Candidate[],
+    colorCanvas: HTMLCanvasElement
+  ): Promise<Candidate[]> {
+    const top = cands[0];
+    const map = top?.variantImages ? parseVariantImages(top.variantImages) : null;
+    if (!top || !map) return cands;
+
+    // Build the candidate list: base imageUrl + each DISTINCT variant URL,
+    // deduped so identical URLs are embedded once. RULE 2: only real stored
+    // URLs. A base proxy path (/api/one-piece-img/…) is same-origin and fine
+    // to embed; the variant URLs are images.scrydex.com (CSP connect-src).
+    const seen = new Set<string>();
+    const list: { label: string; url: string }[] = [];
+    const pushUrl = (label: string, url: string | null | undefined) => {
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      list.push({ label, url });
+    };
+    pushUrl("base", top.imageUrl);
+    for (const [variant, entry] of Object.entries(map)) {
+      pushUrl(variant, entry.large ?? entry.medium ?? entry.small ?? null);
+    }
+    if (list.length < 2) return cands; // nothing to disambiguate
+
+    try {
+      // Lazy-load CLIP ONLY now that a disambiguation is actually needed.
+      const { getImageEmbedder } = await import("@/lib/utils/clip-embedder");
+      const embedder = getImageEmbedder();
+      const queryEmbedding = await embedder.embedImageFromCanvas(colorCanvas);
+      const embedded: VariantEmbedding[] = [];
+      for (const c of list) {
+        embedded.push({ ...c, embedding: await embedder.embedImageFromUrl(c.url) });
+      }
+      const best = selectBestVariant(queryEmbedding, embedded);
+      if (!best || !best.confident) return cands; // fall back to base art
+
+      // Swap the top tile's image to the matched variant (copy — never mutate).
+      const next = cands.slice();
+      next[0] = { ...top, imageUrl: best.url };
+      return next;
+    } catch {
+      // CLIP load error / CSP block / fetch failure → base art (no error).
+      return cands;
+    }
+  }
+
   /** Shared by camera + Choose photo. Vision-first; falls back to on-device
    *  tesseract when the server has no Vision key or Vision returned nothing.
    *  `colorCanvas` goes to Vision (color — matches the working upload path);
@@ -369,7 +441,19 @@ export default function ScannerPage() {
       setPhase("not-recognized");
       return;
     }
-    setCandidates(result.candidates);
+
+    // ── Phase 2 — on-device VISUAL variant match (One Piece alt-art) ──────
+    // When the resolved top candidate is a One Piece card carrying MORE THAN
+    // ONE distinct art variant, pick the variant the user physically scanned
+    // by embedding the scanned COLOR canvas + each variant image with CLIP
+    // (lazy-loaded) and comparing with cosine similarity. On a confident match
+    // we swap the top tile's image to the matched variant art so the strip +
+    // review sheet show the exact variant. Entirely on-device: NO Scrydex
+    // credit, NO scan allowance, and never touches the recognize route.
+    // ANY failure (CLIP blocked, low confidence, single image) leaves the base
+    // image untouched (graceful degradation) — never errors, never blocks.
+    const candidates = await applyVisualVariantMatch(result.candidates, colorCanvas);
+    setCandidates(candidates);
     setPhase("confirm");
   }
 
