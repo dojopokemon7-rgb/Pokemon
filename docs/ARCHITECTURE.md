@@ -31,6 +31,8 @@ Services (src/lib/services) — business logic, side effects
 - Services own side effects; **pure domain logic lives in `src/lib/utils/*.ts`** and is unit-tested without DB/network.
 - Zod guards three boundaries: external API payloads in, Redis payloads on read (re-parse — cache is untrusted), request bodies in.
 
+**Root entry / marketing landing.** `/` is a **route handler** (`src/app/route.ts`), not a page — it streams the prebuilt marketing landing from `public/landing/index.html` with `Content-Type: text/html` (route handlers bypass `layout.tsx`, so the landing ships its own standalone `<html>` document unpolluted by the app shell). This replaced the former `page.tsx` `redirect("/login")`. If the build artifact is missing it fails soft with a 307 → `/login` (RULE 7), so a mis-sequenced deploy never bricks the root. `/privacy` (`src/app/privacy/route.ts`) serves `public/landing/privacy.html` the same way (404 if missing). The landing itself is built from a separate React 18 + Vite 5 repo at `d:\Pokemon\Pokemon\Dojo_website` under a namespaced Vite `base: '/landing/'`; its `dist/` is copied into `public/landing/` (tracked; served verbatim at `/landing/*` by Next's `public/` static handler). The CTAs hand off same-origin to `/signup` and `/login`. The landing loads Google Fonts, so the enforcing CSP in `next.config.ts` is extended minimally: `style-src` adds `https://fonts.googleapis.com` (the stylesheet) and a new `font-src 'self' https://fonts.gstatic.com` (the font files); `default-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'` are preserved and no `'unsafe-eval'` is added.
+
 ## 2. Auth architecture (Better Auth)
 
 ```

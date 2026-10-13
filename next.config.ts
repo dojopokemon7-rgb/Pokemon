@@ -116,7 +116,10 @@ const nextConfig: NextConfig = {
               // 'wasm-unsafe-eval' lets tesseract.js compile its WASM core.
               // cdn.jsdelivr.net hosts the tesseract.js worker script.
               "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net",
-              "style-src 'self' 'unsafe-inline'",
+              // Landing (served at /) pulls the Google Fonts stylesheet.
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              // Landing font files load from Google's font CDN (default-src would block them).
+              "font-src 'self' https://fonts.gstatic.com",
               // App fetches hit same-origin /api/* (sec-audit-2 #14); the ONE
               // cross-origin fetch is tesseract.js pulling its WASM core +
               // `eng` traineddata from cdn.jsdelivr.net (scanner OCR fallback).
