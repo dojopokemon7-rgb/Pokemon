@@ -65,6 +65,12 @@ services:
     restart: unless-stopped
     depends_on:
       - app
+    # DOMAIN must be passed into the container: the Caddyfile reads {$DOMAIN}
+    # from the container env, not from the host .env. Without this, DOMAIN is
+    # empty, Caddy serves plain HTTP on :80 only, and never issues a TLS cert
+    # (443 refuses). Keep DOMAIN unquoted in .env so the value isn't literal.
+    environment:
+      - DOMAIN=${DOMAIN}
     ports:
       - "80:80"
       - "443:443"
