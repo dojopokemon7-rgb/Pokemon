@@ -323,3 +323,85 @@ export function recognize(
 ): ScoredCandidate[] {
   return scoreCards(parseOcr(ocrText), pool, topN);
 }
+
+// ─── OCR-first collector-code extraction (Phase 1, OCR-first scanner) ───────
+//
+// The scanner now runs on-device tesseract on capture and tries to read the
+// PRINTED collector code (OP08-023, ST21-001, P-106) BEFORE spending a Scrydex
+// Vision credit. A cleanly-read code resolves DIRECTLY to a Card by externalId
+// (deterministic exact match) — the confident top candidate. The functions
+// below are the proven extractor from the OCR POC (slab-label reads), promoted
+// here as pure, dependency-free domain logic (AGENTS rule 11) so BOTH the
+// recognize route (exact lookup) and the scanner client (deciding OCR-first)
+// share ONE implementation.
+//
+// Reality the POC exposed (OCR-RESULTS.md): graded-slab labels print the One
+// Piece code UNHYPHENATED ("2024 ONE PIECE OP08 EN #023 CARROT"), and tesseract
+// mis-reads a 0 as the letter O in the set-number slot ("OPO8"/"OP0O8"). So the
+// raw SET_CODE_RE above is NOT enough on its own — we add (a) an O→0 repair that
+// ONLY touches the set-number slot after a known prefix, and (b) loose matchers
+// for the unhyphenated slab spellings. 2/3 POC codes read with the strict regex;
+// the fragile OP08 case needed both of these. Threshold binarization HURT and is
+// NOT used (the scanner's ocrCanvas is grayscale+contrast only).
+
+// Loose slab-label spellings (unhyphenated, stray tokens between the parts):
+// "OP08 EN #023" / "OP08 023". Prefix, optional leading zeros, 1-2 set digits,
+// up to a few non-digit chars, an optional '#', then the 1-3 digit tail.
+const LOOSE_SET_RE = /\b(OP|ST|EB|PRB)\s*0*(\d{1,2})\b[^0-9]{0,8}#?\s*0*(\d{1,3})\b/i;
+// Loose promo spelling: "P 106" / "P#106" / "P-106".
+const LOOSE_PROMO_RE = /\bP\s*[-#]?\s*0*(\d{2,3})\b/i;
+
+/**
+ * OCR 0↔O confusion repair. In a set-code set-number slot tesseract often reads
+ * "OP08" as "OPO8" / "OP0O8" — a letter O where a digit 0 belongs. We ONLY touch
+ * the 1-3 chars immediately after a known set prefix, so real words elsewhere
+ * are untouched.
+ */
+export function repairOcrDigits(text: string): string {
+  return text.replace(/\b(OP|ST|EB|PRB)([O0\d]{1,3})\b/gi, (_m, p: string, n: string) =>
+    p + n.replace(/O/gi, "0")
+  );
+}
+
+/** Canonical catalog externalId shape: UPPER, hyphenated, 3-digit tail.
+ *  Promos are "P-NNN"; set serials are "PPNN-NNN" (set number padded to 2). */
+export function toExternalId(prefix: string, setNum: string, tail: string): string {
+  const p = prefix.toUpperCase();
+  if (p === "P") return `P-${tail.padStart(3, "0")}`;
+  return `${p}${setNum.padStart(2, "0")}-${tail.padStart(3, "0")}`;
+}
+
+/**
+ * Collect every candidate collector-code externalId from one block of raw OCR
+ * text. Runs the O→0 repair first, then tries the strict app patterns
+ * (SET_CODE_RE, HYPHEN_PROMO_RE — most specific) before the loose slab
+ * variants, returning a de-duped array of canonical externalIds (first-seen
+ * order preserved). Pure: a non-match returns []. The recognize route resolves
+ * the FIRST entry against Card.externalId (game-scoped); the scanner uses a
+ * non-empty result to decide whether to try the free OCR-first path.
+ */
+export function extractCardCodes(rawText: string): string[] {
+  const out = new Set<string>();
+  const text = repairOcrDigits(rawText);
+
+  const setCode = SET_CODE_RE.exec(text); // OP08-023, ST21-001, SV3-224
+  if (setCode) {
+    const m = /^([A-Za-z]+)(\d{1,3})$/.exec(setCode[1]);
+    if (m) out.add(toExternalId(m[1], m[2], setCode[2]));
+  }
+
+  const hyphenPromo = HYPHEN_PROMO_RE.exec(text); // P-106
+  if (hyphenPromo) {
+    const norm = normalizeNumber(hyphenPromo[1]); // "p106" (letter-hyphen stripped)
+    const pm = /^p(\d{1,3})$/.exec(norm);
+    if (pm) out.add(toExternalId("P", "", pm[1]));
+  }
+
+  const loose = LOOSE_SET_RE.exec(text);
+  if (loose) out.add(toExternalId(loose[1], loose[2], loose[3]));
+
+  const loosePromo = LOOSE_PROMO_RE.exec(text);
+  if (loosePromo) out.add(toExternalId("P", "", loosePromo[1]));
+
+  return [...out];
+}

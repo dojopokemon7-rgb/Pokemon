@@ -26,6 +26,7 @@ import { AddCardSheet } from "@/components/AddCardSheet";
 import { validateScanFile, computeDownscaleSize } from "@/lib/utils/scan-image-file";
 import { readScanLanguage, writeScanLanguage, type ScanLanguage } from "@/lib/utils/scan-language";
 import { readScanGame, writeScanGame, type ScanGame } from "@/lib/utils/scan-game";
+import { extractCardCodes } from "@/lib/services/card-recognition.service";
 import {
   assessScanQuality,
   statsFromImageData,
@@ -331,7 +332,32 @@ export default function ScannerPage() {
    *  camera path supplies it. The upload path passes only a color canvas, so
    *  its rare fallback reuses it (upload already works). */
   async function recognizeCanvas(colorCanvas: HTMLCanvasElement, ocrCanvas?: HTMLCanvasElement) {
-    let result = await recognizeByImage(colorCanvas);
+    // ── OCR-FIRST pre-pass (Phase 1) ──────────────────────────────────────
+    // On-device tesseract is free (no Scrydex credit, no scan allowance), so
+    // we try it BEFORE Vision: read the printed collector code off the
+    // grayscale+contrast ocrCanvas, and ONLY if a usable code is extracted do a
+    // text recognize that resolves it EXACTLY by externalId. An exact match
+    // comes back with confidence 1 — we take it and SKIP Vision entirely. Any
+    // other outcome (no code read, code didn't resolve, or tesseract threw)
+    // silently falls through to the UNCHANGED Vision-first path below, so raw
+    // cards and non-code reads still work via Scrydex exactly as today. The
+    // upload path passes only a color canvas; it also gets this free pre-pass.
+    let result: { candidates: Candidate[]; feedbackId: string | null } | null = null;
+    try {
+      const ocrText = await runTesseract(ocrCanvas ?? colorCanvas);
+      if (extractCardCodes(ocrText).length > 0) {
+        const byText = await recognizeByText(ocrText, "tesseract");
+        if (byText.candidates[0]?.confidence >= 1) result = byText; // exact print match
+      }
+    } catch {
+      /* tesseract unavailable/failed — fall through to Vision (no regression) */
+    }
+
+    // Vision-first fallback (unchanged): used whenever the OCR pre-pass didn't
+    // produce an exact match.
+    if (result == null) {
+      result = await recognizeByImage(colorCanvas);
+    }
     if (result == null) {
       const text = await runTesseract(ocrCanvas ?? colorCanvas);
       result = await recognizeByText(text, "tesseract");

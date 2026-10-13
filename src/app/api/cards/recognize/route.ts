@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { auth } from "@/lib/auth";
-import { recognize, type CatalogCard } from "@/lib/services/card-recognition.service";
+import {
+  recognize,
+  extractCardCodes,
+  type CatalogCard,
+} from "@/lib/services/card-recognition.service";
 import { identifyCard } from "@/lib/services/scrydex.service";
 import {
   getScanAllowance,
@@ -325,6 +329,47 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const gameWhere = game ? { set: { externalId: { startsWith: `${game}-` } } } : {};
 
+    // ── OCR-first EXACT collector-code lookup (Phase 1) ───────────────────
+    // On-device tesseract read the PRINTED collector code off the card/slab;
+    // if a clean code was extracted (OP08-023, ST21-001, P-106) it resolves
+    // DETERMINISTICALLY to a Card by externalId (AGENTS rule 3 — externalId IS
+    // the Bandai/catalog code), game-scoped. An exact print match is the single
+    // strongest possible signal, so this card becomes candidates[0] with
+    // confidence 1 — a REAL match to a REAL row (AGENTS rule 2), never
+    // fabricated. The fuzzy scoring below still runs and is appended (deduped)
+    // underneath, so the response shape, feedbackId, ocrSource, and languageEcho
+    // wiring are byte-for-byte unchanged. A miss leaves the fuzzy-only behavior
+    // exactly as before (the exact branch is inert). No Scrydex / Vision call is
+    // made here — the OCR path spends no credits and burns no scan allowance.
+    let exactCandidate: {
+      id: string;
+      name: string;
+      number: string | null;
+      set: string;
+      imageUrl: string;
+      confidence: number;
+    } | null = null;
+    const codes = extractCardCodes(text);
+    if (codes.length > 0) {
+      const exact = await prisma.card.findFirst({
+        where: { externalId: codes[0], ...gameWhere },
+        include: { set: true },
+      });
+      if (exact) {
+        exactCandidate = {
+          id: exact.externalId, // RULE 3: externalId is the id the add payload posts
+          name: exact.name,
+          number: exact.number,
+          set: exact.set?.name ?? "",
+          // RULE 13: One Piece imageUrl is the same-origin proxy path from the
+          // Card row (card.service.ts stores it as /api/one-piece-img/...),
+          // never a hot-linked Bandai URL.
+          imageUrl: exact.imageUrl ?? exact.imageUrlHi ?? "",
+          confidence: 1, // exact print = highest confidence; sorts first in the strip
+        };
+      }
+    }
+
     const rows = await prisma.card.findMany({
       where: {
         ...gameWhere,
@@ -352,7 +397,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     }));
 
     const scored = recognize(text, pool, TOP_N);
-    const candidates = scored.map((c) => ({
+    const fuzzyCandidates = scored.map((c) => ({
       id: c.id,
       name: c.name,
       number: c.number,
@@ -360,6 +405,16 @@ export async function POST(request: Request): Promise<NextResponse> {
       imageUrl: c.imageUrl,
       confidence: c.confidence,
     }));
+
+    // Exact OCR match (if any) leads; the fuzzy results follow, with the exact
+    // id removed so it isn't listed twice (dedupe by externalId). Capped at
+    // TOP_N so the response size is unchanged.
+    const candidates = exactCandidate
+      ? [exactCandidate, ...fuzzyCandidates.filter((c) => c.id !== exactCandidate!.id)].slice(
+          0,
+          TOP_N
+        )
+      : fuzzyCandidates;
 
     // Log the scan for the tuning loop. Best-effort — a logging failure must
     // never break recognition.

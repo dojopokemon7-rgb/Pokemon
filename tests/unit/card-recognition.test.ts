@@ -4,6 +4,9 @@ import {
   scoreCards,
   recognize,
   normalizeNumber,
+  extractCardCodes,
+  repairOcrDigits,
+  toExternalId,
   WEIGHTS,
   MAX_SCORE,
   type CatalogCard,
@@ -199,6 +202,49 @@ describe("confidence (honest, signal-aware)", () => {
     const [top] = scoreCards(parseOcr("blasto"), [BLASTOISE], 5);
     expect(top.id).toBe("base1-2");
     expect(top.confidence).toBeLessThan(0.85);
+  });
+});
+
+describe("extractCardCodes (OCR-first collector-code reader)", () => {
+  it("reads a clean hyphenated One Piece code off slab-label text", () => {
+    // ST21-001 printed with a clean hyphen — the strict SET_CODE_RE matches.
+    expect(
+      extractCardCodes("CGC Monkey D. Luffy One Piece (2025) Learn Together Deck - ST21-001 A")
+    ).toContain("ST21-001");
+  });
+
+  it("reads a clean promo code (P-106)", () => {
+    expect(
+      extractCardCodes("Monkey D. Luffy One Piece (2026) Tournament Promos - P-106")
+    ).toContain("P-106");
+  });
+
+  it("recovers the fragile OP08-023 from an unhyphenated slab label with O→0 confusion", () => {
+    // The POC's hardest HIT: the slab prints "OP08 EN #023" unhyphenated and
+    // tesseract read the set number with an O-for-0 swap ("OPO8"). The loose
+    // matcher + O→0 repair must still yield the canonical OP08-023.
+    expect(
+      extractCardCodes("2024 ONE PIECE OPO8 EN #023 CARROT GEM MT ALTERNATE ART 10")
+    ).toContain("OP08-023");
+  });
+
+  it("repairs an O→0 swap in the tail of a hyphenated code (OP08-O23)", () => {
+    expect(extractCardCodes("OP08-O23 Carrot")).toContain("OP08-023");
+  });
+
+  it("returns [] for garbage / no-code OCR text", () => {
+    expect(extractCardCodes("zzzz random noise 999 !!!")).toEqual([]);
+    expect(extractCardCodes("")).toEqual([]);
+  });
+
+  it("repairOcrDigits only touches the set-number slot, leaving other words alone", () => {
+    // "OPO8" → "OP08"; the surrounding words (which happen to contain O) stay.
+    expect(repairOcrDigits("OPO8 CARROT ALTERNATE")).toBe("OP08 CARROT ALTERNATE");
+  });
+
+  it("toExternalId canonicalizes to UPPER, 2-digit set, 3-digit tail", () => {
+    expect(toExternalId("op", "8", "23")).toBe("OP08-023");
+    expect(toExternalId("P", "", "106")).toBe("P-106");
   });
 });
 

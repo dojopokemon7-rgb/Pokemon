@@ -160,8 +160,16 @@ The `card.service.searchCards` fallback chain (pokemontcg.io → tcgdex → scry
 
 ```
 camera frame → crop/2×/grayscale/contrast → glare check (warning only)
+  → OCR-FIRST pre-pass (Phase 1, FREE — no Scrydex credit/allowance):
+      on-device tesseract on the grayscale canvas → extractCardCodes(text)
+      → if a collector code reads AND POST {text, source:"tesseract"} returns confidence>=1
+        (exact externalId lookup, below) → USE it, SKIP Vision
+      → else fall through to Vision (any no-code read / unresolved code / tesseract error)
   → POST /api/cards/recognize {image}                (Vision TEXT_DETECTION, server key only)
   → if ocrSource:"unavailable" (no key / failed) → on-device tesseract.js → POST {text, source:"tesseract"}
+  → TEXT path exact-code branch: extractCardCodes(text) → findFirst({ externalId:<CODE>, game-scoped })
+      → hit → candidates[0] = that Card, confidence 1 (REAL exact print match); fuzzy appended deduped, capped TOP_N
+      → miss / no code → fuzzy-only, byte-for-byte unchanged
   → DB prefilter: first ≤8 tokens (≥3 chars) → card.findMany name contains, game-scoped, capped 500 rows
   → parseOcr (collector number + set-code regexes, name lines ≥50% letters)
   → scoreCards: +50 number, +20 set, +30×fuzzy name similarity (0.6 floor, sliding windows)
@@ -172,6 +180,26 @@ camera frame → crop/2×/grayscale/contrast → glare check (warning only)
 
 Scanner inputs: live camera, or **Choose photo** (JPEG/PNG/WebP, ≤20 MB; client `validateScanFile` checks MIME + magic bytes, decodes with EXIF orientation, downscales to ≤1600px, then feeds the same Vision → Tesseract → text flow; object URLs revoked on retake/unmount; image data never logged). A **Card language** select (All/English/Japanese, `localStorage` `dojo:scan-language`) is sent as `language`; it is echoed only (`languageApplied:false`) because the catalog has no per-card language column.
 The feedback table is the ground-truth dataset for re-tuning `WEIGHTS` — measured, never guessed.
+
+- **OCR-first exact collector-code path (Phase 1).** Reading the PRINTED collector code
+  (`OP08-023`, `ST21-001`, `P-106`) and resolving it EXACTLY by `externalId` is deterministic
+  and far more reliable than fuzzy scoring, so the scanner tries it FIRST — on-device, before
+  any Scrydex Vision call. The shared pure extractor `extractCardCodes()` (in
+  `card-recognition.service.ts`) runs `repairOcrDigits` (fixes tesseract's O↔0 confusion ONLY in
+  the set-number slot, e.g. `OPO8`→`OP08`) then strict (`SET_CODE_RE`/`HYPHEN_PROMO_RE`) and loose
+  unhyphenated-slab matchers — the technique proven on real graded-slab photos in the OCR POC
+  (grayscale+contrast slab-label reads; threshold binarization HURT and is not used). The scanner
+  client runs tesseract first and, only if a code reads, re-POSTs `{text, source:"tesseract"}`; a
+  `confidence:1` top candidate (an exact `findFirst({ externalId, game-scoped })` hit in the route)
+  is used and Vision is skipped. Everything else — raw cards whose on-card code can't be read, no
+  code, garbage OCR, or a tesseract error — falls through to the UNCHANGED Vision-first flow, so
+  there is NO regression and NO Scrydex credit/scan-allowance is spent on the OCR path (the
+  credit-gate/allowance ordering is untouched). The exact candidate is a REAL `Card` row (RULE 2),
+  keyed by `externalId` (RULE 3), with the One Piece `/api/one-piece-img` proxy image (RULE 13),
+  and still flows into the SAME candidate strip + `AddCardSheet` review-before-add (no silent
+  auto-add). Pokémon is unchanged (opportunistic — a cleanly-read Pokémon set-code may exact-match,
+  otherwise Vision as before). Phase 1 reads the existing `ocrCanvas` once (no multi-region slab/
+  corner crop sweep — noted future work).
 
 - **Game-gated `Card.number` (One Piece scan fix).** The write paths derive the stored
   collector number via `src/lib/utils/card-number.ts` `deriveStoredCardNumber`: One Piece

@@ -20,7 +20,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const prismaMock = vi.hoisted(() => ({
-  card: { findMany: vi.fn(), findUnique: vi.fn() },
+  // findFirst backs the OCR-first exact collector-code lookup added to the TEXT
+  // path; defaults to a miss (null) so the Vision cases below stay fuzzy-only.
+  card: { findMany: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn() },
   scanFeedback: { create: vi.fn(), update: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
@@ -55,6 +57,7 @@ beforeEach(() => {
   authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
   allowance.reserve.mockResolvedValue({ ok: true, allowance: { used: 1, limit: 10, remaining: 9 } });
   prismaMock.scanFeedback.create.mockResolvedValue({ id: "fb_1" });
+  prismaMock.card.findFirst.mockResolvedValue(null); // default: exact-code lookup miss
 });
 
 describe("POST /api/cards/recognize One Piece", () => {
