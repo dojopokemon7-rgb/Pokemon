@@ -80,23 +80,53 @@ export async function sendOtpEmail(args: {
 }
 
 /**
- * The real Amazon SES send. Phase A keeps this a throwing stub — see the
- * add-dependency-vs-stub decision in design.md §2.
+ * The real Amazon SES send (Phase B). Sends the OTP as a plain-text
+ * transactional email via SESv2.
+ *
+ * The SES client is created lazily and memoised: the module is imported in the
+ * auth path on every request, but the client (and its credential resolution)
+ * is built once. `hasProvider` in the caller already guaranteed all four env
+ * vars are present before this runs.
+ *
+ * The code is a SECRET — it is never logged on this path, only placed in the
+ * email body sent to the verified recipient.
  */
-async function sendViaSes(_args: { to: string; from: string; code: string }): Promise<void> {
-  // ===========================================================
-  // PHASE B SWAP POINT — real Amazon SES send goes here.
-  // Install @aws-sdk/client-sesv2 (pinned exact), construct an
-  // SESv2Client({ region: AWS_SES_REGION, credentials: {...} }),
-  // and SendEmailCommand({ FromEmailAddress: EMAIL_FROM, ... }).
-  // Subject: "Verify your email"
-  // Body (plain text):
-  //   "Your Dojo verification code is: {code}. It expires in 10 minutes."
-  // This is the ONLY place Phase B touches in this file.
-  // The code is a secret: never log it on this path.
-  // ===========================================================
-  throw new Error(
-    "[OTP] AWS SES is configured but the Phase B send path is not implemented yet. " +
-      "See the PHASE B SWAP POINT (sendViaSes) in src/lib/utils/ses-email.ts."
+let sesClient: import("@aws-sdk/client-sesv2").SESv2Client | undefined;
+
+async function getSesClient(): Promise<import("@aws-sdk/client-sesv2").SESv2Client> {
+  if (!sesClient) {
+    const { SESv2Client } = await import("@aws-sdk/client-sesv2");
+    sesClient = new SESv2Client({
+      region: process.env.AWS_SES_REGION!,
+      credentials: {
+        accessKeyId: process.env.AWS_SES_ACCESS_KEY_ID!,
+        secretAccessKey: process.env.AWS_SES_SECRET_ACCESS_KEY!,
+      },
+    });
+  }
+  return sesClient;
+}
+
+async function sendViaSes(args: { to: string; from: string; code: string }): Promise<void> {
+  const { to, from, code } = args;
+  const { SendEmailCommand } = await import("@aws-sdk/client-sesv2");
+  const client = await getSesClient();
+
+  await client.send(
+    new SendEmailCommand({
+      FromEmailAddress: from,
+      Destination: { ToAddresses: [to] },
+      Content: {
+        Simple: {
+          Subject: { Data: "Verify your email", Charset: "UTF-8" },
+          Body: {
+            Text: {
+              Data: `Your Dojo verification code is: ${code}\n\nIt expires in 10 minutes. If you didn't request this, you can ignore this email.`,
+              Charset: "UTF-8",
+            },
+          },
+        },
+      },
+    })
   );
 }
