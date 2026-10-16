@@ -31,7 +31,7 @@ Google OAuth auth throughout.
 | Validation | Zod 3 at every boundary (`src/lib/validators/` + inline schemas in routes) |
 | OCR | Google Cloud Vision (server) with tesseract.js (on-device fallback) |
 | Tests | Vitest (unit + integration), Playwright (e2e, port 3001 against a standalone production build) |
-| Deploy | Vercel (cron + preview URLs) and/or Docker standalone (`output: "standalone"`) |
+| Deploy | Vercel (cron + preview URLs) and/or Docker standalone (`output: "standalone"`). STAGING: a second `app-staging` container on the same Droplet at `staging.dojocollect.com` (Caddy basic-auth), isolated by a `staging` Postgres schema on the same Supabase DB — see docs/ARCHITECTURE.md §12 |
 
 ## 3. Commands
 

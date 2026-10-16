@@ -48,3 +48,47 @@
         format console
     }
 }
+
+# =============================================================
+# STAGING — staging.dojocollect.com
+# =============================================================
+# A SECOND site on the SAME Droplet, reverse-proxying to the `app-staging`
+# container. Same automatic HTTPS + the same three security headers + gzip as
+# the prod block above (which is UNCHANGED), PLUS HTTP basic auth so the
+# pre-release environment is never publicly reachable.
+#
+# Unlike prod, staging uses a HARDCODED hostname (not the {$DOMAIN::80} env
+# indirection) — staging is always HTTPS and never shares the DOMAIN var.
+#
+# Replace the bcrypt placeholder below with the output of:
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext '<password>'
+# =============================================================
+staging.dojocollect.com {
+    # HTTP basic auth gate. Format:  <user>  <bcrypt-hash>
+    # Default username is `staging`; replace the placeholder hash (see above).
+    basic_auth {
+        staging $2a$14$REPLACE_WITH_BCRYPT_HASH
+    }
+
+    # Proxy all requests to the STAGING Next.js app container.
+    reverse_proxy app-staging:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+
+    # Compress responses.
+    encode gzip
+
+    # Same proxy-level security-header backstop as prod.
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Logging.
+    log {
+        output stdout
+        format console
+    }
+}

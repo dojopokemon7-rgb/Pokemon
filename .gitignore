@@ -105,6 +105,11 @@ docker-compose.override.yml
 .env*
 !.env.example
 
+# Staging real env file (never commit) — the *.example template IS tracked.
+# (The broad `.env*` above would otherwise ignore .env.staging.example too.)
+.env.staging
+!.env.staging.example
+
 # Strix pentest LLM config (contains an API key — never commit)
 .strix.env
 
