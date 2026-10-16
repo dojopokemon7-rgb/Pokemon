@@ -30,7 +30,7 @@
 
 ## 2. `src/middleware.ts` — Edge route guard
 
-- **Runs ONLY on** `/dashboard/:path*` and `/admin/:path*` (matcher). Does NOT intercept `/api/*`.
+- **Runs ONLY on** `/dashboard/:path*` (matcher). `/admin` is NO LONGER guarded here — it self-gates via its own layout (renders the admin login form in-place). Does NOT intercept `/api/*`.
 - Cookie **presence** check only (`better-auth.session_token` / `__Secure-` variant) — Edge runtime can't hit Prisma, so it's UX-redirect only; every data endpoint re-validates.
 - Unauthenticated → `/login?callbackUrl=<original path>`.
 - Exposes constants `SESSION_COOKIE_NAME`, `SECURE_SESSION_COOKIE_NAME`, `LOGIN_PATH`, `DEFAULT_AUTHENTICATED_PATH` — update if `advanced.cookiePrefix` changes in `auth.ts`.
@@ -55,7 +55,7 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 
 | File | Route | What it does |
 |---|---|---|
-| `login/page.tsx` | `/login` | Screen 01. `authClient.signIn.email` / `.signIn.social({provider:"google"})` (manual `window.location.href` handoff to the returned url). Post-login fetches `GET /api/users/me` → routes admins to `/admin`, users to `/dashboard`. URL banners: `?verified=true`, `?registered=true`, `?reset=true`, `?error=…`. Animated DojoMark SVG. `useTimeoutToast` for hung requests. |
+| `login/page.tsx` | `/login` | Screen 01. `authClient.signIn.email` / `.signIn.social({provider:"google"})` (manual `window.location.href` handoff to the returned url). Post-login ALWAYS routes to `/dashboard` (the admin `/api/users/me` → `/admin` branch was REMOVED — admin is a separate surface at `/admin`). URL banners: `?verified=true`, `?registered=true`, `?reset=true`, `?error=…`. Animated DojoMark SVG. `useTimeoutToast` for hung requests. |
 | `signup/page.tsx` | `/signup` | Screen 02. Live password validation (8+ chars, ≥1 number), match feedback, `authClient.signUp.email` → `/profile`. |
 | `otp/page.tsx` | `/otp` | **MVP stub** — redirects to `/profile` (phone auth disabled). |
 | `verify-otp/page.tsx` | `/verify-otp` | **MVP stub** — redirects to `/profile`. |
@@ -70,7 +70,7 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 
 | File | Type | Purpose |
 |---|---|---|
-| `layout.tsx` | S | `getServerSession()` → redirect `/login` if none; **bounces `isAdmin` users to `/admin`** (from cookie-cached `additionalFields`). Renders `<DashboardClientShell>{children}`. |
+| `layout.tsx` | S | `getServerSession()` → redirect `/login` if none. The old `isAdmin` → `/admin` bounce was REMOVED (admin is a separate env-gated surface). Renders `<DashboardClientShell>{children}`. |
 | `dashboard-client-shell.tsx` | C | Two modes via `usePathname()`: **scanner mode** (`/scanner*`) = full-bleed, no chrome; **normal mode** = sticky header (left slot + search-icon Link → `/search` + `<NotificationsPanel/>`) + scrollable `<main>` + fixed 4-tab bottom nav (Home `/dashboard` · Portfolio `/portfolio` · Explore → `/search` · You `/you`). Hover/focus prefetch of destination query data (`["portfolio-collection"]`, `["collection"]`). |
 | `header-slot.tsx` | C | `HeaderSlotProvider` + `useHeaderLeft()` + `<HeaderLeftSlot>` — pages inject a header control (DashboardClient uses it for the collection-selector pill). Single consumer at a time; auto-clears on unmount. |
 
@@ -110,12 +110,13 @@ All client components. Layout (`layout.tsx`, S): own-scroll 390px-max centered c
 
 | File | Route | Type | Notes |
 |---|---|---|---|
-| `layout.tsx` | `/admin/*` | S | Two-tier enforcement: middleware cookie check + **this layout re-validates `isAdmin` from DB-backed session, redirect non-admins to `/dashboard` (fail-closed)**. `isAdmin` is cookie-cached ~5 min. Fixed `<AdminSidebar/>` (240px) + scrolling main. |
+| `layout.tsx` | `/admin/*` | S | **Isolated admin gate**: verifies the `dojo_admin_session` HMAC cookie (`verifyAdminSession`) on every request — NO Better Auth / `isAdmin`. No valid session → renders `<AdminAuthGate/>` (login+OTP form) IN PLACE (never redirects to `/login`); valid → fixed `<AdminSidebar/>` (240px) + scrolling main. |
+| `_components/AdminAuthGate.tsx` | — | C | Two-phase admin login (email+password → OTP) → `POST /api/admin-auth/{login,verify-otp}`; on success `router.refresh()`. NO credential logic client-side. Dojo gold-on-dark, square, shared `ArrowRight`. |
 | `page.tsx` | `/admin` | S | Overview. `getPlatformStats()` + `getActiveUsers()` + `getRecentPlatformActivity(10)` + summary series (admin-metrics service). Server-computes stats → `<LiveOverviewStats initialData>` (financial/activity + DAU/WAU cards that **auto-refresh** via `/api/admin/metrics/overview`). Summary charts (`UserGrowthChart` / `CardsAddedChart` / `TopCollectedCardsChart`) + activity feed stay server-rendered. `force-dynamic` so SSR initialData is fresh. Links → `/admin/analytics`. |
 | `analytics/page.tsx` | `/admin/analytics` | S | **Detail analytics (FEAT-003).** Server-computes the 7 detail aggregates (scan usage, portfolio totals, per-game split, DAU/WAU, top collected/wanted/scanned) → `<AnalyticsDetail initialData>`. `force-dynamic`. Mirrors Overview header styling. |
 | `_components/LiveOverviewStats.tsx` | — | C | Live Overview stat cards. `useQuery(['admin-overview'])` → `GET /api/admin/metrics/overview`; SSR `initialData`, `staleTime:0`, `refetchInterval:25000`, `refetchOnWindowFocus:true` (overrides global defaults). Renders Financial + Activity + DAU/WAU cards. |
 | `_components/AnalyticsDetail.tsx` | — | C | Live detail panel. `useQuery(['admin-analytics'])` → `GET /api/admin/metrics/analytics`; SSR `initialData` + same live overrides. Renders all five metric groups; scan series as a two-series (success/fail) `AreaChart` (`showYAxis={false}` count axis); per-game two-slice bars; ranked lists (TopCollected bar style). **Vision credits labeled "estimated"**; honest "No data yet." on empty. |
-| `_components/AdminSidebar.tsx` | — | C | Nav: Overview / **Analytics** / Users / Card Database / Transactions / Audit Logs + "Back to App". `usePathname()` active state. |
+| `_components/AdminSidebar.tsx` | — | C | Nav: Overview / **Analytics** / Users / Card Database / Transactions / Audit Logs + a **LOG OUT** control (`POST /api/admin-auth/logout` → `/admin`). The old "Back to App" link was REMOVED (admin is isolated). `usePathname()` active state. |
 | `cards/page.tsx` | `/admin/cards` | S | `prisma.card.findMany` (take 50, `?q=` filters name OR set name). Game column inferred from set `externalId` prefix. Client islands below. |
 | `cards/_components/CardSearchInput.tsx` | — | C | 250ms debounced `router.replace(?q=)` inside `useTransition` — URL is source of truth for the server-component filter. |
 | `cards/_components/EditCardButton.tsx` | — | C | Modal editing Market Price + Image URL → `useMutation` `PATCH /api/admin/cards/{id}` → `router.refresh()`. |
@@ -192,7 +193,7 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 |---|---|---|
 | `db/index.ts` | S | `prisma` — globalThis-surviving singleton (hot-reload safe). `PRISMA_LOG_QUERY=1` enables query logging; default errors-only. |
 | `redis.ts` | S | `redis` — **lazy Proxy** (never constructs at import/build time; `REDIS_URL` read at first method call), offline-queue, retry backoff. `pingRedis()`. **`RedisKeys`** registry: `cardSearch(game,q)` 24h, `ebayAppToken` 7000s, `ebaySearch(key)` 24h, `ebaySold(key)` 1h, `cardPrice(id)` 6h, `otp*` (disabled). Trending key `card:trending:*` built inline in the route (TTL 120s). Circuit-breaker keys live in fallback-executor (600s). |
-| `auth.ts` | S | Better Auth server config. **NEVER import from client.** Prisma adapter; `user.additionalFields.isAdmin` (`input:false` — server-side toggles only); email+password (no email verification, 8–128 pw); Google social (`test` fallbacks in dev/CI); phone/OTP plugin **disabled MVP**; `sendResetPassword` console-logs link in dev; session 7d expiry / 1h updateAge / 5min cookieCache; `trustedOrigins` = localhost:3000+3001, prod domain, `*.vercel.app` previews. Exports `Auth`, `Session` types. |
+| `auth.ts` | S | Better Auth server config. **NEVER import from client.** Prisma adapter; `user.additionalFields.isAdmin` (`input:false`; RETIRED as an auth source — exposed on `/api/users/me` for display but NOT read for admin routing); email+password (no email verification, 8–128 pw); Google social (`test` fallbacks in dev/CI); phone/OTP plugin **disabled MVP**; `sendResetPassword` console-logs link in dev; session 7d expiry / 1h updateAge / 5min cookieCache; `trustedOrigins` = localhost:3000+3001, prod domain, `*.vercel.app` previews. Exports `Auth`, `Session` types. |
 | `auth-client.ts` | C | `authClient` via `better-auth/react`; baseURL = `window.location.origin` at runtime (avoids preview-URL mismatch). Re-exports `signIn, signOut, signUp, useSession, getSession`. **NEVER import from server code.** |
 
 ### 10.2 Services (`src/lib/services/`)
@@ -226,7 +227,11 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 
 | File | Type | Exports / algorithm |
 |---|---|---|
-| `auth-guard.ts` | S | `requireAuth(req)`, `requireAdmin(req)` → discriminated union `{unauthorized}\|{session}` — the `if (guard.unauthorized) return guard.unauthorized` idiom. 401 / 403 JSON. |
+| `auth-guard.ts` | S | `requireAuth(req)` (Better Auth session) + `requireAdmin(req)` (now verifies the `dojo_admin_session` cookie — NOT `isAdmin`; synthesizes an env-admin session so `guard.session.user.{id,email}` still works) → discriminated union `{unauthorized}\|{session}`; the `if (guard.unauthorized) return guard.unauthorized` idiom. 401 JSON. |
+| `admin-credentials.ts` | S | `constantTimeEqual`, `verifyAdminCredentials(email,pw)` — SHA-256 + `timingSafeEqual` vs ENV creds; fail-closed if unset. |
+| `admin-otp-store.ts` | S | In-memory OTP challenge store keyed by login nonce: `createOtpChallenge`/`verifyOtp`/`clearChallenge` (6-digit, 10-min, 5-attempt cap, single-use) + dev-only `__peekOtpForTests`. ponytail: single-instance Map. |
+| `admin-session.ts` | S | `signAdminSession`/`verifyAdminSession` (HMAC `{exp}`, 4h, `timingSafeEqual`), cookie name constants + `adminSessionCookieOptions`. Fail-closed with no secret. |
+| `revoke-admins.ts` | S | `revokeAllAdmins(prisma,{apply})` core for `scripts/revoke-all-admins.ts`: dry-run counts, `--apply` flips `isAdmin→false` (no deletes). |
 | `get-server-session.ts` | S | `getServerSession()`, `getServerSessionOrRedirect(to="/login")` for RSC/Server Actions (NOT API routes). Next 15 `await headers()`. |
 | `audit-log.ts` | S | `writeAuditLog({adminId, adminEmail, action, targetType, targetId?, details?, request?})` — non-fatal try/catch; IP from `x-forwarded-for`/`x-real-ip`. |
 | `fallback-executor.ts` | S | `executeWithFallback(tasks)`, `NoResultsError`, `FallbackTask<T>`. Per-task 5s timeout; Redis circuit breaker: 3 failures → open 600s (`circuit_breaker:fail:{name}` counter + `circuit_breaker:{name}` flag). **Fail-open** — Redis outage = attempt anyway. |
@@ -294,7 +299,8 @@ Full contracts in **API_REFERENCE.md**. Quick index:
 | Script | Purpose |
 |---|---|
 | `compare-chart-accuracy.ts` | ±10% chart-accuracy gate vs MOCKED Collectr reference (10 harness cards). Read-only; exports `CARDS` + `monthly()` reused by the seed. |
-| `create-admin.ts` | Bootstrap/promote admin via `auth.api.signUpEmail` (bcrypt-correct password) + `isAdmin:true`. Re-runnable. |
+| `create-admin.ts` | RETIRED as an auth path — DB `isAdmin` no longer authorizes admin. (Admin is the ENV superuser; log in at `/admin`.) |
+| `revoke-all-admins.ts` | Strip the retired `isAdmin` flag platform-wide. Dry-run default (counts, no writes); `--apply` sets `isAdmin=false` on every row (keeps all user rows). |
 | `assemble-standalone.mjs` | Copies `.next/static` + `public` into `.next/standalone` (e2e + Docker server). |
 | `backfill-tags.ts` | Idempotent `Card.tags` backfill via `buildTags` (only `tags: {isEmpty:true}`). |
 | `backfill-prices.ts` | Whole-catalog price backfill (per-set bulk fetch, batches, PricingHistory anchor rows). |

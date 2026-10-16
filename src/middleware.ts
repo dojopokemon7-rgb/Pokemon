@@ -3,7 +3,9 @@
  *
  * Runs on the Edge runtime (before any rendering or API handler).
  * Protects the `(dashboard)` route group by checking for a valid
- * Better Auth session cookie.
+ * Better Auth session cookie. The `(admin)` route group is NOT guarded
+ * here — it is an isolated surface gated by its own server layout, which
+ * renders the admin login/OTP form in-place (see (admin)/admin/layout.tsx).
  *
  * -------------------------------------------------------------------
  * ARCHITECTURE DECISION — Cookie-Check vs. Full API Validation
@@ -73,7 +75,12 @@ const DEFAULT_AUTHENTICATED_PATH = "/dashboard" as const;
  * Routes that require the user to be authenticated.
  * Any path segment that starts with these prefixes is protected.
  */
-const PROTECTED_PREFIXES: readonly string[] = ["/dashboard", "/admin"];
+// NOTE: `/admin` is deliberately NOT here. The admin world is its own isolated
+// surface, gated server-side by (admin)/admin/layout.tsx which renders the
+// admin login/OTP form IN PLACE when there is no valid admin session. The Edge
+// middleware must NOT bounce an unauthenticated admin visitor to the user
+// `/login` — that would hide the admin login form.
+const PROTECTED_PREFIXES: readonly string[] = ["/dashboard"];
 
 /**
  * Routes that should only be accessible when NOT authenticated.
@@ -165,11 +172,11 @@ export const config = {
      * - /api/health  (Docker health check — always public)
      * - Common static asset extensions
      */
-    // Only run middleware on the two protected route groups. Previously
-    // it ran on every non-static path (including the entire /api/*
-    // surface) even though the logic below only guards these two
-    // prefixes — that was a wasted edge invocation per API call.
+    // Only run middleware on the protected dashboard route group. `/admin` is
+    // gated server-side by its own layout (which renders the admin login form
+    // in-place), so there is no middleware logic left for it — dropping the
+    // `/admin/:path*` entry avoids a wasted edge invocation that would only
+    // (wrongly) redirect to /login.
     "/dashboard/:path*",
-    "/admin/:path*",
   ],
 };

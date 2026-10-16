@@ -141,23 +141,10 @@ function LoginContent() {
       return;
     }
 
-    // Successful sign-in — route admins straight to the admin panel,
-    // everyone else to the dashboard. Best-effort: if the profile fetch
-    // fails for any reason, fall back to the dashboard so the login
-    // action never dead-ends the user.
-    let destination = "/dashboard";
-    try {
-      const res = await fetch("/api/users/me", { credentials: "include" });
-      if (res.ok) {
-        const payload = (await res.json()) as {
-          data?: { isAdmin?: boolean };
-        };
-        if (payload.data?.isAdmin) destination = "/admin";
-      }
-    } catch {
-      // swallowed — fall back to /dashboard below
-    }
-    router.push(destination);
+    // Successful sign-in — always route to the dashboard. The admin world is
+    // a SEPARATE surface reached only at /admin (env creds + mandatory OTP);
+    // public /login never grants admin and never routes anyone there.
+    router.push("/dashboard");
   }
 
   return (

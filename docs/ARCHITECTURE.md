@@ -14,7 +14,7 @@ Browser (React 19 client components)
   │  Better Auth client (auth-client.ts)
   ▼
 Next.js 15 App Router
-  ├─ src/middleware.ts        Edge cookie-presence guard (UX only — /dashboard/*, /admin/*)
+  ├─ src/middleware.ts        Edge cookie-presence guard (UX only — /dashboard/* only; /admin self-gated)
   ├─ Server Components / RSC   getServerSessionOrRedirect() → Prisma direct (SSR-first)
   └─ API routes (src/app/api) thin handlers
         │  requireAuth / requireAdmin (auth-guard.ts)
@@ -40,16 +40,34 @@ login page ──authClient.signIn.email──► /api/auth/* (toNextJsHandler(a
                                           │  Prisma adapter (session table)
                                           │  cookie: better-auth.session_token (7d, __Secure- in prod)
 browser ◄────────────────────────────────┘
-  every /dashboard|/admin nav:
+  every /dashboard nav:
     1. middleware (Edge): cookie PRESENCE only → redirect /login?callbackUrl=
     2. layout (RSC): getServerSession() → DB-backed check → redirect if absent
-       (dashboard layout also bounces isAdmin → /admin; admin layout bounces non-admins → /dashboard)
-    3. every API route: requireAuth()/requireAdmin() re-validates — never trust middleware
+    3. every API route: requireAuth() re-validates — never trust middleware
 ```
 
 Key facts:
-- `isAdmin` flows through `user.additionalFields` (`input:false`) + 5-min `session.cookieCache` → zero extra DB hits per page load; admin revocation propagates ≤5 min.
-- `scripts/create-admin.ts` is the only supported way to grant admin (uses `auth.api.signUpEmail` so the bcrypt hash is correct — direct user-table inserts break login).
+- The USER session (`isAdmin` field) no longer routes admins anywhere — the dashboard layout does NOT bounce to `/admin`, and `/login` does NOT send anyone to `/admin`. `isAdmin` remains on `/api/users/me` for display but is NOT read for authorization.
+- Google OAuth fully wired; see below. The former `scripts/create-admin.ts` DB-admin bootstrap is retired — run `scripts/revoke-all-admins.ts` to strip the stale `isAdmin` flag platform-wide.
+
+### Isolated admin auth (SECURITY-CRITICAL, decoupled from Better Auth)
+
+```
+/admin ──(no admin session)──► AdminAuthGate (in-place login form, NOT /login)
+   │  email+password → POST /api/admin-auth/login
+   │     verifyAdminCredentials (timingSafeEqual over SHA-256 digests of ENV creds)
+   │     → mint loginNonce, createOtpChallenge (randomInt 6-digit, 10-min, 5-attempt cap, single-use)
+   │     → sendOtpEmail(to=ADMIN_EMAIL)  → set httpOnly dojo_admin_login nonce cookie
+   │  6-digit OTP → POST /api/admin-auth/verify-otp
+   │     verifyOtp(nonce,code) ok → signAdminSession() (HMAC {exp}, 4h)
+   │     → set httpOnly+SameSite=Strict+Secure(prod) dojo_admin_session cookie
+   ▼
+(admin)/admin/layout.tsx: verifyAdminSession(cookie) on EVERY request → panel, else AdminAuthGate
+requireAdmin(req): verifies the same dojo_admin_session cookie for the 3 admin API routes
+LOG OUT (AdminSidebar): POST /api/admin-auth/logout clears the cookie → back to the login form
+```
+
+- Admin is ENV-defined (`ADMIN_EMAIL`/`ADMIN_PASSWORD`, server-side only, never in the client bundle), NOT the DB. Helpers: `admin-credentials.ts`, `admin-otp-store.ts` (in-memory Map keyed by nonce — single-instance assumption, Redis upgrade path noted), `admin-session.ts` (`ADMIN_SESSION_SECRET` or `BETTER_AUTH_SECRET`). Password/OTP never logged in prod; the `__test-otp` read seam 404s in production.
 - Google OAuth fully wired (`test` credential fallbacks keep routes alive in dev/CI; e2e mocks the OAuth dance at network layer).
 - OTP/phone plugin disabled for MVP; `sendSmsOtp` + `sendResetPassword` are console-log dev stubs with documented provider swap points (`auth.ts`).
 - `trustedOrigins`: localhost:3000 AND 3001 (e2e), prod domain, `*.vercel.app`.
@@ -60,7 +78,7 @@ Key facts:
 The admin panel surfaces platform metrics through the `admin-metrics.ts` service (REAL grouped SQL only — RULE 2; every number traces to real rows, a quiet day is a true 0, an empty range renders honest "No data yet").
 
 - **Pages.** `/admin` (Overview) + `/admin/analytics` (detail, FEAT-003). Both `force-dynamic` server components that compute aggregates server-side and pass them as TanStack `initialData` to client wrappers (`LiveOverviewStats` / `AnalyticsDetail`) — populated first paint, no empty flash.
-- **Routes.** `GET /api/admin/metrics/overview` ({stats, activeUsers}) and `GET /api/admin/metrics/analytics` (the 7 detail aggregates in one object). Both guarded by the EXISTING `requireAdmin` (401 unauth / 403 non-admin, fresh-DB `isAdmin` re-read — platform financials/PII never leak), `force-dynamic` + `Cache-Control: no-store`. NOT Redis-cached (low-traffic admin, cheap grouped queries).
+- **Routes.** `GET /api/admin/metrics/overview` ({stats, activeUsers}) and `GET /api/admin/metrics/analytics` (the 7 detail aggregates in one object). Both guarded by `requireAdmin` (now 401 when there is no valid `dojo_admin_session` cookie — there is no separate 403 tier anymore; platform financials/PII never leak), `force-dynamic` + `Cache-Control: no-store`. NOT Redis-cached (low-traffic admin, cheap grouped queries).
 - **Live refresh.** The client queries override the global TanStack defaults (staleTime 5m, `refetchOnWindowFocus:false`) PER-QUERY: `staleTime:0` + `refetchInterval:25s` + `refetchOnWindowFocus:true`, so the panel auto-refreshes.
 - **Metric method notes:**
   - *Scan Vision credits are an ESTIMATE* — `estimatedVisionCredits = (successful scans with ocrSource='vision') × 5`. `SyncLog.credits` does NOT meter Vision scans, so this is derived, not read back; the UI labels it "estimated". A scan abandoned before a pick (`pickedCardId IS NULL`) counts as a FAIL.
@@ -416,7 +434,9 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `RESEND_API_KEY` + `EMAIL_FROM` (or `EMAIL_PROVIDER_API_KEY` + `EMAIL_PROVIDER_BASE_URL` + `EMAIL_FROM`) | prod (password reset) | configured → reset links emailed via Resend REST; dev w/o provider logs link; prod w/o provider logs a clear error (never silent) |
 | `AWS_SES_REGION` + `AWS_SES_ACCESS_KEY_ID` + `AWS_SES_SECRET_ACCESS_KEY` (+ `EMAIL_FROM`) | prod (email-OTP, Phase B) | email-OTP verification sender (`ses-email.ts` → `sendOtpEmail`); `hasProvider` = all four set. Phase A: unset → dev-logs the code (dev) / loud code-free error (prod); the real SES call is a throwing stub until Phase B. `EMAIL_FROM` is the shared reset sender (reused). |
 | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` | no | client base URL / future uploads |
-| `ADMIN_INITIAL_PASSWORD` | for create-admin script | |
+| `ADMIN_EMAIL` + `ADMIN_PASSWORD` | yes (admin login) | isolated env-defined admin superuser; server-side only, never in the client bundle. Login only at `/admin` (password + mandatory email OTP). |
+| `ADMIN_SESSION_SECRET` | no | signs the `dojo_admin_session` HMAC cookie (4h); falls back to `BETTER_AUTH_SECRET` if unset |
+| `ADMIN_INITIAL_PASSWORD` | retired | former create-admin bootstrap; DB admins are no longer an auth source (`scripts/revoke-all-admins.ts`) |
 | `RATELIMIT_CREDIT_PER_MIN` | no | per-USER cap on Scrydex-credit routes (recognize/enrich/reprice/ebay-sold POST/portfolio refresh); default **10**/min |
 | `RATELIMIT_AUTH_PER_MIN` | no | per-IP cap on auth sign-in/sign-up POSTs (get-session never limited); default **10**/min |
 | `RATELIMIT_SEARCH_PER_MIN` | no | per-user-if-authed-else-IP cap on `/api/cards/search`; default **60**/min |

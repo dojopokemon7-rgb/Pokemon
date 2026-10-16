@@ -1,42 +1,38 @@
 /**
  * Admin Route Group Layout — (admin)/admin
  *
- * Two-tier enforcement:
- *   1. Middleware (edge) — checks the session cookie exists and redirects
- *      unauthenticated users to /login. Cannot verify isAdmin because the
- *      Edge runtime cannot reach Prisma.
- *   2. This layout (server component) — the real gate. Re-reads
- *      `isAdmin` from the database on every request and redirects
- *      non-admins to /dashboard (fail-closed — doesn't leak /admin URLs).
+ * The admin world is an ISOLATED, Better-Auth-decoupled surface. This server
+ * component is the real gate: it reads the signed `dojo_admin_session` cookie
+ * and verifies its HMAC + expiry (`verifyAdminSession`). It does NOT consult
+ * Better Auth sessions nor the Prisma `isAdmin` column (both retired as admin
+ * auth sources).
  *
- * Never trust the session cookie for admin authorization: it is client-side
- * mutable and admin status can be revoked at any moment.
+ *   - No valid admin session → render the dedicated admin LOGIN/OTP flow
+ *     (AdminAuthGate) IN PLACE, never a redirect to the public /login.
+ *   - Valid admin session → render the sidebar + panel.
+ *
+ * The admin session is established only at /admin via password + mandatory
+ * email OTP (see /api/admin-auth/*). Edge middleware no longer guards /admin —
+ * this layout owns the gate so the login form can render in-place.
  */
 
-import { redirect } from "next/navigation";
-import { getServerSession } from "@/lib/utils/get-server-session";
-import { prisma } from "@/lib/db";
+import { cookies } from "next/headers";
+import { ADMIN_SESSION_COOKIE, verifyAdminSession } from "@/lib/utils/admin-session";
 import AdminSidebar from "./_components/AdminSidebar";
+import AdminAuthGate from "./_components/AdminAuthGate";
 
 export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getServerSession();
-  if (!session) redirect("/login");
+  const cookieStore = await cookies();
+  const token = cookieStore.get(ADMIN_SESSION_COOKIE)?.value;
 
-  // Admin status is re-read FRESH from the DB on every admin request, NOT
-  // trusted from the 5-minute cookie-cached session claim. The admin surface
-  // exposes every user's PII (emails, portfolio values), so a revoked admin
-  // must lose access IMMEDIATELY, not up to 5 minutes later. One indexed
-  // findUnique per admin page load is a negligible cost for that guarantee.
-  const dbUser = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { isAdmin: true },
-  });
-  if (!dbUser?.isAdmin) {
-    redirect("/dashboard");
+  if (!verifyAdminSession(token)) {
+    // No valid admin session — show the login/OTP form in-place, NOT the panel
+    // and NOT a redirect to /login.
+    return <AdminAuthGate />;
   }
 
   return (

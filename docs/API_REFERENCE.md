@@ -1,7 +1,9 @@
 # API_REFERENCE.md — exact request/response contracts for all 22 routes
 
 > Base path: `/api`. All JSON. Auth guards come from `src/lib/utils/auth-guard.ts`:
-> `requireAuth` → 401 without session; `requireAdmin` → 401/403.
+> `requireAuth` → 401 without a Better Auth session; `requireAdmin` → 401 without
+> a valid isolated **admin session** cookie (`dojo_admin_session`) — it no longer
+> reads Better Auth / DB `isAdmin` (see the `/admin-auth/*` routes below).
 > **Public card/eBay routes degrade gracefully: HTTP 200 with empty/`fallback`
 > payloads instead of 5xx** so the UI renders fallback states (AGENTS.md rule 7).
 
@@ -35,7 +37,11 @@
 | `/users/me/collection/[id]` | DELETE | `requireAuth` | — | — | No |
 | `/want-list` | GET, POST | `requireAuth` | `AddWantListSchema` (in service) | — | GET → `[]` |
 | `/want-list/[id]` | PATCH, DELETE | `requireAuth` | `WantIntentEnum` | — | No |
-| `/admin/cards/[id]` | PATCH | `requireAdmin` | inline body schema | — | No |
+| `/admin/cards/[id]` | PATCH | `requireAdmin` (admin session) | inline body schema | — | No |
+| `/admin-auth/login` | POST | public (verifies ENV creds) | `{email,password}` | rate-limited (authTier/IP) | No (401 generic) |
+| `/admin-auth/verify-otp` | POST | login-nonce cookie | `{code}` (6 digits) | rate-limited (authTier/IP) | No (401) |
+| `/admin-auth/logout` | POST | public | — | — | 200 clears cookie |
+| `/admin-auth/__test-otp` | GET | login-nonce cookie | — | — | **404 in production (test seam)** |
 
 Error envelope (authed routes): `{ "error": "<Type>", "message": "<human readable>" }`.
 
@@ -176,12 +182,36 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 
 ---
 
+## Admin auth (isolated, decoupled from Better Auth)
+
+Admin is an ENV-defined superuser (`ADMIN_EMAIL`/`ADMIN_PASSWORD`, server-side
+only). Login ONLY at `/admin` → password + mandatory email OTP on EVERY login →
+a 4h HMAC `dojo_admin_session` cookie. `requireAdmin` (and the admin layout)
+verify that cookie. Creds/OTP never reach the client; never logged in prod.
+
+### `POST /api/admin-auth/login`
+- Body (zod): `{ email, password }`. Verified in constant time against the ENV creds (`admin-credentials.ts`).
+- Wrong creds (or malformed body) → **generic** 401 `{ error: "Invalid credentials" }` (no field/existence leak).
+- Correct → mint a login nonce, `createOtpChallenge` (6-digit `randomInt`, 10-min, 5-attempt cap, single-use), `sendOtpEmail(to=ADMIN_EMAIL)`, set httpOnly `dojo_admin_login` nonce cookie (10-min). 200 `{ step: "otp" }`.
+- Rate-limited per IP (authTier). 429 when over.
+
+### `POST /api/admin-auth/verify-otp`
+- Reads the `dojo_admin_login` nonce cookie (missing → 401 `{ relogin: true }`). Body (zod): `{ code }` (exactly 6 digits).
+- Correct unexpired → `signAdminSession()`, set `dojo_admin_session` (httpOnly + SameSite=Strict + Secure in prod, 4h), clear the nonce cookie. 200 `{ ok: true }`.
+- Wrong/expired → 401 `{ error, remaining }`. 5 wrong → challenge cleared, 401 `{ error: "Too many attempts", relogin: true }` (forces password re-entry). Rate-limited per IP.
+
+### `POST /api/admin-auth/logout`
+- Clears `dojo_admin_session` (+ any `dojo_admin_login`). 200 `{ ok: true }`. Called by the AdminSidebar LOG OUT control.
+
+### `GET /api/admin-auth/__test-otp` — DEV/TEST ONLY
+- Returns the current OTP for the nonce cookie so e2e can read the in-memory code. **Hard 404 when `NODE_ENV==="production"`** (and `__peekOtpForTests` also no-ops in prod).
+
 ## Admin
 
 ### `PATCH /api/admin/cards/[id]` — `[id]` = **internal** Card id
 - Body (inline zod): `{ marketPrice?: number ≥0 ≤1e9 | null, imageUrl?: url ≤2048 | null }` — at least one (refine). `lastPricedAt` refreshed when price sent.
-- Side effect: `writeAuditLog` (action `card.update`, before/after `details`).
-- 200 `{ card: { id, name, marketPrice, imageUrl, lastPricedAt } }`; 400; 401; 403; 404; 500.
+- Side effect: `writeAuditLog` (action `card.update`, before/after `details`; adminEmail = `ADMIN_EMAIL`).
+- 200 `{ card: { id, name, marketPrice, imageUrl, lastPricedAt } }`; 400; 401 (no valid admin session); 404; 500.
 
 ---
 

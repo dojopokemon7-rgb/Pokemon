@@ -1,61 +1,62 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 /**
- * FIX G (sec-audit) — requireAdmin re-reads isAdmin FRESH from the DB.
+ * requireAdmin now gates on the ISOLATED admin session cookie
+ * (`dojo_admin_session`), NOT Better Auth / Prisma `isAdmin`.
  *
- * The admin API guard must NOT trust the cookie-cached session claim (cached up
- * to 5 min). A user whose session still says isAdmin:true but who has been
- * demoted in the DB (dbUser.isAdmin:false) must get 403 immediately. Likewise a
- * fresh-DB admin passes even if the session claim is absent.
+ *  - no cookie / invalid cookie → 401, and Prisma is never touched.
+ *  - a valid signed admin-session cookie → pass, with a synthetic env-admin
+ *    session so downstream consumers keep `guard.session.user.{id,email}`.
  */
 
-const authMock = vi.hoisted(() => ({ getSession: vi.fn() }));
-vi.mock("@/lib/auth", () => ({ auth: { api: { getSession: authMock.getSession } } }));
-
-const prismaMock = vi.hoisted(() => ({ user: { findUnique: vi.fn() } }));
-vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
-
 import { requireAdmin } from "@/lib/utils/auth-guard";
+import { signAdminSession, ADMIN_SESSION_COOKIE } from "@/lib/utils/admin-session";
 
-const req = () => new Request("http://localhost/api/admin/cards/abc", { method: "PATCH" });
+const SECRET = "test-admin-session-secret-abcdef";
+const ADMIN_EMAIL = "dojo.collect@nodwin.com";
+
+function reqWithCookie(cookie?: string): Request {
+  return new Request("http://localhost/api/admin/cards/abc", {
+    method: "PATCH",
+    headers: cookie ? { cookie } : {},
+  });
+}
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  process.env.ADMIN_SESSION_SECRET = SECRET;
+  process.env.ADMIN_EMAIL = ADMIN_EMAIL;
+});
+afterEach(() => {
+  delete process.env.ADMIN_SESSION_SECRET;
+  delete process.env.ADMIN_EMAIL;
 });
 
-describe("requireAdmin — fresh-DB isAdmin (FIX G)", () => {
-  it("returns 403 when the session claims admin but the DB says NOT admin (real-time revocation)", async () => {
-    // Stale session still carries isAdmin:true...
-    authMock.getSession.mockResolvedValue({ user: { id: "u1", isAdmin: true } });
-    // ...but the fresh DB read says the user was demoted.
-    prismaMock.user.findUnique.mockResolvedValue({ isAdmin: false });
-
-    const guard = await requireAdmin(req());
-
-    expect(prismaMock.user.findUnique).toHaveBeenCalledWith({
-      where: { id: "u1" },
-      select: { isAdmin: true },
-    });
+describe("requireAdmin — isolated admin session", () => {
+  it("returns 401 when no admin-session cookie is present", async () => {
+    const guard = await requireAdmin(reqWithCookie());
     expect(guard.session).toBeNull();
-    expect(guard.unauthorized?.status).toBe(403);
-  });
-
-  it("passes when the fresh DB read confirms admin (even if the session claim is absent)", async () => {
-    authMock.getSession.mockResolvedValue({ user: { id: "u2" } });
-    prismaMock.user.findUnique.mockResolvedValue({ isAdmin: true });
-
-    const guard = await requireAdmin(req());
-
-    expect(guard.unauthorized).toBeNull();
-    expect(guard.session?.user.id).toBe("u2");
-  });
-
-  it("returns 401 when unauthenticated and never hits the DB", async () => {
-    authMock.getSession.mockResolvedValue(null);
-
-    const guard = await requireAdmin(req());
-
     expect(guard.unauthorized?.status).toBe(401);
-    expect(prismaMock.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when the admin-session cookie is invalid/tampered", async () => {
+    const guard = await requireAdmin(
+      reqWithCookie(`${ADMIN_SESSION_COOKIE}=not-a-valid-token`)
+    );
+    expect(guard.session).toBeNull();
+    expect(guard.unauthorized?.status).toBe(401);
+  });
+
+  it("passes with a valid signed admin-session cookie and exposes the env admin identity", async () => {
+    const token = signAdminSession();
+    const guard = await requireAdmin(reqWithCookie(`${ADMIN_SESSION_COOKIE}=${token}`));
+    expect(guard.unauthorized).toBeNull();
+    expect(guard.session?.user.id).toBe("env-admin");
+    expect(guard.session?.user.email).toBe(ADMIN_EMAIL);
+  });
+
+  it("rejects an expired admin-session cookie", async () => {
+    const expired = signAdminSession(-1);
+    const guard = await requireAdmin(reqWithCookie(`${ADMIN_SESSION_COOKIE}=${expired}`));
+    expect(guard.unauthorized?.status).toBe(401);
   });
 });

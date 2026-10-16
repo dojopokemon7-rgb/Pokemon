@@ -60,7 +60,16 @@ export default defineConfig({
       // The home spec asserts the unauthenticated / → /login redirect, so
       // it must NOT carry a session. No storageState here on purpose.
       // Google + authed specs run in their own projects below.
-      testIgnore: [/.*\.camera\.spec\.ts/, /google-login\.spec\.ts/, /(collections-ui|want-list|visual-regression|card-details-popup|chart-interactivity|show-more-duplicates|graded-add-flow|optimistic-favorites|search-debounce|folder-filters|notifications-panel|portfolio-real-chart|card-detail-chart)\.spec\.ts/],
+      testIgnore: [/.*\.camera\.spec\.ts/, /google-login\.spec\.ts/, /admin-auth\.spec\.ts/, /(collections-ui|want-list|visual-regression|card-details-popup|chart-interactivity|show-more-duplicates|graded-add-flow|optimistic-favorites|search-debounce|folder-filters|notifications-panel|portfolio-real-chart|card-detail-chart)\.spec\.ts/],
+    },
+    {
+      // Isolated admin-auth spec — runs UNAUTHENTICATED (no storageState), since
+      // the admin world is decoupled from the Better Auth user session. Needs a
+      // NON-production server (so the __test-otp OTP seam is enabled) + the
+      // ADMIN_* env vars; see e2e/admin-auth.spec.ts + verification.md.
+      name: "admin",
+      testMatch: /admin-auth\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
     },
     {
       // Google login specs need a server-trusted session so the

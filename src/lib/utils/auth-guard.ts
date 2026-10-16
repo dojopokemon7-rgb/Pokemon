@@ -36,8 +36,8 @@
  */
 
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/db";
 import { NextResponse } from "next/server";
+import { ADMIN_SESSION_COOKIE, verifyAdminSession } from "@/lib/utils/admin-session";
 
 /**
  * The shape of a validated session returned by Better Auth.
@@ -107,44 +107,68 @@ export async function requireAuth(request: Request): Promise<AuthGuardResult> {
 /**
  * Admin-only auth guard for API routes.
  *
- * Validates the session AND re-reads `isAdmin` from the database on
- * every call. Never trusts the session cookie for authorization —
- * admin status must be revocable in real time.
+ * The admin is now the ENV-defined superuser (ADMIN_EMAIL/ADMIN_PASSWORD),
+ * authenticated via the isolated, Better-Auth-decoupled admin session set at
+ * /admin after password + mandatory email OTP. This guard reads the signed
+ * `dojo_admin_session` cookie from the request headers and verifies its HMAC +
+ * expiry on EVERY call (`verifyAdminSession`). It does NOT touch Better Auth
+ * nor the Prisma `isAdmin` column — `isAdmin` is retired as an auth source.
  *
- * Returns a `401` if unauthenticated, `403` if authenticated but not
- * an admin. Callers use the same discriminated-union pattern as
- * {@link requireAuth}.
+ * Returns a `401` when there is no valid admin session, otherwise a success
+ * result whose `session.user` carries the env admin identity (id "env-admin",
+ * email ADMIN_EMAIL) so existing consumers (e.g. the card-edit audit log) keep
+ * their `guard.session.user.id` / `.email` shape unchanged.
  *
  * @example
  * ```ts
  * export async function PATCH(request: Request) {
  *   const guard = await requireAdmin(request);
  *   if (guard.unauthorized) return guard.unauthorized;
- *   // guard.session.user is a confirmed admin
+ *   // guard.session.user is the confirmed env admin
  * }
  * ```
  */
 export async function requireAdmin(request: Request): Promise<AuthGuardResult> {
-  const guard = await requireAuth(request);
-  if (guard.unauthorized) return guard;
-
-  // Re-read `isAdmin` FRESH from the DB — never trust the cookie-cached
-  // session claim (cached up to 5 min). The admin RSC layout already does
-  // this, so the admin API must match for real-time revocation: a demoted
-  // admin loses API access immediately, not up to 5 minutes later.
-  const dbUser = await prisma.user.findUnique({
-    where: { id: guard.session.user.id },
-    select: { isAdmin: true },
-  });
-  if (!dbUser?.isAdmin) {
+  const token = readAdminSessionCookie(request.headers.get("cookie"));
+  if (!verifyAdminSession(token)) {
     return {
       unauthorized: NextResponse.json(
-        { error: "Forbidden", message: "Admin privileges required." },
-        { status: 403 }
+        {
+          error: "Unauthorized",
+          message: "A valid admin session is required to access this endpoint.",
+        },
+        { status: 401 }
       ),
       session: null,
     };
   }
 
-  return guard;
+  // Minimal synthetic session so downstream consumers (audit log) keep their
+  // `guard.session.user.{id,email}` contract. Cast to AuthSession: only the
+  // user id/email are read by admin routes, and the admin identity is the
+  // env superuser, not a DB user row.
+  const adminEmail = process.env.ADMIN_EMAIL ?? "admin";
+  return {
+    unauthorized: null,
+    session: {
+      user: { id: "env-admin", email: adminEmail },
+    } as unknown as AuthSession,
+  };
+}
+
+/**
+ * Pulls the `dojo_admin_session` cookie value out of a raw Cookie header.
+ * Returns undefined when the header or the cookie is absent. Kept tiny and
+ * dependency-free (middleware/Edge-safe shape, though only used in Node here).
+ */
+function readAdminSessionCookie(cookieHeader: string | null): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === ADMIN_SESSION_COOKIE) {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return undefined;
 }

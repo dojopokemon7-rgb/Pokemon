@@ -77,7 +77,7 @@ src/
     utils/           # pure domain logic + server helpers (auth-guard, audit-log, …)
     validators/      # Zod schemas
     hooks/           # useWantToBuy
-  middleware.ts      # Edge cookie-presence guard for /dashboard/* and /admin/* ONLY
+  middleware.ts      # Edge cookie-presence guard for /dashboard/* ONLY (/admin is gated by its own layout)
 prisma/schema.prisma # 13 models — see docs/ARCHITECTURE.md §Data model
 scripts/             # one-off backfills, create-admin, snapshot jobs, e2e build helper
 tests/               # unit/ + integration/ (Vitest, mocked DB/network)
@@ -117,7 +117,8 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
    (or `requireAdmin`); `if (guard.unauthorized) return guard.unauthorized`.
    Server components: `getServerSessionOrRedirect()`. Middleware is UX-only
    (cookie presence, Edge runtime can't hit Prisma) — every data endpoint
-   re-validates.
+   re-validates. NOTE: `requireAdmin` no longer uses Better Auth / DB `isAdmin`
+   — it verifies the isolated admin session cookie (see RULE 15).
 9. **Ownership-scoped `addedAt` ordering:** bulk adds stamp strictly-decreasing
    timestamps via `assignBulkAddOrder` so the batch lands at the list front in
    selection order. Preserve this when touching add flows.
@@ -136,6 +137,21 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 14. **Comments/doc-chains are load-bearing** in this codebase (they encode WHY:
     eBay sold-listings reality, sync ordering, cookie/Edge constraints). Don't
     strip them when editing.
+15. **Isolated admin auth (SECURITY-CRITICAL).** The admin is an ENV-defined
+    superuser (`ADMIN_EMAIL`/`ADMIN_PASSWORD`, server-side only), NOT the DB
+    `isAdmin` column (retired as an auth source — `isAdmin` may still exist on
+    rows / `/api/users/me`, but NOTHING reads it for admin routing). Admin logs
+    in ONLY at `/admin`: a dedicated login form (never a redirect to `/login`)
+    → password compared with `crypto.timingSafeEqual` over SHA-256 digests
+    (never `===`, see `admin-credentials.ts`) → MANDATORY 6-digit email OTP on
+    EVERY login (`crypto.randomInt`, 10-min expiry, 5-attempt cap, single-use,
+    in-memory store keyed by a login nonce — `admin-otp-store.ts`) sent via the
+    existing `sendOtpEmail` → a SEPARATE, Better-Auth-decoupled admin session:
+    a signed httpOnly + SameSite=Strict + Secure(prod) cookie
+    (`dojo_admin_session`) carrying an HMAC `{exp}` with a 4-hour lifetime
+    (`admin-session.ts`), re-validated on EVERY admin request by the admin layout
+    and `requireAdmin`. Public `/login` NEVER grants admin. Routes:
+    `POST /api/admin-auth/{login,verify-otp,logout}`. Never weaken these controls.
 
 ## 6. Intentional stubs — do NOT "fix" without asking
 

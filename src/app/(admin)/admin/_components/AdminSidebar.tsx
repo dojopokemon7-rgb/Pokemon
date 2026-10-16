@@ -9,7 +9,7 @@
  */
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 interface NavItem {
   label: string;
@@ -28,6 +28,20 @@ const NAV_ITEMS: readonly NavItem[] = [
 
 export default function AdminSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleLogout() {
+    // Clear the admin session cookie server-side, then return to /admin so the
+    // layout gate re-renders the login form (router.refresh re-reads the now-
+    // absent session cookie on the server).
+    try {
+      await fetch("/api/admin-auth/logout", { method: "POST", credentials: "include" });
+    } catch {
+      // Non-fatal — even if the request fails the user is sent back to /admin.
+    }
+    router.push("/admin");
+    router.refresh();
+  }
 
   const isActive = (item: NavItem): boolean =>
     item.exact ? pathname === item.href : pathname.startsWith(item.href);
@@ -94,18 +108,21 @@ export default function AdminSidebar() {
         })}
       </nav>
 
-      {/* --- Back to app --- */}
+      {/* --- Log out --- (replaces the old "Back to App" link: the admin
+          world is isolated from the user app, so there is no in-app link out —
+          only an explicit admin logout that clears the admin session.) */}
       <div
         className="px-6 py-5"
         style={{ borderTop: "1px solid var(--color-dojo-stroke)" }}
       >
-        <Link
-          href="/dashboard"
+        <button
+          type="button"
+          onClick={handleLogout}
           className="dojo-link"
-          style={{ fontSize: "10px" }}
+          style={{ fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}
         >
-          ← Back to App
-        </Link>
+          Log Out
+        </button>
       </div>
     </aside>
   );

@@ -24,14 +24,9 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
-  // Admins live in the admin panel — bounce them there whenever they
-  // land on any /dashboard-group route (login redirect, refresh,
-  // bookmark, deep link, etc.). `isAdmin` is on the session directly
-  // via Better Auth's `user.additionalFields` (see src/lib/auth.ts),
-  // served from the cookie cache — no extra DB round-trip.
-  if ((session.user as { isAdmin?: boolean }).isAdmin) {
-    redirect("/admin");
-  }
+  // The admin panel is now an isolated surface (env creds + OTP at /admin),
+  // fully decoupled from Better Auth. `isAdmin` is retired as an auth source,
+  // so a normal user is NEVER bounced out of the dashboard here.
 
   return <DashboardClientShell>{children}</DashboardClientShell>;
 }
