@@ -6,9 +6,11 @@
  * portfolio totals, per-game owned split, active users, and the top
  * collected / wanted / most-scanned cards.
  *
- * SECURITY: guarded by the EXISTING requireAdmin (401 unauth / 403 non-admin,
- * fresh-DB isAdmin re-read). None of these platform-wide aggregates may leak to
- * a non-admin. Route stays thin — all computation lives in admin-metrics.ts.
+ * SECURITY: guarded by requireAdmin, which now verifies the isolated
+ * `dojo_admin_session` HMAC cookie (401 on absent/invalid/expired — no 403
+ * tier, no Better Auth / Prisma isAdmin lookup). None of these platform-wide
+ * aggregates may leak to a non-admin. Route stays thin — all computation lives
+ * in admin-metrics.ts.
  *
  * CACHING: intentionally NOT Redis-cached. These are per-request authed reads
  * for the low-traffic admin panel; the grouped aggregates run once per page

@@ -8,7 +8,8 @@
  * auto-refreshes every ~25s and on window focus.
  *
  * Mirrors the Overview page header/section styling. Admin status is enforced by
- * the (admin) layout (fresh-DB isAdmin re-read) — this page is already behind it.
+ * the (admin) layout, which verifies the isolated `dojo_admin_session` cookie —
+ * this page is already behind it.
  */
 
 import {

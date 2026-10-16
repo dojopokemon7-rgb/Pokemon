@@ -24,11 +24,19 @@ import { test, expect } from "@playwright/test";
  * (see verification.md) or wire a non-prod webServer for the `admin` project.
  */
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "dojo.collect@nodwin.com";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "Dojocollect@123";
+// Read the admin creds from the server env — never hardcode the real admin
+// password/email in a committed file. The spec is skipped if they are unset.
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 test.describe("isolated admin auth", () => {
   test("full login → OTP → panel → logout, with negative paths", async ({ page, request }) => {
+    test.skip(
+      !ADMIN_EMAIL || !ADMIN_PASSWORD,
+      "ADMIN_EMAIL / ADMIN_PASSWORD must be set in the server env to run this spec"
+    );
+    const adminEmail = ADMIN_EMAIL as string;
+    const adminPassword = ADMIN_PASSWORD as string;
     // (a) unauthenticated /admin shows the login form in-place, not /login.
     await page.goto("/admin");
     await expect(page).toHaveURL(/\/admin$/);
@@ -36,15 +44,15 @@ test.describe("isolated admin auth", () => {
     await expect(page.locator("#admin-email")).toBeVisible();
 
     // (b) wrong credentials → generic error, no panel.
-    await page.locator("#admin-email").fill(ADMIN_EMAIL);
+    await page.locator("#admin-email").fill(adminEmail);
     await page.locator("#admin-password").fill("definitely-wrong");
     await page.locator("#admin-sign-in").click();
     await expect(page.getByText("Invalid credentials.")).toBeVisible();
     await expect(page.locator("#admin-email")).toBeVisible(); // still the form
 
     // (c) correct credentials → OTP step.
-    await page.locator("#admin-email").fill(ADMIN_EMAIL);
-    await page.locator("#admin-password").fill(ADMIN_PASSWORD);
+    await page.locator("#admin-email").fill(adminEmail);
+    await page.locator("#admin-password").fill(adminPassword);
     await page.locator("#admin-sign-in").click();
     await expect(page.locator("#admin-otp")).toBeVisible();
 

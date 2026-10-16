@@ -9,8 +9,10 @@ import { constantTimeEqual, verifyAdminCredentials } from "@/lib/utils/admin-cre
  * case-insensitively.
  */
 
-const EMAIL = "dojo.collect@nodwin.com";
-const PASSWORD = "Dojocollect@123";
+// Throwaway dummy test creds — the real admin credentials live only in .env
+// (gitignored). The suite sets its own process.env below, so any values work.
+const EMAIL = "test-admin@example.com";
+const PASSWORD = "Test-Admin-Password-123";
 
 describe("constantTimeEqual", () => {
   it("returns true for identical strings and false for different ones", () => {
@@ -41,11 +43,11 @@ describe("verifyAdminCredentials", () => {
   });
 
   it("rejects a wrong email", () => {
-    expect(verifyAdminCredentials("someoneelse@nodwin.com", PASSWORD)).toBe(false);
+    expect(verifyAdminCredentials("someoneelse@example.com", PASSWORD)).toBe(false);
   });
 
   it("matches the email case-insensitively (password stays exact)", () => {
-    expect(verifyAdminCredentials("DOJO.Collect@NODWIN.com", PASSWORD)).toBe(true);
+    expect(verifyAdminCredentials("TEST-Admin@EXAMPLE.com", PASSWORD)).toBe(true);
     // Password remains case-sensitive.
     expect(verifyAdminCredentials(EMAIL, PASSWORD.toLowerCase())).toBe(false);
   });

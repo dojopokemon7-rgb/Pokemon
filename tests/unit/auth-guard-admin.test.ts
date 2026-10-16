@@ -13,7 +13,8 @@ import { requireAdmin } from "@/lib/utils/auth-guard";
 import { signAdminSession, ADMIN_SESSION_COOKIE } from "@/lib/utils/admin-session";
 
 const SECRET = "test-admin-session-secret-abcdef";
-const ADMIN_EMAIL = "dojo.collect@nodwin.com";
+// Throwaway dummy email — the real admin email lives only in .env (gitignored).
+const ADMIN_EMAIL = "test-admin@example.com";
 
 function reqWithCookie(cookie?: string): Request {
   return new Request("http://localhost/api/admin/cards/abc", {

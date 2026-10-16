@@ -13,8 +13,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  *   logout            → clears the admin session cookie
  */
 
-const ADMIN_EMAIL = "dojo.collect@nodwin.com";
-const ADMIN_PASSWORD = "Dojocollect@123";
+// Throwaway dummy creds — the real admin credentials live only in .env
+// (gitignored). The suite sets its own process.env in beforeEach.
+const ADMIN_EMAIL = "test-admin@example.com";
+const ADMIN_PASSWORD = "test-admin-password-123";
 
 // Mock the SES sender so no real email is attempted; capture its args.
 type OtpArgs = { to: string; code: string; type: string };

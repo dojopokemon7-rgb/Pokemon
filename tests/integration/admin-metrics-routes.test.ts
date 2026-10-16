@@ -75,7 +75,8 @@ const MOST_SCANNED = [{ cardId: "OP01-064", name: "Zoro", count: 2 }];
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.ADMIN_SESSION_SECRET = ADMIN_SECRET;
-  process.env.ADMIN_EMAIL = "dojo.collect@nodwin.com";
+  // Throwaway dummy email — the real admin email lives only in .env (gitignored).
+  process.env.ADMIN_EMAIL = "test-admin@example.com";
   metricsMock.getPlatformStats.mockResolvedValue(PLATFORM_STATS);
   metricsMock.getRecentPlatformActivity.mockResolvedValue([]);
   metricsMock.getScanUsageSeries.mockResolvedValue(SCAN_SERIES);

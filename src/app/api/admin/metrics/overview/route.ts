@@ -5,9 +5,11 @@
  * dashboard cards render: the headline platform stats (users, value, invested,
  * cards tracked) plus day/week active-user counts.
  *
- * SECURITY: guarded by the EXISTING requireAdmin (401 unauth / 403 non-admin,
- * fresh-DB isAdmin re-read). Platform-wide financials/user data must NEVER leak
- * to a non-admin. Route stays thin — all computation lives in admin-metrics.ts.
+ * SECURITY: guarded by requireAdmin, which now verifies the isolated
+ * `dojo_admin_session` HMAC cookie (401 on absent/invalid/expired — no 403
+ * tier, no Better Auth / Prisma isAdmin lookup). Platform-wide financials/user
+ * data must NEVER leak to a non-admin. Route stays thin — all computation lives
+ * in admin-metrics.ts.
  */
 
 import { NextResponse } from "next/server";
