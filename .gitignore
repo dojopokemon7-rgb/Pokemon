@@ -87,7 +87,6 @@ scripts/check-supabase-schema.ts
 scripts/count-by-game.ts
 scripts/flush-all-cards.ts
 scripts/flush-card-data.ts
-scripts/pull-full-catalog.ts
 scripts/pull-one-set.ts
 scripts/scan-catalog-size.ts
 scripts/scan-language-split.ts
