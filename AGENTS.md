@@ -100,6 +100,14 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
    keys / detail links / admin PATCH) vs `Card.externalId` (catalog id like
    `base1-4` / `OP01-064` — search results, want-list `cardId`, history, reprice,
    add-to-collection). Trending returns BOTH (`id` + `externalId`).
+   **Per-printing re-model (scrydex-parity):** ONE `Card` row per Scrydex
+   printing/variant. The BASE printing keeps the existing bare `externalId`;
+   non-base printings use the composite `"${baseId}::${variantName}"`
+   (e.g. `OP01-120::alt-art`, `base1-4::reverse holofoil`). `Card.printing`
+   carries the variant label (`baseVariantName`/`printingExternalId` in
+   `card-number.ts`). `scrydexId` is NO LONGER unique (several printing rows share
+   one Scrydex id → `@@index([scrydexId])`). When deriving a card NUMBER from a
+   composite id, split on `"::"` first (`item.externalId.split("::")[0]`).
 4. **Zod at every boundary.** External API payloads, Redis-cached payloads (re-parse
    on read), and request bodies all pass through Zod. A source with 0 valid cards
    throws `NoResultsError` so the fallback chain advances without tripping the
@@ -173,6 +181,8 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 | Card `set` filter | Matches set NAME (not id) — known limitation |
 | Card search `language` filter | Language has NO column — inferred from the `externalId` `_ja-` marker (JA cards contain `_ja-`, e.g. `bw1b_ja-3`; EN/other do not). `en\|ja\|all` (default `all`) on `GET /api/cards/search` + the `?language=` search-page param, filtering via escaped Prisma `contains:"\\_ja-"` (literal underscore). "English" = non-Japanese (other langs lumped in). ponytail: filtered LIKE scan; upgrade = expression index or generated `isJapanese` column |
 | `activeFloorListings` stat | Explicit 0 stub until a listings table exists |
+| `Card.variantImages` (variant-identity display) | RETIRED (scrydex-parity): per-printing rows each carry their OWN `imageUrl`, so the hero/prices/writer no longer read-or-write `variantImages` for variant identity (`pickVariantImages` write + `onePieceVariantImageUrl` hero resolution removed). Column KEPT (nullable, back-compat); scanner/recognize keep a null-tolerant dormant read (now always `{}`) — `ponytail:` upgrade = per-printing scan candidates |
+| Per-printing catalog pull | OWNER-RUN, PAID, NOT auto-run. `scripts/reingest-per-printing.ts` (dry-run default, `--apply` gated, `--game=onepiece\|pokemon`) + `scripts/verify-parity.ts`. Build ships the mappers/helpers/migration + offline tests ONLY — it NEVER opens the Scrydex credit gate. Owner applies the `card_per_printing_model` migration then runs the gated pull (One Piece ≈29 credits first, Pokémon ≈475) |
 
 ## 7. Testing map
 
