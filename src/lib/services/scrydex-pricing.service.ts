@@ -28,7 +28,6 @@ import {
   fetchScrydexSoldListings,
   resolveScrydexCard,
   pickRawPrice,
-  pickVariantImages,
   type ScrydexCard,
 } from "./scrydex.service";
 import { redis, RedisKeys } from "@/lib/redis";
@@ -356,30 +355,13 @@ export async function pullAndStoreScrydexPrice(
     ]);
   }
 
-  // --- 4b. One Piece per-variant images (alt-art fix) ----------------------
-  // Reuse the already-fetched scrydexCard (NO extra HTTP). Write Card.variantImages
-  // ONLY when BOTH hold: (a) this is a ONE PIECE card, and (b) the map is
-  // NON-EMPTY. The price writer is NEVER a null-clearer — only the backfill
-  // clears via canonical equality — so a transient imageless pull can never
-  // clobber a previously backfilled map. The Pokémon path is byte-for-byte
-  // untouched (gated out here). Best-effort: a failure must NOT fail the pull
-  // (mirrors the weeklyChange / scrydexId updates above).
-  if (card.game === Game.ONE_PIECE) {
-    const vimg = pickVariantImages(scrydexCard);
-    if (Object.keys(vimg).length > 0) {
-      try {
-        await prisma.card.update({
-          where: { id: card.id },
-          data: { variantImages: vimg },
-        });
-      } catch (imgErr) {
-        console.warn(
-          `[scrydex-pricing] variantImages update failed for ${card.externalId} (non-fatal):`,
-          imgErr instanceof Error ? imgErr.message : imgErr
-        );
-      }
-    }
-  }
+  // --- 4b. (RETIRED, FEAT-004) One Piece per-variant image write ------------
+  // The `pickVariantImages(scrydexCard)` → Card.variantImages write block used
+  // to live here; it was the LAST writer of variantImages. With per-printing
+  // rows each printing is its own Card row carrying its own imageUrl, so the
+  // per-variant map on one row is no longer the variant-identity mechanism
+  // (design §6.4, AC-21). The column stays nullable for back-compat but nothing
+  // writes it. `pickVariantImages` is no longer imported here.
 
   // --- 5. Credit metering --------------------------------------------------
   // One HTTP fetch happened (resolve-search OR by-id), so meter one call

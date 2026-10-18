@@ -355,6 +355,12 @@ export default function ScannerPage() {
     colorCanvas: HTMLCanvasElement
   ): Promise<Candidate[]> {
     const top = cands[0];
+    // ponytail: dormant `variantImages` read. FEAT-004 retired the per-variant
+    // image map as the variant-identity mechanism (each printing is now its own
+    // card row), so this read now always sees `{}`/null and this function
+    // degrades to single-image behaviour. Kept null-tolerant deliberately;
+    // out-of-scope to rework. Upgrade path = have the recognize route return
+    // the distinct per-printing rows as candidates (each with its own imageUrl).
     const map = top?.variantImages ? parseVariantImages(top.variantImages) : null;
     if (!top || !map) return cands;
 

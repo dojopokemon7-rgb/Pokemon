@@ -295,6 +295,14 @@ export async function POST(request: Request): Promise<NextResponse> {
         // A genuinely new user-added card (not in the catalog) legitimately
         // needs metadata, but its PRICE must be null (RULE 2 — never fabricate;
         // a real price arrives later from a Scrydex pull, never client input).
+        // FEAT-004 (design §6.3, MEDIUM-2): strip the `::<variant>` printing
+        // suffix before deriving the number so a composite id never corrupts
+        // `number` ("OP01-120::alt-art" → "OP01-120"; "base1-4::reverse
+        // holofoil" → "4"). No-op for today's non-composite ids. The printing
+        // label is left at the schema default here — a bare composite submitted
+        // without its catalog row carries no reliable variant name; the real
+        // label lands when the re-ingest upserts the printing.
+        const baseExt = item.externalId.split("::")[0];
         card = await prisma.card.create({
           data: {
             externalId: item.externalId,
@@ -302,7 +310,7 @@ export async function POST(request: Request): Promise<NextResponse> {
             // Game-gated collector number. The add payload carries no `game`,
             // so One Piece is detected by the Bandai code shape (OP/ST/EB/PRB
             // prefix) — Pokémon ids ("base1-4") fall through to the hyphen-tail.
-            number: deriveStoredCardNumber(item.externalId, isOnePieceCode(item.externalId)),
+            number: deriveStoredCardNumber(baseExt, isOnePieceCode(baseExt)),
             rarity: item.rarity ?? "Unknown",
             types: item.types ?? [],
             imageUrl: item.imageUrl ?? null,

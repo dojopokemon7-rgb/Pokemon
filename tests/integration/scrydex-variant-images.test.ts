@@ -155,28 +155,16 @@ describe("Scrydex schema + pickVariantImages (OP08-023)", () => {
   });
 });
 
-describe("ingest write — One Piece only, non-empty only", () => {
-  it("stores Card.variantImages for a ONE PIECE card with the altArt image", async () => {
+describe("ingest write — variantImages write RETIRED (FEAT-004, AC-21)", () => {
+  // FEAT-004 retired the variant-identity display path: each printing is now
+  // its own Card row with its own imageUrl, so the price writer's §4b
+  // pickVariantImages → Card.variantImages block was removed (it was the LAST
+  // writer of the column). These pins assert NO production write path populates
+  // variantImages — for EITHER game, image-ful or imageless.
+  it("NEVER writes variantImages for a ONE PIECE card (retired path)", async () => {
     fetchByIdMock.mockResolvedValue(OP08_023);
 
     await pullAndStoreScrydexPrice(OP_CARD);
-
-    const imgUpdate = prismaMock.card.update.mock.calls.find(
-      (c) => c[0]?.data && "variantImages" in c[0].data
-    );
-    expect(imgUpdate).toBeTruthy();
-    const vimg = imgUpdate![0].data.variantImages;
-    expect(vimg.altArt.large).toBe(
-      "https://images.scrydex.com/onepiece/op08-023-altart/large"
-    );
-    expect(vimg).not.toHaveProperty("specialAltArt");
-  });
-
-  it("NEVER writes variantImages for a Pokémon card", async () => {
-    // Same fixture shape (with images) but game = POKEMON → must be gated out.
-    fetchByIdMock.mockResolvedValue({ ...OP08_023, id: "me55c-4" });
-
-    await pullAndStoreScrydexPrice(PKMN_CARD);
 
     const anyImgUpdate = prismaMock.card.update.mock.calls.some(
       (c) => c[0]?.data && "variantImages" in c[0].data
@@ -184,24 +172,11 @@ describe("ingest write — One Piece only, non-empty only", () => {
     expect(anyImgUpdate).toBe(false);
   });
 
-  it("does NOT write variantImages when the map is empty, even for One Piece", async () => {
-    // All variants imageless → pickVariantImages returns {} → no write.
-    const imageless: ScrydexCard = {
-      ...OP08_023,
-      images: null,
-      variants: [
-        {
-          name: "foil",
-          images: null,
-          prices: [
-            { type: "raw", condition: "NM", company: null, grade: null, market: 5, low: 4, currency: "USD", trends: null },
-          ],
-        },
-      ],
-    };
-    fetchByIdMock.mockResolvedValue(imageless);
+  it("NEVER writes variantImages for a Pokémon card", async () => {
+    // Same fixture shape (with images) but game = POKEMON.
+    fetchByIdMock.mockResolvedValue({ ...OP08_023, id: "me55c-4" });
 
-    await pullAndStoreScrydexPrice(OP_CARD);
+    await pullAndStoreScrydexPrice(PKMN_CARD);
 
     const anyImgUpdate = prismaMock.card.update.mock.calls.some(
       (c) => c[0]?.data && "variantImages" in c[0].data

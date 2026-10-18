@@ -65,9 +65,10 @@ describe("GET /api/cards/[id]/prices — re-validate cached read (FIX D)", () =>
   });
 
   it("serves a VALID cached blob without hitting the DB", async () => {
-    // variantImages is REQUIRED-nullable on the schema now (alt-art fix) — a
-    // valid blob must carry the key (a pre-change blob lacking it MISSES).
-    cacheMock.cacheGetJson.mockResolvedValue({ prices: [{ id: "cached" }], weeklyChangePct: null, variantImages: null });
+    // FEAT-004 dropped `variantImages` from the prices payload + cache schema.
+    // A valid blob needs only `prices` (array) + `weeklyChangePct`; z.object
+    // tolerates an extra legacy `variantImages` key (ignored) on old blobs.
+    cacheMock.cacheGetJson.mockResolvedValue({ prices: [{ id: "cached" }], weeklyChangePct: null });
 
     const res = await pricesGET(new Request("http://localhost/api/cards/base1-4/prices"), {
       params: Promise.resolve({ id: "base1-4" }),

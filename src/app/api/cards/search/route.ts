@@ -352,6 +352,8 @@ export async function GET(request: Request): Promise<NextResponse> {
         externalId: true,
         name: true,
         number: true,
+        // Per-printing parity (FEAT-004): the variant label for this row.
+        printing: true,
         rarity: true,
         types: true,
         tags: true,
@@ -485,6 +487,10 @@ export async function GET(request: Request): Promise<NextResponse> {
     // Stays number|null (never a fabricated 0) so NormalizedCardSchema — and
     // this route's cached-payload re-parse — still validate.
     marketPrice: pickHeadlineRaw(r.currentPrices ?? []) ?? r.marketPrice ?? null,
+    // Per-printing parity (FEAT-004): surface the variant label so each
+    // printing result is distinguishable ("Alt Art" / "foil"). Null for
+    // rows with no stored printing — the tile then shows nothing extra.
+    printing: r.printing ?? null,
   }));
 
   // Best-effort cache fill. Only non-empty 200s reach here (zero rows returned

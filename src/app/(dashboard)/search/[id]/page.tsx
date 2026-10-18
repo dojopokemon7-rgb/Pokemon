@@ -39,7 +39,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
-import { cardImgById, onePieceImageUrl, onePieceVariantImageUrl } from "@/lib/utils/card-image";
+import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
 import {
   buildChips,
   buildChartMatrix,
@@ -257,9 +257,6 @@ function CardDetailInner() {
   });
 
   const allPrices: CurrentPriceRow[] = useMemo(() => pricesData?.prices ?? [], [pricesData]);
-  // One Piece per-variant image map (null for Pokémon / un-backfilled cards).
-  // The hero resolves the SELECTED variant's art from it below.
-  const variantImages = pricesData?.variantImages ?? null;
   // Variants actually stored for this card (selector shows only when > 1). The
   // default equals the headline variant (pickDefaultVariant), so the headline
   // does not regress; the user's pick is scoped to this card id.
@@ -320,17 +317,15 @@ function CardDetailInner() {
   // If the proxy 404s (live-search card with no stored row) the plain <img>'s
   // onError swaps in the local placeholder, so no raw url ever leaks.
   const PLACEHOLDER = "/cards/card-front.webp";
-  // One Piece hero: when the SELECTED variant has a stored image, show THAT
-  // (alt-art fix — onePieceImageUrl(id) is variant-blind and always resolved
-  // the base art). Otherwise fall back to the variant-blind base-art Bandai
-  // proxy (then PLACEHOLDER). The URL is images.scrydex.com, rendered through
-  // the plain <img> → it's already CSP-allowlisted via the card-img proxy host
-  // list; no CSP/SSRF change. Pokémon branch (cardImgById) is unchanged.
+  // One Piece hero: FEAT-004 retired the per-variant `variantImages` art
+  // resolution — with per-printing rows each printing is its own card id
+  // (`...::alt-art`) carrying its own imageUrl, so the hero no longer needs to
+  // pick art out of a per-variant map. It resolves the base-art Bandai proxy
+  // for the route id (then PLACEHOLDER on 404). Pokémon branch (cardImgById)
+  // is unchanged.
   const heroSrc =
     game === "onepiece"
-      ? onePieceVariantImageUrl(variantImages, variant) ??
-        onePieceImageUrl(id) ??
-        PLACEHOLDER
+      ? onePieceImageUrl(id) ?? PLACEHOLDER
       : cardImgById(id);
   const [heroError, setHeroError] = useState(false);
   // Reset the single-hop onError flag whenever the resolved src changes (e.g.

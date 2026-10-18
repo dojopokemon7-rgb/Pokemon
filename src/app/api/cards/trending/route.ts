@@ -67,6 +67,8 @@ const TRENDING_SELECT = {
   imageUrl: true,
   imageUrlHi: true,
   marketPrice: true,
+  // Per-printing parity (FEAT-004): the variant label for this row.
+  printing: true,
   // Prefer the RAW CurrentPrice (same shared pickHeadlineRaw the card-detail
   // page and search list use) over the cached Card.marketPrice — which is
   // stale/garbage for some cards (e.g. a seed placeholder of 50000) and null
@@ -327,6 +329,9 @@ export async function GET(request: Request): Promise<NextResponse> {
       // Graded-ness rides on `rarity` ("PSA 10") — the popup uses it to
       // open the graded add flow (F-19). No dedicated grade column yet.
       rarity: c.rarity ?? null,
+      // Per-printing parity (FEAT-004): the variant label for this row
+      // ("Alt Art" / "foil"); null when the row has no stored printing.
+      printing: c.printing ?? null,
       // No real historical pricing data yet — never fabricate a delta.
       delta: null as string | null,
       up: null as boolean | null,

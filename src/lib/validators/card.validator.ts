@@ -62,6 +62,12 @@ export const NormalizedCardSchema = z.object({
       "imageUrl must be an absolute URL or a same-origin path starting with '/'"
     ),
   marketPrice: z.number().nullable().default(null),
+  // Per-printing parity (FEAT-004): the Scrydex variant label for THIS row
+  // ("normal" / "Alt Art" / "foil" / "reverse holofoil"). OPTIONAL + nullable
+  // so OLD cached search blobs (written before per-printing rows) still
+  // validate as `null` — additive, never required. The tile shows it next to
+  // the number when present and not "normal".
+  printing: z.string().nullish(),
 });
 
 /**
