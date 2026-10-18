@@ -1,0 +1,62 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "reviewDoc": "d:\\Pokemon\\Pokemon\\.worktrees\\scrydex-parity\\.agents\\tasks\\scrydex-parity-catalog\\design-review.md",
+  "findings": [
+    {
+      "id": "HIGH-1",
+      "severity": "HIGH",
+      "title": "Per-set transactional migration (FR-3.5/NFR-2/AC-13 HARD CONSTRAINT) has no concrete mechanism against the page-based ingest scripts",
+      "where": "design.md §5.4, §7, §9",
+      "problem": "Both ingest scripts (pull-full-catalog.ts, ingest-onepiece-catalog.ts) page the catalog by PAGE (100 cards/page, cards from many sets interleaved, a set spanning many pages) and do per-card upserts with NO prisma.$transaction anywhere. The design asserts 'processes one set at a time, each set's upserts inside a $transaction' but never specifies the restructuring that makes per-set transactions possible against a page-based fetch. As written the HARD CONSTRAINT is either silently violated or left for the implementer to invent.",
+      "fix": "In §5.4 name the transaction UNIT and how cards are grouped into it. Option A: two-pass set-grouped apply (page+buffer rows keyed by setExternalId, then per-set $transaction with the two assertions). Option B: staging-first whole-DB as the rollback unit, with Option A as the prod-direct fallback. Option C: accept per-PAGE transactional + idempotent resume and reword FR-3.5/AC-13 'per-set' to 'per-page + resumable'. Pick one and specify crash recovery concretely."
+    },
+    {
+      "id": "MEDIUM-1",
+      "severity": "MEDIUM",
+      "title": "Net-Card-increase assertion is the sole guard for a clean Pokémon set-name miss but is under-specified (re-run + cross-set edges)",
+      "where": "design.md §5.1 duplicate-base/net-increase assertions, §9",
+      "problem": "On a seed-set-name miss the orphaned base1-4 row and the new green-field me55c-4 base land in DIFFERENT sets, so the 'exactly one base per number+set' duplicate-base assertion PASSES in both sets and does NOT catch it — only the net-increase assertion does. The design never states net-increase is the sole catcher, and two edges are fragile: (a) worded as 'non-base printings created' it is ambiguous vs stored-total, and the stored-total reading would FALSELY fire on an idempotent re-run (AC-5); (b) the per-set scope catching a cross-set split is not proven in prose.",
+      "fix": "State the net-increase assertion counts rows CREATED this run (the `created` tally) so a 0-creation re-run passes; add a sentence proving the per-set net-increase on the Scrydex-keyed set catches the cross-set split (+N vs +(N-1)); and make the MANDATORY §1.2 pre-check a hard precondition — if seed set names don't line up with Scrydex expansion names, Pokémon set reconciliation is REQUIRED before --apply, enforced not just noted."
+    },
+    {
+      "id": "MEDIUM-2",
+      "severity": "MEDIUM",
+      "title": "Guarded-delete helper (FR-3.4/AC-12) is specified but never fed an orphan set — the audit queries nothing",
+      "where": "design.md §5.3, §7 ('runs the guarded-delete audit (expected: 0 deletes)')",
+      "problem": "The normal path adds rows and matches base printings onto existing rows; it never enumerates EXISTING catalog rows the re-ingest did not touch (stale seed rows / cards Scrydex dropped). The design claims a guarded-delete audit runs but never specifies what it queries, so the helper is dead code and stale collapsed singletons silently persist (a parity miss FR-5.1 would not catch). Not data loss, but an unmet requirement as claimed.",
+      "fix": "Either (a) specify the orphan-enumeration step: track upserted externalIds per game this run, then SELECT card rows WHERE game=G AND externalId NOT IN (upserted) AND no user_collection ref → delete only those, counted in before/after, run after all sets commit; or (b) explicitly scope the migration ADD-ONLY and reword FR-3.4/AC-12 to 'no delete performed' so the guarded delete is not claimed as delivered."
+    },
+    {
+      "id": "NIT-1",
+      "severity": "NIT",
+      "title": "Credit-gate import path inconsistent with AGENTS.md",
+      "where": "design.md §4.3/§4.4/§7 vs AGENTS.md §8 vs the real OP script import",
+      "problem": "Design cites scrydex-credit-gate.ts; AGENTS.md lists it under src/lib/utils/; the OP script actually imports from ../src/lib/services/scrydex-credit-gate (the path that compiles).",
+      "fix": "State the Pokémon rewrite imports from @/lib/services/scrydex-credit-gate, matching the OP script."
+    },
+    {
+      "id": "NIT-2",
+      "severity": "NIT",
+      "title": "PLAN.md absent from the worktree task folder (confirmed)",
+      "where": "design.md header note",
+      "problem": "PLAN.md exists only at the repo root, not in the worktree task folder. Already documented by the design; no change required.",
+      "fix": "No design change needed — recorded so the implementer reads PLAN.md at the repo-root path."
+    },
+    {
+      "id": "NIT-3",
+      "severity": "NIT",
+      "title": "pull-full-catalog.ts not on the worktree branch; copy step not pinned",
+      "where": "design.md §4.3 provenance note, Appendix",
+      "problem": "The script exists only at repo-root scripts/; the design says 'bring it in' but doesn't pin the exact copy command, risking an edit to the wrong tree.",
+      "fix": "Name the concrete action (git show master:scripts/pull-full-catalog.ts into the worktree, or cp from repo root) before editing."
+    },
+    {
+      "id": "NIT-4",
+      "severity": "NIT",
+      "title": "buildCardRow headline-price uses variants[0] / flat scan; the per-variant rewrite must re-scope it explicitly",
+      "where": "design.md §4.3 vs real buildCardRow (raw7 from variants[0], nmRaw from a catalog-wide flatMap)",
+      "problem": "The design's intent (per-variant price) is right, but the existing code derives the headline from variants[0] and a union flatMap; a rewrite that leaves those would copy variant-0's price onto every printing and fail AC-17.",
+      "fix": "Add an explicit note that the variants[0]/flatMap headline derivation is REPLACED with the CURRENT variant's prices[], mirroring the explicitness already applied to the upsertOnePieceCard cleanup."
+    }
+  ]
+}
