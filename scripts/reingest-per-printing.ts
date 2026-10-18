@@ -769,7 +769,21 @@ async function run(): Promise<void> {
           skipped: 0,
         };
 
-        for (const b of printings) {
+        // Dedupe printings by their final externalId within the set. The same
+        // physical card can appear twice in the buffered set when the set-
+        // reconcile merged two source expansions (e.g. a main set + a
+        // tournament/promo sub-set) that both contain the same Bandai number —
+        // Scrydex returns both, each mapping to the same base externalId. They
+        // are the SAME card, not two base rows: keep the first occurrence so a
+        // legitimate source-level duplicate doesn't trip assertion (1).
+        const seenExt = new Set<string>();
+        const dedupedPrintings = printings.filter((b) => {
+          if (seenExt.has(b.externalId)) return false;
+          seenExt.add(b.externalId);
+          return true;
+        });
+
+        for (const b of dedupedPrintings) {
           const outcome =
             game === Game.ONE_PIECE
               ? await applyOnePiecePrinting(tx, b)
@@ -800,9 +814,11 @@ async function run(): Promise<void> {
             : before.cardCount + tallies.createdBase + tallies.createdNonBase,
         };
 
-        // Base-rows-per-number tally for assertion (1).
+        // Base-rows-per-number tally for assertion (1) — computed from the
+        // SAME deduped list the apply loop used (a source-level duplicate base
+        // is one card, not two).
         const baseRowsByNumber = new Map<string, number>();
-        for (const b of printings) {
+        for (const b of dedupedPrintings) {
           if (isBasePrinting(b.externalId)) {
             baseRowsByNumber.set(
               b.number,
