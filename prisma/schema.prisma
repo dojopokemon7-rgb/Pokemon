@@ -176,9 +176,19 @@ model Card {
   // Bandai code) — Scrydex uses its OWN id namespace, so a resolved id is
   // persisted here to skip the search on subsequent pulls (one credit, no
   // re-matching). Nullable: a card that never resolves simply stays null.
-  scrydexId  String?    @unique
+  // Non-unique in the per-printing re-model: one Scrydex card expands to one
+  // row PER printing, so several rows now legitimately share the same
+  // scrydexId. The old `@unique` is relaxed to a plain `@@index([scrydexId])`
+  // (migration card_per_printing_model drops `card_scrydexId_key`, adds
+  // `card_scrydexId_idx`). Lookups still index-seek; they just aren't 1:1.
+  scrydexId  String?
   name       String
   number     String // Card number within the set (e.g., "001/165")
+  // Scrydex `variants[].name` stored verbatim (e.g. "normal", "reverse
+  // holofoil", "alt art"). One row per printing; the BASE printing keeps the
+  // original externalId, non-base rows use `${baseId}::${name}`. Defaults to
+  // "normal" when Scrydex omits a variant name (see the migration backfill).
+  printing   String? // per-printing key component (design.md §4.1)
   rarity     String?
   types      String[] // Comma-separated or JSON array (e.g., ["Fire", "Normal"])
   // Searchable keyword tags built from card/set metadata (types, rarity,
@@ -228,6 +238,12 @@ model Card {
 
   @@index([setId])
   @@index([name])
+  // scrydexId is NO LONGER @unique (per-printing re-model: many rows share one
+  // scrydexId). This plain index keeps resolveScrydexCard lookups index-seeked.
+  // NOTE: `number` has NO uniqueness to drop — Card declares only `externalId`
+  // @unique (kept; the `${baseId}::${name}` composite rides it) and formerly
+  // `scrydexId` @unique (relaxed here). There is no `@@unique` on `number`.
+  @@index([scrydexId])
   // Trending endpoint orders by `updatedAt desc` over the whole
   // catalog; without this index the sync's daily writes force a full
   // sequential scan on every trending fetch.

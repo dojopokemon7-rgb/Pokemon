@@ -37,3 +37,29 @@ export function deriveStoredCardNumber(externalId: string, isOnePiece: boolean):
   const parts = externalId.split("-");
   return parts.length > 1 ? parts[parts.length - 1] : externalId;
 }
+
+/**
+ * The name of the BASE printing for a per-printing re-model (design.md §4.1).
+ *
+ * Given a card's Scrydex `variants[].name` list, the base printing is the one
+ * named "normal" (case-insensitive) if present, else the lexicographically
+ * smallest name (localeCompare "en"). An empty name maps to "normal" so a
+ * nameless variant is treated as the base. Order-independent: sorting a copy
+ * means the same set of names always yields the same base, regardless of the
+ * input array's order.
+ */
+export function baseVariantName(variantNames: string[]): string {
+  const names = variantNames.map((n) => (n === "" ? "normal" : n));
+  const normal = names.find((n) => n.toLowerCase() === "normal");
+  if (normal) return normal;
+  return [...names].sort((a, b) => a.localeCompare(b, "en"))[0];
+}
+
+/**
+ * The per-printing externalId (design.md §4.1). The BASE printing keeps the
+ * existing row's externalId verbatim; every non-base printing gets a stable
+ * `${baseId}::${variantName}` composite key that rides the `externalId @unique`.
+ */
+export function printingExternalId(baseId: string, variantName: string, baseName: string): string {
+  return variantName === baseName ? baseId : `${baseId}::${variantName}`;
+}

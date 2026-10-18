@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { isOnePieceCode, deriveStoredCardNumber } from "@/lib/utils/card-number";
+import {
+  isOnePieceCode,
+  deriveStoredCardNumber,
+  baseVariantName,
+  printingExternalId,
+} from "@/lib/utils/card-number";
 import { normalizeNumber } from "@/lib/services/card-recognition.service";
 
 /**
@@ -50,5 +55,36 @@ describe("deriveStoredCardNumber", () => {
     }
     // And the bare-tail form would NOT match — proving why the old behavior broke.
     expect(normalizeNumber("064")).not.toBe(normalizeNumber("OP01-064"));
+  });
+});
+
+describe("baseVariantName", () => {
+  it("prefers 'normal' (case-insensitive) when present", () => {
+    expect(baseVariantName(["normal", "foil"])).toBe("normal");
+    expect(baseVariantName(["Reverse Holofoil", "Normal"])).toBe("Normal");
+  });
+
+  it("falls back to the lexicographically smallest name", () => {
+    expect(baseVariantName(["foil", "alt art"])).toBe("alt art");
+  });
+
+  it("is order-independent", () => {
+    expect(baseVariantName(["foil", "alt art"])).toBe(baseVariantName(["alt art", "foil"]));
+  });
+
+  it("maps an empty name to 'normal'", () => {
+    expect(baseVariantName([""])).toBe("normal");
+  });
+});
+
+describe("printingExternalId", () => {
+  it("keeps the base id verbatim for the base printing", () => {
+    expect(printingExternalId("base1-4", "normal", "normal")).toBe("base1-4");
+  });
+
+  it("appends `::<variant>` for a non-base printing", () => {
+    expect(printingExternalId("base1-4", "reverse holofoil", "normal")).toBe(
+      "base1-4::reverse holofoil",
+    );
   });
 });
