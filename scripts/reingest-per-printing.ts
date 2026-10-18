@@ -821,6 +821,12 @@ async function run(): Promise<void> {
           `[reingest] set ${setKey}: before=${before.cardCount} after=${after.cardCount} ` +
             `(+base ${tallies.createdBase} +nonBase ${tallies.createdNonBase} upd ${tallies.updated} skip ${tallies.skipped})`
         );
+      }, {
+        // A large set (hundreds of printings × price rows) over the remote
+        // Mumbai direct connection can exceed Prisma's 5s default. Give each
+        // per-set transaction a generous ceiling; maxWait covers pool acquire.
+        timeout: 120_000,
+        maxWait: 20_000,
       });
     } catch (err) {
       console.error(
