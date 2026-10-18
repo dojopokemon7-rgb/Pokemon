@@ -4,6 +4,31 @@
 is authored here and applied by the OWNER/orchestrator. There is no live DB in
 the build sandbox.
 
+## ⚠️ MANDATORY PREREQUISITE — copy the per-printing Pokémon mapper first
+
+`scripts/pull-full-catalog.ts` is **git-ignored and NOT committed** (design-addendum
+NIT-3). The committed orchestrator `scripts/reingest-per-printing.ts` imports the
+per-printing mapper (`buildCardRows` / `buildPriceRows` / `pickBaseImageUrl`, plus
+the `import.meta.url` runner guard and composite/headline logic) from
+`./pull-full-catalog`. On a **fresh checkout / merge / Droplet pull** that import
+resolves to the STALE repo-root `pull-full-catalog.ts`, which still has the OLD
+singular `buildCardRow` (collapse-to-one-row, no exports, no composite key, no
+runner guard). Without the copy the orchestrator **will not compile/run**, and if
+forced it would silently collapse printings to one row per card.
+
+Before running the re-ingest on whatever tree actually executes the pull, copy the
+per-printing version into `scripts/` (PowerShell shown; quote the space in the
+path):
+
+```powershell
+Copy-Item ".worktrees\scrydex-parity-build\scripts\pull-full-catalog.ts" `
+          "scripts\pull-full-catalog.ts" -Force
+```
+
+The copy **stays git-ignored** — do not commit it. The green Pokémon-mapper unit
+coverage in the quality gate depends on this worktree copy being present; a tree
+missing it has no per-printing mapper under test.
+
 ## What it does
 
 Per-printing catalog re-model — additive column + index swap on `card`:

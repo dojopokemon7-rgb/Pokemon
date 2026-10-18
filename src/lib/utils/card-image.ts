@@ -146,14 +146,25 @@ export function cardImgById(externalId: string, hi = false): string {
 // Set-coded cards (OP/ST/EB/PRB) + P-### promos — the codes Bandai's CDN hosts.
 const ONE_PIECE_CODE = /^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/;
 
+/**
+ * Per-printing externalIds are composite: `${baseId}::${variantName}` (e.g.
+ * "OP01-120::alt-art"). Bandai's CDN keys off the BARE card code, so strip the
+ * `::<variant>` suffix before any Bandai-code test / proxy-URL build. No-op for
+ * a non-composite (base-printing) id. Mirrors the `split("::")[0]` seam the
+ * collection add-route uses to derive the number from a composite id.
+ */
+function baseOnePieceCode(externalId: string): string {
+  return externalId.split("::")[0].trim().toUpperCase();
+}
+
 /** True for a One Piece card code we can build a Bandai-proxy URL for. */
 export function isOnePieceCode(externalId: string): boolean {
-  return ONE_PIECE_CODE.test(externalId.trim().toUpperCase());
+  return ONE_PIECE_CODE.test(baseOnePieceCode(externalId));
 }
 
 /** Bandai same-origin proxy URL, or null if the code isn't a Bandai code. */
 export function onePieceImageUrl(externalId: string): string | null {
-  const code = externalId.trim().toUpperCase();
+  const code = baseOnePieceCode(externalId);
   return ONE_PIECE_CODE.test(code) ? `/api/one-piece-img/${code}` : null;
 }
 

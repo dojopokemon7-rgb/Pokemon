@@ -39,7 +39,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
-import { cardImgById, onePieceImageUrl } from "@/lib/utils/card-image";
+import { cardImgById, onePieceImageUrl, isOnePieceCode } from "@/lib/utils/card-image";
 import {
   buildChips,
   buildChartMatrix,
@@ -290,7 +290,7 @@ function CardDetailInner() {
   const game: "pokemon" | "onepiece" =
     gameParam === "onepiece" || gameParam === "pokemon"
       ? gameParam
-      : /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(id)
+      : isOnePieceCode(id ?? "")
         ? "onepiece"
         : "pokemon";
 
@@ -302,13 +302,19 @@ function CardDetailInner() {
   // ("4/102"). Prefer the passed `number`, else fall back to the id for
   // Bandai-coded One Piece cards.
   const rarity = searchParams.get("rarity") ?? "";
-  const isBandai = /^(OP|ST|EB|PRB)\d{2}-\d{3}$/i.test(id ?? "");
+  // Per-printing ids are composite ("OP01-120::alt-art"); strip the
+  // `::<variant>` suffix so the Bandai-code test + displayed serial use the
+  // bare card code (no-op for a base-printing id). isOnePieceCode already
+  // suffix-strips internally; derive the base here for the serial fallback.
+  const baseId = (id ?? "").split("::")[0];
+  const isBandai = isOnePieceCode(id ?? "");
   // Prefer the real DB `number` param. Fall back to the id: One Piece ids
-  // ARE the serial (OP01-001); for other ids show the whole id (e.g.
-  // "sv3-224") rather than "undefined". Empty only when there's no id.
+  // ARE the serial (OP01-001) — use the SUFFIX-STRIPPED base so a composite id
+  // renders "OP01-120", not "OP01-120::alt-art". For other ids show the whole
+  // base id (e.g. "sv3-224") rather than "undefined". Empty only with no id.
   const serialNumber =
     searchParams.get("number") ||
-    (isBandai ? (id ?? "").toUpperCase() : (id ?? ""));
+    (isBandai ? baseId.toUpperCase() : baseId);
 
   // Hero art is rebuilt from the ROUTE id via a same-origin proxy — the raw
   // upstream url is NEVER carried in the address bar (`img=` was removed). One

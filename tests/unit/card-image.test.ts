@@ -35,6 +35,15 @@ describe("onePieceImageUrl", () => {
     expect(onePieceImageUrl("")).toBeNull();
     expect(onePieceImageUrl("OP1-1")).toBeNull();      // wrong digit counts
   });
+
+  it("strips the ::<variant> per-printing suffix before the Bandai test", () => {
+    // Per-printing composite id resolves to the BASE card's Bandai proxy
+    // (restores art + fallback for non-base printings — review MEDIUM).
+    expect(onePieceImageUrl("OP01-120::alt-art")).toBe("/api/one-piece-img/OP01-120");
+    expect(onePieceImageUrl("op01-120::manga")).toBe("/api/one-piece-img/OP01-120");
+    // A composite on a non-Bandai (Pokémon) base still returns null.
+    expect(onePieceImageUrl("base1-4::reverse holofoil")).toBeNull();
+  });
 });
 
 /**
@@ -68,10 +77,28 @@ describe("onePieceImageChain", () => {
     expect(onePieceImageChain("base1-4", "https://img/x.png")).toEqual(["https://img/x.png"]);
   });
 
-  it("isOnePieceCode recognises Bandai codes", () => {
+  it("isOnePieceCode recognises Bandai codes (incl. per-printing composite ids)", () => {
     expect(isOnePieceCode("op01-001")).toBe(true);
     expect(isOnePieceCode("P-025")).toBe(true);
     expect(isOnePieceCode("base1-4")).toBe(false);
+    // Composite per-printing id: the base code decides (review LOW — serial).
+    expect(isOnePieceCode("OP01-120::alt-art")).toBe(true);
+    expect(isOnePieceCode("base1-4::reverse holofoil")).toBe(false);
+  });
+
+  it("gives a non-base One Piece printing its Bandai-proxy fallback", () => {
+    // A composite id whose stored URL is a 403-prone tcgplayer-cdn URL now
+    // still has the base Bandai proxy as a fallback (review MEDIUM — chain).
+    expect(
+      onePieceImageChain(
+        "OP01-120::alt-art",
+        "https://tcgplayer-cdn.tcgplayer.com/x.jpg",
+        null
+      )
+    ).toEqual([
+      "/api/one-piece-img/OP01-120",
+      "https://tcgplayer-cdn.tcgplayer.com/x.jpg",
+    ]);
   });
 });
 
