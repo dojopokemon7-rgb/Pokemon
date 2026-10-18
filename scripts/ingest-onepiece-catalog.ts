@@ -38,16 +38,19 @@ import { Game } from "@prisma/client";
 import { prisma } from "../src/lib/db";
 import {
   fetchScrydexCatalogPage,
-  pickVariantImages,
   pickImageEntry,
-  pickRawPrice,
   type ScrydexCard,
 } from "../src/lib/services/scrydex.service";
+import { DataSource } from "@prisma/client";
 import {
   assertScrydexCreditsApproved,
   estimateCredits,
 } from "../src/lib/services/scrydex-credit-gate";
-import { deriveStoredCardNumber } from "../src/lib/utils/card-number";
+import {
+  deriveStoredCardNumber,
+  baseVariantName,
+  printingExternalId,
+} from "../src/lib/utils/card-number";
 import { onePieceSetExternalId } from "../src/lib/utils/set-key";
 import { NormalizedCardSchema } from "../src/lib/validators/card.validator";
 
@@ -62,27 +65,40 @@ function sleep(ms: number): Promise<void> {
 
 // --- Pure mapper (the testable seam) ---------------------------------------
 
-type VariantImageMap = Record<string, { small?: string; medium?: string; large?: string }>;
+/** A single CurrentPrice row for one printing (this variant's prices[]). */
+export interface MappedOnePiecePrice {
+  source: DataSource;
+  currency: string;
+  variant: string;
+  condition: string;
+  company: string | null;
+  grade: string | null;
+  type: "raw" | "graded";
+  priceMarket: number | null;
+  priceLow: number | null;
+}
 
 export interface MappedOnePieceCard {
-  externalId: string; // Bandai code = Scrydex card id (RULE 3)
+  externalId: string; // composite per-printing key: baseId or `${baseId}::${name}`
+  baseId: string; // the Bandai code = Scrydex card id (RULE 3)
   setName: string; // from card.expansion?.name
   setExternalId: string; // onePieceSetExternalId(setName) → "onepiece-<slug>"
   name: string;
-  number: string; // deriveStoredCardNumber(id, true) = full Bandai code
+  number: string; // deriveStoredCardNumber(id, true) = full Bandai code (unchanged)
+  printing: string; // verbatim variant.name (|| "normal")
   rarity: string | null;
   types: string[];
-  imageUrl: string | null; // base art: large ?? medium ?? small ?? null
-  marketPrice: number | null;
-  variantImages: VariantImageMap;
+  imageUrl: string | null; // this variant's art else base art
+  marketPrice: number | null; // this variant's NM-raw headline (never fabricated)
+  prices: MappedOnePiecePrice[]; // this variant's price rows only
 }
 
 /**
- * First non-empty of the base card's large/medium/small image URLs. Real
- * Scrydex shape: card.images is an ARRAY — read the front entry (pickImageEntry).
+ * First non-empty of a Scrydex `images` array's large/medium/small URLs. Real
+ * Scrydex shape: images is an ARRAY — read the front entry (pickImageEntry).
  */
-function pickBaseImageUrl(card: ScrydexCard): string | null {
-  const img = pickImageEntry(card.images);
+function pickImageUrl(images: ScrydexCard["images"]): string | null {
+  const img = pickImageEntry(images);
   if (!img) return null;
   if (typeof img.large === "string" && img.large) return img.large;
   if (typeof img.medium === "string" && img.medium) return img.medium;
@@ -90,59 +106,115 @@ function pickBaseImageUrl(card: ScrydexCard): string | null {
   return null;
 }
 
-/**
- * Map one Scrydex catalog card → the One Piece upsert shape, validating through
- * `NormalizedCardSchema` (RULE 4) before accepting. Returns `null` for a card
- * that cannot be honestly stored — no set name, or a shape that fails the
- * normalized validator (e.g. empty name, or an `imageUrl` that is neither an
- * absolute URL nor a `/`-rooted path, i.e. an imageless card). A `null` is a
- * DROP (RULE 2), never a fabricated placeholder.
- */
-export function mapScrydexCatalogCard(card: ScrydexCard): MappedOnePieceCard | null {
-  const externalId = card.id;
-  const setName = (card.expansion?.name ?? "").trim();
-  if (!setName) return null; // no set → skip (mirrors the seed's set-less skip)
+/** First non-empty base-card image URL (fallback art for imageless variants). */
+function pickBaseImageUrl(card: ScrydexCard): string | null {
+  return pickImageUrl(card.images);
+}
 
-  const number = deriveStoredCardNumber(externalId, true); // full Bandai code
-  const imageUrl = pickBaseImageUrl(card);
-  const rawName = (card.name ?? "").trim();
-  const raw = pickRawPrice(card);
-  const marketPrice = raw?.market ?? null; // never fabricated (RULE 2)
-  const variantImages = pickVariantImages(card);
+/** This variant's headline NM-raw market price (never variant-0 / never union). */
+function variantHeadlinePrice(
+  prices: ScrydexCard["variants"][number]["prices"]
+): number | null {
+  const nmRaw = prices.find(
+    (p) => (p.type ?? "raw") === "raw" && (p.condition ?? "NM") === "NM"
+  );
+  return nmRaw?.market ?? null; // never fabricated (RULE 2)
+}
 
-  // Re-validate the stored shape at the boundary. imageUrl null → "" fails the
-  // schema's absolute-or-rooted refinement, so an imageless One Piece card is
-  // DROPPED (matches buildCards drop-invalid).
-  const parsed = NormalizedCardSchema.safeParse({
-    id: externalId,
-    name: rawName,
-    number,
-    setImage: setName,
-    rarity: card.rarity ?? "Unknown",
-    hp: card.hp != null ? String(card.hp) : null,
-    types: card.types ?? [],
-    imageUrl: imageUrl ?? "",
-    marketPrice,
-  });
-  if (!parsed.success) {
-    console.warn(
-      `[ingest-op] drop ${externalId}: ${parsed.error.issues[0]?.message ?? "invalid"}`
-    );
-    return null;
+/** Deduped CurrentPrice rows scoped to ONE variant's prices[]. */
+function variantPriceRows(
+  variantName: string,
+  prices: ScrydexCard["variants"][number]["prices"]
+): MappedOnePiecePrice[] {
+  const rows = prices
+    .filter((p) => p.market != null || p.low != null)
+    .map((p) => ({
+      source: DataSource.SCRYDEX,
+      currency: p.currency ?? "USD",
+      variant: variantName,
+      condition: p.condition ?? "NM",
+      company: p.company ?? null,
+      grade: p.grade ?? null,
+      type: ((p.type ?? "raw") === "raw" ? "raw" : "graded") as "raw" | "graded",
+      priceMarket: p.market ?? null,
+      priceLow: p.low ?? null,
+    }));
+  const seen = new Map<string, MappedOnePiecePrice>();
+  for (const r of rows) {
+    const k = `${r.currency}|${r.variant}|${r.condition}|${r.company}|${r.grade}|${r.type}`;
+    const prev = seen.get(k);
+    if (!prev || (r.priceMarket ?? 0) > (prev.priceMarket ?? 0)) seen.set(k, r);
   }
+  return [...seen.values()];
+}
 
-  return {
-    externalId,
-    setName,
-    setExternalId: onePieceSetExternalId(setName),
-    name: parsed.data.name,
-    number,
-    rarity: card.rarity ?? null,
-    types: card.types ?? [],
-    imageUrl,
-    marketPrice,
-    variantImages,
-  };
+/**
+ * Map one Scrydex catalog card → ONE row per `variants[]` entry (per-printing
+ * re-model). Each row gets a composite externalId (base printing keeps the bare
+ * Bandai code; non-base = `${baseId}::${variantName}`), its own printing label,
+ * its own art (variant art else base card art), and its own price rows. Each row
+ * is re-validated through `NormalizedCardSchema` (RULE 4); a row that cannot be
+ * honestly stored (no set name, empty name, or no usable image — neither variant
+ * nor base art) is DROPPED (RULE 2), never fabricated. Returns the surviving
+ * rows (possibly empty).
+ */
+export function mapScrydexCatalogCard(card: ScrydexCard): MappedOnePieceCard[] {
+  const baseId = card.id;
+  const setName = (card.expansion?.name ?? "").trim();
+  if (!setName) return []; // no set → skip (mirrors the seed's set-less skip)
+
+  const number = deriveStoredCardNumber(baseId, true); // full Bandai code (unchanged)
+  const setExternalId = onePieceSetExternalId(setName);
+  const rawName = (card.name ?? "").trim();
+  const rarity = card.rarity ?? null;
+  const types = card.types ?? [];
+  const baseArt = pickBaseImageUrl(card);
+  const base = baseVariantName(card.variants.map((v) => v.name || "normal"));
+
+  const out: MappedOnePieceCard[] = [];
+  for (const variant of card.variants) {
+    const printing = variant.name || "normal";
+    const externalId = printingExternalId(baseId, printing, base);
+    const imageUrl = pickImageUrl(variant.images) ?? baseArt;
+    const marketPrice = variantHeadlinePrice(variant.prices);
+
+    // Re-validate the stored shape at the boundary. imageUrl null → "" fails the
+    // schema's absolute-or-rooted refinement, so a printing with no variant art
+    // AND no base art is DROPPED (MEDIUM-1: fall back to base art first).
+    const parsed = NormalizedCardSchema.safeParse({
+      id: externalId,
+      name: rawName,
+      number,
+      setImage: setName,
+      rarity: card.rarity ?? "Unknown",
+      hp: card.hp != null ? String(card.hp) : null,
+      types,
+      imageUrl: imageUrl ?? "",
+      marketPrice,
+    });
+    if (!parsed.success) {
+      console.warn(
+        `[ingest-op] drop ${externalId}: ${parsed.error.issues[0]?.message ?? "invalid"}`
+      );
+      continue;
+    }
+
+    out.push({
+      externalId,
+      baseId,
+      setName,
+      setExternalId,
+      name: parsed.data.name,
+      number,
+      printing,
+      rarity,
+      types,
+      imageUrl,
+      marketPrice,
+      prices: variantPriceRows(printing, variant.prices),
+    });
+  }
+  return out;
 }
 
 // --- Idempotent upsert ------------------------------------------------------
@@ -154,38 +226,20 @@ export interface IngestReport {
   invalid: number;
 }
 
-/** Canonical, key-sorted JSON of a variant-images map; {} and null both → "". */
-function canonical(map: unknown): string {
-  if (map == null || typeof map !== "object") return "";
-  const obj = map as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  if (keys.length === 0) return "";
-  const norm: Record<string, unknown> = {};
-  for (const k of keys) {
-    const v = obj[k];
-    if (v && typeof v === "object") {
-      const inner = v as Record<string, unknown>;
-      const io: Record<string, unknown> = {};
-      for (const key of Object.keys(inner).sort()) io[key] = inner[key];
-      norm[k] = io;
-    } else {
-      norm[k] = v;
-    }
-  }
-  return JSON.stringify(norm);
-}
-
 /** Shallow string-array equality for `types`. */
 function sameTypes(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /**
- * Upsert the card's parent One Piece set then the card itself, keyed by
- * `externalId`. `game: ONE_PIECE` is set EXPLICITLY on BOTH create and update
- * (the default is POKEMON). `variantImages` is written only when non-empty so a
- * prior backfilled map is never clobbered with `{}`. Returns which happened so
- * the caller can report created/updated/skipped.
+ * Upsert the card's parent One Piece set then ONE printing row, keyed by the
+ * composite `externalId` (per-printing re-model). `game: ONE_PIECE` is set
+ * EXPLICITLY on BOTH create and update (the default is POKEMON). After the card
+ * row lands we upsert THIS printing's CurrentPrice rows on the existing
+ * `@@unique([cardId,source,currency,variant,condition,company,grade,type])`
+ * tuple (this variant only). Idempotency rides the printing-aware unchanged
+ * check (`prior.printing === m.printing`). Returns which happened so the caller
+ * can report created/updated/skipped.
  */
 export async function upsertOnePieceCard(
   m: MappedOnePieceCard
@@ -202,47 +256,77 @@ export async function upsertOnePieceCard(
       id: true,
       name: true,
       number: true,
+      printing: true,
       rarity: true,
       types: true,
       imageUrl: true,
       marketPrice: true,
-      variantImages: true,
       setId: true,
     },
   });
 
-  const hasVariantImages = Object.keys(m.variantImages).length > 0;
   const base = {
     game: Game.ONE_PIECE, // explicit on BOTH branches (default is POKEMON)
     name: m.name,
     number: m.number,
+    printing: m.printing,
     rarity: m.rarity,
     types: m.types,
     imageUrl: m.imageUrl,
     setId: cardSet.id,
     ...(m.marketPrice != null ? { marketPrice: m.marketPrice } : {}),
-    ...(hasVariantImages ? { variantImages: m.variantImages } : {}),
   };
 
+  let outcome: "created" | "updated" | "skipped";
+  let cardId: string;
+
   if (prior == null) {
-    await prisma.card.create({ data: { externalId: m.externalId, ...base } });
-    return "created";
+    const created = await prisma.card.create({
+      data: { externalId: m.externalId, ...base },
+      select: { id: true },
+    });
+    cardId = created.id;
+    outcome = "created";
+  } else {
+    cardId = prior.id;
+    const unchanged =
+      prior.name === m.name &&
+      prior.number === m.number &&
+      prior.printing === m.printing &&
+      prior.rarity === m.rarity &&
+      sameTypes(prior.types, m.types) &&
+      prior.imageUrl === m.imageUrl &&
+      (m.marketPrice == null || prior.marketPrice === m.marketPrice) &&
+      prior.setId === cardSet.id;
+
+    if (unchanged) {
+      outcome = "skipped";
+    } else {
+      await prisma.card.update({ where: { externalId: m.externalId }, data: base });
+      outcome = "updated";
+    }
   }
 
-  const unchanged =
-    prior.name === m.name &&
-    prior.number === m.number &&
-    prior.rarity === m.rarity &&
-    sameTypes(prior.types, m.types) &&
-    prior.imageUrl === m.imageUrl &&
-    (m.marketPrice == null || prior.marketPrice === m.marketPrice) &&
-    prior.setId === cardSet.id &&
-    (!hasVariantImages || canonical(prior.variantImages) === canonical(m.variantImages));
+  // Write THIS printing's price rows (this variant only). An upsert on the
+  // 8-column unique tuple is impossible for raw rows (null company/grade can't
+  // be matched through the generated compound-key input — see
+  // scrydex-pricing.service.ts C1), so we REPLACE this printing's SCRYDEX set:
+  // delete its existing SCRYDEX CurrentPrice rows (source-scoped — never touches
+  // non-Scrydex rows) then createMany the fresh set. Idempotent: a re-run writes
+  // the same set. skipDuplicates guards the delete→create race.
+  if (m.prices.length > 0) {
+    await prisma.$transaction([
+      prisma.currentPrice.deleteMany({
+        where: { cardId, source: DataSource.SCRYDEX, variant: m.printing },
+      }),
+      prisma.currentPrice.createMany({
+        data: m.prices.map((p) => ({ cardId, ...p })),
+        skipDuplicates: true,
+      }),
+    ]);
+  }
 
-  if (unchanged) return "skipped";
-
-  await prisma.card.update({ where: { externalId: m.externalId }, data: base });
-  return "updated";
+  return outcome;
 }
 
 // --- Runner -----------------------------------------------------------------
@@ -300,16 +384,19 @@ async function run(): Promise<void> {
     }
     for (const card of page.cards) {
       fetched++;
-      const m = mapScrydexCatalogCard(card);
-      if (m == null) {
+      const rows = mapScrydexCatalogCard(card);
+      if (rows.length === 0) {
+        // Every variant dropped (no set / no honest row) — count one invalid.
         report.invalid++;
         continue;
       }
-      try {
-        report[await upsertOnePieceCard(m)]++;
-      } catch (err) {
-        report.invalid++;
-        console.warn(`[ingest-op] upsert ${m.externalId} failed:`, err instanceof Error ? err.message : err);
+      for (const m of rows) {
+        try {
+          report[await upsertOnePieceCard(m)]++;
+        } catch (err) {
+          report.invalid++;
+          console.warn(`[ingest-op] upsert ${m.externalId} failed:`, err instanceof Error ? err.message : err);
+        }
       }
     }
     if (fetched >= total) break; // stop once the full catalog is in
