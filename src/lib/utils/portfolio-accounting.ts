@@ -25,6 +25,16 @@ export type PnL =
   | { status: "unresolved" };
 
 /**
+ * Is a "Quantity Sold" entry sellable? Valid iff it is a whole number ≥ 1 and
+ * ≤ the owned quantity. QA #5: the Sell modal must NOT silently clamp an
+ * out-of-range entry — it shows the raw typed value, flags it with this check,
+ * and blocks submit. Mirrors the server's Zod int>=1 + `quantity > owned` 400.
+ */
+export function isSellQtyValid(qty: number, owned: number): boolean {
+  return Number.isInteger(qty) && qty >= 1 && qty <= owned;
+}
+
+/**
  * Allocate cost basis to a sold quantity proportionally from a per-copy basis.
  * `basisPerCopy` null → the whole allocation is unresolved.
  */

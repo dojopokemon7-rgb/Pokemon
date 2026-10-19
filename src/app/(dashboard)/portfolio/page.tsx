@@ -23,7 +23,7 @@ import { Toast } from "@/components/Toast";
 import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
 import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
-import { statsFromLots } from "@/lib/utils/portfolio-accounting";
+import { statsFromLots, isSellQtyValid } from "@/lib/utils/portfolio-accounting";
 import { gradedPrice, isGraded, parseGrade } from "@/lib/utils/graded-price";
 
 // ── Real collection item shape ──
@@ -200,14 +200,22 @@ interface SellModalProps {
 }
 
 function SellModal({ item, onClose, onConfirm, isPending }: SellModalProps) {
-  const [qty, setQty] = useState<number>(1);
+  // QA #5: keep the RAW typed value (NaN for empty) so the user sees exactly
+  // what they entered — do NOT clamp on keystroke. Validity is derived, the
+  // error is shown inline, and Confirm is disabled until it's valid.
+  const [qty, setQty] = useState<string>("1");
   const [price, setPrice] = useState<string>(String(item.card.marketPrice ?? item.purchasePrice ?? 0));
   const [date, setDate] = useState<string>(new Date().toISOString().split("T")[0]);
+
+  const numQty = parseInt(qty, 10);
+  const qtyValid = isSellQtyValid(numQty, item.quantity);
 
   const numPrice = parseFloat(price) || 0;
   const cost = item.purchasePrice ?? 0;
   const realizedPerItem = numPrice - cost;
-  const totalRealized = realizedPerItem * qty;
+  // Only compute the preview off a VALID qty (QA #5) — never show a P&L number
+  // derived from an out-of-range / NaN quantity.
+  const totalRealized = realizedPerItem * numQty;
   const pct = cost > 0 ? (realizedPerItem / cost) * 100 : 0;
   const up = totalRealized >= 0;
 
@@ -244,9 +252,16 @@ function SellModal({ item, onClose, onConfirm, isPending }: SellModalProps) {
                 min={1}
                 max={item.quantity}
                 value={qty}
-                onChange={(e) => setQty(Math.min(item.quantity, Math.max(1, parseInt(e.target.value) || 1)))}
-                style={{ width: "100%", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-ink)", fontSize: "14px", fontFamily: "var(--font-display)", fontWeight: 700 }}
+                aria-invalid={!qtyValid}
+                aria-describedby={!qtyValid ? "sell-qty-error" : undefined}
+                onChange={(e) => setQty(e.target.value)}
+                style={{ width: "100%", padding: "10px 12px", background: "var(--color-dojo-app)", border: "1px solid " + (qtyValid ? "var(--color-dojo-stroke)" : "var(--color-dojo-vermilion)"), color: "var(--color-dojo-ink)", fontSize: "14px", fontFamily: "var(--font-display)", fontWeight: 700 }}
               />
+              {!qtyValid && (
+                <div id="sell-qty-error" role="alert" style={{ marginTop: "6px", fontSize: "11px", fontWeight: 700, color: "var(--color-dojo-vermilion)" }}>
+                  You only own {item.quantity}.
+                </div>
+              )}
             </div>
 
             {/* Selling Price */}
@@ -290,8 +305,8 @@ function SellModal({ item, onClose, onConfirm, isPending }: SellModalProps) {
               <span style={{ fontFamily: "var(--font-display)", fontSize: "11px", fontWeight: 700, color: "var(--color-dojo-body)" }}>
                 Realized Profit/Loss:
               </span>
-              <span style={{ fontFamily: "var(--font-display)", fontSize: "13px", fontWeight: 800, color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
-                {up ? "+" : ""}{fmt(totalRealized)} ({up ? "+" : ""}{pct.toFixed(1)}%)
+              <span style={{ fontFamily: "var(--font-display)", fontSize: "13px", fontWeight: 800, color: !qtyValid ? "var(--color-dojo-faint)" : up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>
+                {!qtyValid ? "—" : `${up ? "+" : ""}${fmt(totalRealized)} (${up ? "+" : ""}${pct.toFixed(1)}%)`}
               </span>
             </div>
 
@@ -308,8 +323,8 @@ function SellModal({ item, onClose, onConfirm, isPending }: SellModalProps) {
               </button>
               <button
                 type="button"
-                disabled={isPending || numPrice <= 0}
-                onClick={() => onConfirm({ soldPrice: numPrice, quantity: qty, soldAt: date })}
+                disabled={isPending || numPrice <= 0 || !qtyValid}
+                onClick={() => onConfirm({ soldPrice: numPrice, quantity: numQty, soldAt: date })}
                 className="dojo-btn dojo-btn-primary"
                 style={{ flex: 1, height: "42px" }}
               >

@@ -5,6 +5,7 @@ import {
   unrealizedPnL,
   aggregatePortfolio,
   statsFromLots,
+  isSellQtyValid,
 } from "@/lib/utils/portfolio-accounting";
 
 /**
@@ -30,6 +31,24 @@ describe("realizedPnL (proceeds − basis, no fees)", () => {
   });
   it("unresolved basis → unresolved (never a number)", () => {
     expect(realizedPnL(2, 95, null)).toEqual({ status: "unresolved" });
+  });
+});
+
+describe("isSellQtyValid (QA #5 — no silent clamp)", () => {
+  it("rejects a quantity above owned", () => {
+    expect(isSellQtyValid(5, 2)).toBe(false);
+  });
+  it("accepts the max owned quantity", () => {
+    expect(isSellQtyValid(2, 2)).toBe(true);
+  });
+  it("rejects zero / below 1", () => {
+    expect(isSellQtyValid(0, 2)).toBe(false);
+  });
+  it("rejects a non-integer quantity", () => {
+    expect(isSellQtyValid(1.5, 2)).toBe(false);
+  });
+  it("rejects NaN (empty field)", () => {
+    expect(isSellQtyValid(NaN, 2)).toBe(false);
   });
 });
 
