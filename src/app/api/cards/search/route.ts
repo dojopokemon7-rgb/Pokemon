@@ -406,7 +406,16 @@ export async function GET(request: Request): Promise<NextResponse> {
     const [a, b] = p.tokens;
     const or: Prisma.CardWhereInput[] = p.idCandidates.map((id) => ({ externalId: { equals: id, ...insens } }));
     if (p.identifierLike) {
+      // The full Bandai code the user typed (e.g. "OP01-120") IS the stored
+      // Card.number on EVERY printing of that card (base + ::foil/::altArt/…).
+      // Match it directly so all printings enter the pool — after the set
+      // reconcile the set externalId is a slug ("onepiece-romance-dawn"), so the
+      // old "number + set.externalId contains <code>" clause no longer catches
+      // the variants (their set code isn't in the slug). This per-printing-safe
+      // number match is what surfaces foil/alt-art/manga alongside the base.
+      const fullCode = `${a}-${b}`; // "op01" + "120" → "op01-120"
       or.push(
+        { number: { contains: fullCode, ...insens } },
         { AND: [{ number: { contains: b } }, { set: { externalId: { contains: a } } }] },
         { AND: [{ name: { contains: a, ...insens } }, { number: { contains: b } }] },
         { name: { contains: p.norm, ...insens } }

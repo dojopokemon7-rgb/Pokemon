@@ -61,9 +61,14 @@ interface Scored {
 
 function scoreCard(p: ParsedQuery, card: RankableCard): Scored {
   if (!p.norm) return { score: 0, nameHit: false };
-  const id = card.externalId.toLowerCase();
+  // Per-printing re-model: a non-base printing's externalId is `${baseId}::${variant}`.
+  // Score it by its BASE id so EVERY printing of a matched card (foil, alt-art,
+  // manga, …) surfaces together — otherwise only the base row ever matches an
+  // id/number query and the variants are dropped (search collapses to one).
+  const baseId = card.externalId.split("::")[0];
+  const id = baseId.toLowerCase();
   if (p.idCandidates.includes(id)) return { score: 1000, nameHit: false };
-  const code = setCodeOf(card.externalId);
+  const code = setCodeOf(baseId);
   const nKey = numberKey(card.number);
   const [idSet, idNum] = (p.idCandidates[0] ?? "").split("-");
   if (p.idCandidates.length && idSet === code && idNum === nKey) return { score: 900, nameHit: false };
