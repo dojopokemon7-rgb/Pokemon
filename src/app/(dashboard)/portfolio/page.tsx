@@ -1006,19 +1006,19 @@ export default function PortfolioPage() {
         {/* Collectr Portfolio Metrics (Paid, Realized, Unrealized) */}
         <div style={{ display: "flex", gap: "14px", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--color-dojo-divider)", flexWrap: "wrap" }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            Paid <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-ink)" }}>{fmt(portfolioStats.paid)}</span>
+            Paid <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: "var(--color-dojo-ink)" }}>{isLoading ? "—" : fmt(portfolioStats.paid)}</span>
           </span>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            Realized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.realized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{portfolioStats.realized >= 0 ? "+" : ""}{fmt(portfolioStats.realized)}</span>
+            Realized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.realized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{isLoading ? "—" : `${portfolioStats.realized >= 0 ? "+" : ""}${fmt(portfolioStats.realized)}`}</span>
           </span>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-            Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{portfolioStats.unrealized >= 0 ? "+" : ""}{fmt(portfolioStats.unrealized)}</span>
+            Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{isLoading ? "—" : `${portfolioStats.unrealized >= 0 ? "+" : ""}${fmt(portfolioStats.unrealized)}`}</span>
           </span>
           {/* QA #2: surface the honest exclusion. Lots added with no payment keep
               an UNRESOLVED cost basis (purchasePrice=null) — they are left OUT of
               Paid/Unrealized above (never a fabricated $0). Reuse the engine's
               existing unresolvedCount rather than inventing a parallel concept. */}
-          {portfolioStats.unresolvedCount > 0 && (
+          {!isLoading && portfolioStats.unresolvedCount > 0 && (
             <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
               {portfolioStats.unresolvedCount} card{portfolioStats.unresolvedCount !== 1 ? "s" : ""} with no cost basis
             </span>
@@ -1048,7 +1048,7 @@ export default function PortfolioPage() {
           {typeLabel}
         </span>
         <span style={{ marginLeft: "auto", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
-          {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
+          {isLoading ? "—" : `${filteredItems.length} item${filteredItems.length !== 1 ? "s" : ""}`}
         </span>
 
         {canSelect && (

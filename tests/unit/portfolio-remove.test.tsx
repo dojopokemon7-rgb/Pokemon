@@ -140,6 +140,28 @@ it("the bulk-action bar reserves its space in select mode so selecting never shi
   expect(within(bars[0]).getByRole("button", { name: "Remove from collection" })).toBeTruthy();
 });
 
+// QA #11 — a populated account must NOT flash "$0.00" / "0 items" on first
+// paint while the collection query is still loading (reads as data loss).
+// While isLoading, the summary numbers show a neutral "—" instead.
+it("shows a neutral dash (not $0.00 / 0 items) in the summary while the collection is loading", async () => {
+  // Collection fetch never resolves → the query stays isLoading=true.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (String(url).includes("/api/collections")) return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      if (String(url).includes("/api/users/me/collection")) return new Promise(() => {}); // hang
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    })
+  );
+  renderPage();
+
+  // Loading summary: neutral dashes, never a fake zero that looks like data loss.
+  expect(screen.queryByText("$0.00")).toBeNull();
+  expect(screen.queryByText("+$0.00")).toBeNull();
+  expect(screen.queryByText(/\b0 items\b/)).toBeNull();
+  expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+});
+
 it("hides the Uncategorized filter when no lot is unassigned; shows it when one is (null rows still listed)", async () => {
   stubFetch([item("u1", "Alakazam", "col_main")], [{ id: "col_main", name: "Main" }, { id: "__uncat__" }]);
   const first = renderPage();
