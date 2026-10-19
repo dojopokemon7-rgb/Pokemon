@@ -34,6 +34,7 @@ const prismaMock = vi.hoisted(() => ({
   wantListItem: { groupBy: vi.fn() },
   cardSet: { upsert: vi.fn() },
   card: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  currentPrice: { findMany: vi.fn() },
   pricingHistory: { createMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
@@ -251,6 +252,7 @@ describe("POST /api/users/me/collection — exact-condition dedupe + P2002 race"
     prismaMock.cardSet.upsert.mockResolvedValue({ id: "set_1" });
     prismaMock.card.findFirst.mockResolvedValue(CARD);
     prismaMock.card.update.mockResolvedValue(CARD);
+    prismaMock.currentPrice.findMany.mockResolvedValue([]);
     prismaMock.pricingHistory.createMany.mockResolvedValue({});
   });
 

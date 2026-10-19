@@ -22,6 +22,7 @@ const prismaMock = vi.hoisted(() => ({
   },
   cardSet: { upsert: vi.fn() },
   card: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  currentPrice: { findMany: vi.fn() },
   pricingHistory: { createMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
@@ -58,6 +59,7 @@ beforeEach(() => {
   prismaMock.card.create.mockResolvedValue(EXISTING_CARD);
   prismaMock.card.update.mockResolvedValue(EXISTING_CARD);
   prismaMock.pricingHistory.createMany.mockResolvedValue({});
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
   prismaMock.userCollection.findMany.mockResolvedValue([]);
   prismaMock.userCollection.create.mockResolvedValue({ id: "uc_1" });
 });
@@ -126,5 +128,67 @@ describe("POST /api/users/me/collection — no shared-catalog price fabrication"
     const data = prismaMock.userCollection.create.mock.calls[0][0].data;
     expect(data.purchasePrice).toBe(10); // real card.marketPrice, NOT 999999
     expect(data.costBasisSource).toBe("add-snapshot");
+  });
+});
+
+describe("POST /api/users/me/collection — grade-correct cost basis (QA #1)", () => {
+  it("a GRADED add snapshots the GRADED price (not the raw card.marketPrice)", async () => {
+    // Server-owned graded CurrentPrice row for PSA 10, DIFFERENT from raw $10.
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { variant: "normal", type: "graded", company: "PSA", grade: "10", priceMarket: 342.73, priceLow: null, condition: "PSA 10" },
+    ]);
+
+    await collectionAddPOST(
+      addBody([{ externalId: "base1-4", name: "Charizard ex", quantity: 1, condition: "PSA 10" }])
+    );
+
+    // Cost basis = the graded price the user SAW, not the raw $10.
+    const data = prismaMock.userCollection.create.mock.calls[0][0].data;
+    expect(data.purchasePrice).toBe(342.73);
+    expect(data.costBasisSource).toBe("add-snapshot");
+
+    // The add-snapshot pricing_history point reflects the graded reality.
+    const rows = prismaMock.pricingHistory.createMany.mock.calls.flatMap((c) => c[0].data);
+    const snap = rows.find((r: { source: string }) => r.source === "add-snapshot");
+    expect(snap.priceMarket).toBe(342.73);
+    expect(snap.type).toBe("graded");
+    expect(snap.company).toBe("PSA");
+    expect(snap.grade).toBe("10");
+  });
+
+  it("a RAW add still uses the raw card.marketPrice", async () => {
+    // No graded rows (default []); raw add never queries/uses graded price.
+    await collectionAddPOST(
+      addBody([{ externalId: "base1-4", name: "Charizard ex", quantity: 1, condition: "NM" }])
+    );
+
+    const data = prismaMock.userCollection.create.mock.calls[0][0].data;
+    expect(data.purchasePrice).toBe(10);
+    expect(data.costBasisSource).toBe("add-snapshot");
+
+    // Raw path writes an NM/raw snapshot point (unchanged).
+    const rows = prismaMock.pricingHistory.createMany.mock.calls.flatMap((c) => c[0].data);
+    const snap = rows.find((r: { source: string }) => r.source === "add-snapshot");
+    expect(snap.priceMarket).toBe(10);
+    expect(snap.condition).toBe("NM");
+    expect(snap.type).toBeUndefined(); // falls to the schema raw default
+  });
+
+  it("a GRADED add with NO matching graded row falls back to raw — never fabricates", async () => {
+    prismaMock.currentPrice.findMany.mockResolvedValue([]); // no stored graded price
+
+    await collectionAddPOST(
+      addBody([{ externalId: "base1-4", name: "Charizard ex", quantity: 1, condition: "PSA 10" }])
+    );
+
+    // Falls back to the real raw card.marketPrice (10); no invented graded $.
+    const data = prismaMock.userCollection.create.mock.calls[0][0].data;
+    expect(data.purchasePrice).toBe(10);
+    expect(data.costBasisSource).toBe("add-snapshot");
+
+    const rows = prismaMock.pricingHistory.createMany.mock.calls.flatMap((c) => c[0].data);
+    const snap = rows.find((r: { source: string }) => r.source === "add-snapshot");
+    expect(snap.priceMarket).toBe(10);
+    expect(snap.type).toBeUndefined(); // raw default — not a fabricated graded point
   });
 });

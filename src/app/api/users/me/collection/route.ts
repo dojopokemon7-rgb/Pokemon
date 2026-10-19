@@ -15,6 +15,7 @@ import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
 import { getOrCreateMainCollection } from "@/lib/services/collection.service";
 import { deriveStoredCardNumber, isOnePieceCode } from "@/lib/utils/card-number";
+import { parseGradedCondition, pickGradedFromRows } from "@/lib/utils/raw-price";
 
 // RULE 4: the exact shape the GET caches (`{ items }`). Used ONLY to re-validate
 // the Redis blob on READ — a parse failure = stale shape = treat as a miss.
@@ -329,7 +330,32 @@ export async function POST(request: Request): Promise<NextResponse> {
       // user-supplied item.marketPrice must not set even the user's own basis
       // ambiently (an EXPLICIT item.purchasePrice below is their own cost record
       // and is still honored).
-      const snapshotPrice = card.marketPrice ?? null;
+      //
+      // QA #1 ("price you see ≠ price you pay"): AddCardSheet shows the GRADED
+      // price for a graded selection (e.g. "PSA 10") but we previously snapshotted
+      // the RAW card.marketPrice as cost basis. For a graded add, resolve the
+      // grade-correct price from the SERVER'S OWN CurrentPrice graded rows (never
+      // item.marketPrice) so the stored basis matches what the user saw. RULE 2:
+      // no matching graded row → fall back to raw card.marketPrice (never invent a
+      // graded number). Raw adds skip the extra query (fast path unchanged).
+      const parsedGrade = parseGradedCondition(item.condition);
+      let gradedSnap: number | null = null;
+      if (parsedGrade) {
+        const priceRows = await prisma.currentPrice.findMany({
+          where: { cardId: card.id, type: "graded" },
+          select: {
+            variant: true,
+            type: true,
+            condition: true,
+            company: true,
+            grade: true,
+            priceMarket: true,
+            priceLow: true,
+          },
+        });
+        gradedSnap = pickGradedFromRows(priceRows, parsedGrade.company, parsedGrade.grade);
+      }
+      const snapshotPrice = (parsedGrade ? gradedSnap : null) ?? card.marketPrice ?? null;
       let purchasePrice: number | null;
       let costBasisSource: string | null;
       if (item.purchasePrice != null) {
@@ -458,7 +484,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       // user sees) — the point MUST reflect the REAL catalog price at add time,
       // never a user-supplied item.marketPrice (price fabrication). If the real
       // price is null, no row is written (existing behavior).
-      const addPrice = card.marketPrice;
+      // QA #1: keep the snapshot point consistent with the grade the user added.
+      // For a graded add WITH a stored graded price, write a graded point (reusing
+      // the already-fetched `gradedSnap` — no re-query); otherwise the unchanged
+      // raw NM row. RULE 2: a graded add with no stored graded row keeps the raw
+      // point (never a fabricated graded $).
+      const isGradedSnap = parsedGrade != null && gradedSnap != null;
+      const addPrice = isGradedSnap ? gradedSnap : card.marketPrice;
       if (addPrice != null && addPrice > 0) {
         try {
           await prisma.pricingHistory.createMany({
@@ -468,9 +500,12 @@ export async function POST(request: Request): Promise<NextResponse> {
                 priceMarket: addPrice,
                 source: "add-snapshot",
                 variant: "normal",
-                condition: "NM",
+                condition: isGradedSnap ? (item.condition as string) : "NM",
                 currency: "USD",
                 recordedAt: new Date(),
+                ...(isGradedSnap
+                  ? { type: "graded", company: parsedGrade!.company, grade: parsedGrade!.grade }
+                  : {}),
               },
             ],
             skipDuplicates: true,

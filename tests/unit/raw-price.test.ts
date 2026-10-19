@@ -8,6 +8,8 @@ import {
   pickDefaultVariant,
   variantLabel,
   pickHeadlineRaw,
+  parseGradedCondition,
+  pickGradedFromRows,
   type PriceRowLike,
 } from "@/lib/utils/raw-price";
 
@@ -106,5 +108,50 @@ describe("raw-price", () => {
   it("variantLabel humanises camelCase", () => {
     expect(variantLabel("firstEditionShadowlessHolofoil")).toBe("First Edition Shadowless Holofoil");
     expect(variantLabel("normal")).toBe("Normal");
+  });
+
+  describe("parseGradedCondition", () => {
+    it("parses graded labels into company + grade", () => {
+      expect(parseGradedCondition("PSA 10")).toEqual({ company: "PSA", grade: "10" });
+      expect(parseGradedCondition("CGC 9.5")).toEqual({ company: "CGC", grade: "9.5" });
+      expect(parseGradedCondition("BGS 10")).toEqual({ company: "BGS", grade: "10" });
+    });
+    it("is case-insensitive and tolerates extra whitespace", () => {
+      expect(parseGradedCondition("psa  9")).toEqual({ company: "PSA", grade: "9" });
+    });
+    it("returns null for raw / unparseable conditions", () => {
+      expect(parseGradedCondition("NM")).toBeNull();
+      expect(parseGradedCondition("")).toBeNull();
+      expect(parseGradedCondition(null)).toBeNull();
+      expect(parseGradedCondition(undefined)).toBeNull();
+      expect(parseGradedCondition("PSA")).toBeNull(); // company but no grade
+    });
+  });
+
+  describe("pickGradedFromRows", () => {
+    it("returns the matching graded row priceMarket", () => {
+      const rows = [raw("normal", "NM", 10), graded("normal", "10", 342.73)];
+      expect(pickGradedFromRows(rows, "PSA", "10")).toBe(342.73);
+    });
+    it("returns null when no graded row matches the grade", () => {
+      const rows = [raw("normal", "NM", 10), graded("normal", "9", 100)];
+      expect(pickGradedFromRows(rows, "PSA", "10")).toBeNull();
+    });
+    it("returns null for raw-only rows", () => {
+      expect(pickGradedFromRows([raw("normal", "NM", 10)], "PSA", "10")).toBeNull();
+    });
+    it("prefers the default variant when several variants carry the grade", () => {
+      const rows = [
+        raw("normal", "NM", 5),
+        graded("normal", "10", 300),
+        graded("holofoil", "10", 999),
+      ];
+      // pickDefaultVariant -> "normal" (raw NM present), so the normal graded row wins.
+      expect(pickGradedFromRows(rows, "PSA", "10")).toBe(300);
+    });
+    it("honors an explicit variant argument", () => {
+      const rows = [graded("normal", "10", 300), graded("holofoil", "10", 999)];
+      expect(pickGradedFromRows(rows, "PSA", "10", "holofoil")).toBe(999);
+    });
   });
 });

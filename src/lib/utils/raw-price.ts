@@ -103,3 +103,52 @@ export function variantLabel(v: string): string {
 export function pickHeadlineRaw(rows: PriceRowLike[]): number | null {
   return pickBestRaw(rows, pickDefaultVariant(rows))?.price ?? null;
 }
+
+// Grading companies recognised in a free-text condition label. Same vocabulary
+// as AddCardSheet's KNOWN_GRADERS (the source of the stored "<CO> <grade>"
+// condition) so the server parses exactly what the client persisted — no
+// parallel picker (ponytail: reuse, don't duplicate).
+const GRADER_COMPANIES = ["PSA", "BGS", "CGC", "SGC", "TAG", "ACE", "AGS"] as const;
+
+/**
+ * Parse a stored graded condition ("PSA 10", "CGC 9.5") into { company, grade }.
+ * Mirrors AddCardSheet.parseGraded: company = first KNOWN grader matched on a
+ * word boundary (case-insensitive, uppercased); grade = first `\d+(?:\.\d+)?`.
+ * Returns null for a raw/unparseable condition (e.g. "NM", null, "") — the
+ * caller then keeps the raw path (RULE 2: never fabricate a graded number).
+ */
+export function parseGradedCondition(
+  condition: string | null | undefined
+): { company: string; grade: string } | null {
+  if (!condition) return null;
+  const company = GRADER_COMPANIES.find((g) => new RegExp(`\\b${g}\\b`, "i").test(condition));
+  if (!company) return null;
+  const grade = condition.match(/\d+(?:\.\d+)?/)?.[0];
+  if (!grade) return null;
+  return { company, grade };
+}
+
+/**
+ * Pick the graded market price for a (company, grade) from a card's CurrentPrice
+ * rows — the SAME selection the `/graded` route does inline: filter
+ * `type==="graded" && company && grade && priceMarket != null`, prefer the given
+ * `variant` (else the card's default variant), else the first variant in a
+ * deterministic order. Returns `rowPrice(match)` or null when no graded row
+ * matches (caller falls back to raw — never fabricates).
+ */
+export function pickGradedFromRows(
+  rows: PriceRowLike[],
+  company: string,
+  grade: string,
+  variant?: string | null
+): number | null {
+  const matches = rows.filter(
+    (r) => r.type === "graded" && r.company === company && r.grade === grade && r.priceMarket != null
+  );
+  if (matches.length === 0) return null;
+  const wantVariant = variant ?? pickDefaultVariant(rows);
+  const chosen =
+    matches.find((r) => (r.variant ?? "normal") === wantVariant) ??
+    [...matches].sort((a, b) => (a.variant ?? "normal").localeCompare(b.variant ?? "normal"))[0];
+  return rowPrice(chosen);
+}
