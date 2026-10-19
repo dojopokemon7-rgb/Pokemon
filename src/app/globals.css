@@ -1129,7 +1129,11 @@ body {
 
 /* --- Bottom tab bar: active-tab glow ---
    Matches the reference .tabbar button.on exactly (dojo-prototype/styles.css):
-   white text, white icon drop-shadow, white underline bar. */
+   white text, white icon drop-shadow, white underline bar.
+   Mobile (<768px) = horizontal bar across the TOP of the active bottom-tab item.
+   Desktop (>=768px) = same white gradient + glow, rotated to a VERTICAL bar on
+   the LEFT edge of the active sidebar item (QA D3 — see override in the 768px
+   block). */
 .dojo-tab-icon-glow {
   filter: drop-shadow(0 0 4px #fff);
 }
@@ -1310,6 +1314,19 @@ body {
     flex-direction: row;
     padding: 16px 32px;
     gap: 16px;
+  }
+
+  /* QA D3: on the desktop vertical sidebar, flip the active-item indicator
+     from a top horizontal bar to a left-edge vertical accent bar. Same white
+     gradient + glow as mobile, just reoriented. left:0 sits inside the item's
+     32px left padding, clear of the text. */
+  .dojo-tab-glow-bar {
+    top: 50%;
+    left: 0;
+    right: auto;
+    transform: translateY(-50%);
+    width: 2px;
+    height: 60%;
   }
   
   .dojo-shell-nav-item-label {
