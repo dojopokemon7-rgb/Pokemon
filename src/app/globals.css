@@ -1254,6 +1254,13 @@ body {
   display: none;
 }
 
+/* QA D4: desktop sidebar collapse toggle. Hidden on mobile (the bottom tab
+   bar has no collapse concept) — shown inside the >=768px media query, the
+   same display:none→flex gating `.dojo-shell-logo` uses. */
+.dojo-shell-nav-toggle {
+  display: none;
+}
+
 .dojo-shell-nav-item {
   position: relative;
   flex: 1;
@@ -1291,6 +1298,17 @@ body {
     border-right: 1px solid var(--color-dojo-stroke);
     padding: 32px 0;
     gap: 8px;
+    /* QA D4: subtle width ease when toggling the icon-only rail. The global
+       prefers-reduced-motion block above zeroes transition-duration, so
+       opt-out users get an instant snap — no need to fight it here. */
+    transition: width 180ms ease;
+  }
+
+  /* QA D4: collapsed → icon-only rail. 72px fits the 20px nav icons plus
+     centered padding. Labels + wordmark hide; icons center. The content area
+     (`.dojo-shell-content { flex:1 }`) reclaims the freed width automatically. */
+  .dojo-shell-nav--collapsed {
+    width: 72px;
   }
 
   .dojo-shell-logo {
@@ -1299,6 +1317,49 @@ body {
     gap: 12px;
     padding: 0 32px 24px;
     text-decoration: none;
+  }
+
+  /* QA D4: show + style the collapse toggle on desktop. Sits under the logo,
+     right-aligned when expanded, centered in the collapsed rail. */
+  .dojo-shell-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: flex-end;
+    margin: 0 20px 16px;
+    padding: 6px;
+    background: transparent;
+    border: 1px solid var(--color-dojo-stroke);
+    color: var(--color-dojo-faint);
+    cursor: pointer;
+  }
+
+  .dojo-shell-nav--collapsed .dojo-shell-nav-toggle {
+    align-self: center;
+    margin-inline: 0;
+  }
+
+  /* QA D4: in the collapsed rail, hide the wordmark and center the brand mark,
+     hide every nav-item label, and center the icons. The D3 left-edge active
+     indicator (`.dojo-tab-glow-bar`, left:0) keeps working — it rides the
+     item's left edge in either width. */
+  .dojo-shell-nav--collapsed .dojo-shell-logo {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .dojo-shell-nav--collapsed .dojo-shell-logo-word {
+    display: none;
+  }
+
+  .dojo-shell-nav--collapsed .dojo-shell-nav-item {
+    justify-content: center;
+    padding-inline: 0;
+    gap: 0;
+  }
+
+  .dojo-shell-nav--collapsed .dojo-shell-nav-item-label {
+    display: none;
   }
 
   .dojo-shell-logo-word {

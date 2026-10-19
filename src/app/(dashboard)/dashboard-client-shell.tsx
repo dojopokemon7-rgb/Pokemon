@@ -24,6 +24,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { NotificationsPanel } from "@/components/NotificationsPanel";
 import { HeaderSlotProvider, useHeaderLeft } from "./header-slot";
@@ -83,6 +84,27 @@ function UserIcon() {
 
 // (SearchIcon removed — the top-line search icon was dropped per plan §4.)
 
+// QA D4: chevron for the desktop sidebar collapse toggle. Points LEFT when
+// expanded (click to collapse toward the rail) and RIGHT when collapsed
+// (click to expand). One glyph, flipped by the `collapsed` flag.
+function ChevronIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="square"
+      aria-hidden="true"
+      style={{ transform: collapsed ? "none" : "scaleX(-1)" }}
+    >
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
 // The Dojo brand mark — torii-gate glyph path taken verbatim from the
 // reference prototype (dojo-prototype/data.js: DOJO_PATH), the SAME path the
 // login screen renders. Drawn off-white (#F2F1ED) so it reads on the dark
@@ -128,6 +150,36 @@ function ShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const headerLeft = useHeaderLeft();
   const queryClient = useQueryClient();
+
+  // QA D4: desktop sidebar collapse (icon-only rail), persisted across
+  // navigation/reload via localStorage (`dojo_nav_collapsed`). Hydration-safe:
+  // this is an SSR'd client component, so reading localStorage in the useState
+  // initializer would make the client's first render disagree with the server's
+  // (always `false`) and trip a hydration mismatch. Mirror the portfolio QA #9a
+  // pattern — start `false` (server parity), then read the stored value AFTER
+  // mount. A brief expand→collapse flash on first load for collapsed users is
+  // acceptable and hydration-safe. Below 768px the rail class is a no-op (the
+  // mobile bottom bar has no collapse concept — gated purely in CSS).
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("dojo_nav_collapsed") === "true") setCollapsed(true);
+    } catch {
+      // localStorage can throw (private mode / blocked storage) — ignore and
+      // keep the expanded default.
+    }
+  }, []);
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("dojo_nav_collapsed", String(next));
+      } catch {
+        // Ignore persistence failures — the in-session toggle still works.
+      }
+      return next;
+    });
+  };
 
   // Warm the destination tab's data on hover/focus of its nav link, so the
   // page it opens reads from cache instead of firing its query on mount.
@@ -194,7 +246,10 @@ function ShellInner({ children }: { children: React.ReactNode }) {
     <div className="dojo-shell">
       {/* ── Bottom/Side navigation bar ── */
       /* Desktop: moves to left side sidebar. Mobile: bottom bar. */}
-      <nav className="dojo-shell-nav" aria-label="Main navigation">
+      <nav
+        className={`dojo-shell-nav${collapsed ? " dojo-shell-nav--collapsed" : ""}`}
+        aria-label="Main navigation"
+      >
         {/* Brand mark + DOJO wordmark — desktop sidebar only. `.dojo-shell-nav`
             is the SAME element in both layouts (bottom bar on mobile, left
             sidebar on desktop), so this is gated to >=768px via CSS
@@ -204,6 +259,21 @@ function ShellInner({ children }: { children: React.ReactNode }) {
           <DojoMark />
           <span className="dojo-shell-logo-word" aria-hidden="true">DOJO</span>
         </Link>
+
+        {/* QA D4: desktop-only collapse toggle. `.dojo-shell-nav-toggle` is
+            display:none below 768px (same gating approach as `.dojo-shell-logo`),
+            so the mobile bottom bar never shows it. aria-expanded + a
+            state-reflecting aria-label keep it announced correctly to AT. */}
+        <button
+          type="button"
+          className="dojo-shell-nav-toggle"
+          onClick={toggleCollapsed}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          <ChevronIcon collapsed={collapsed} />
+        </button>
 
         {NAV_ITEMS.map(({ href, label, Icon }) => {
           const active =
@@ -222,6 +292,10 @@ function ShellInner({ children }: { children: React.ReactNode }) {
                 color: active ? "#fff" : "var(--color-dojo-faint)",
               }}
               aria-current={active ? "page" : undefined}
+              /* QA D4: in the collapsed rail the visible label is hidden, so
+                 give every link an accessible name + a sighted tooltip. */
+              aria-label={label}
+              title={label}
             >
               {active && <span className="dojo-tab-glow-bar" />}
               <span className={`dojo-shell-nav-item-icon ${active ? "dojo-tab-icon-glow" : ""}`}>
