@@ -586,6 +586,14 @@ const HIGH_VALUE_THRESHOLD = 100;
 export default function PortfolioPage() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("list");
+  // QA #9a: the desktop default (grid) can only be known on the client — the
+  // server (and therefore the client's FIRST render, for hydration parity)
+  // must render "list". We resolve the real default post-mount and, until then,
+  // render the loading skeleton instead of the list, so desktop never paints the
+  // list and then visibly JUMPS to grid. A lazy useState(matchMedia) initializer
+  // is NOT safe here: this is an SSR'd client component, so it would make the
+  // client's first render ("grid") mismatch the server's ("list").
+  const [viewResolved, setViewResolved] = useState(false);
   const [cardType, setCardType] = useState<CardType>("active");
   const [typeOpen, setTypeOpen] = useState(false);
   const [selectedColl, setSelectedColl] = useState<string>("all");
@@ -686,6 +694,9 @@ export default function PortfolioPage() {
     if (typeof window !== "undefined" && window.matchMedia("(min-width: 640px)").matches) {
       setView("grid");
     }
+    // Mark the client-side default resolved so the content can paint without the
+    // list→grid jump on desktop (QA #9a).
+    setViewResolved(true);
   }, []);
 
   // Portfolio value history for the chart — ALL owned lots (collectionIds=all),
@@ -1075,12 +1086,25 @@ export default function PortfolioPage() {
       </div>
 
       {/* ── Bulk delete bar ── */}
-      {selectMode && selectedIds.size > 0 && (
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px", padding: "10px 13px", border: "1px solid var(--color-dojo-gold)", background: "rgba(233,180,59,0.08)" }}>
+      {/* QA #9b: whenever Select mode is on the bar is ALWAYS mounted so it
+          reserves its exact vertical space; when nothing is selected it is
+          `visibility: hidden` (keeps identical layout height, but is removed
+          from the a11y tree and non-interactive) instead of being unmounted.
+          Selecting the first card no longer SHOVES the list down, and
+          deselecting doesn't pull it back — the height is stable for the whole
+          Select-mode session. The bar stays fully functional (count + Remove)
+          when something is selected. */}
+      {selectMode && (
+        <div
+          data-testid="bulk-bar"
+          aria-hidden={selectedIds.size === 0 ? true : undefined}
+          style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px", padding: "10px 13px", border: "1px solid var(--color-dojo-gold)", background: "rgba(233,180,59,0.08)", visibility: selectedIds.size > 0 ? "visible" : "hidden" }}
+        >
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "11px", color: "var(--color-dojo-ink)" }}>
             {selectedIds.size} selected
           </span>
           <button type="button" onClick={() => { bulkDelete.reset(); setConfirmOpen(true); }}
+            tabIndex={selectedIds.size === 0 ? -1 : undefined}
             style={{ marginLeft: "auto", padding: "8px 16px", cursor: "pointer", border: "1px solid var(--color-dojo-vermilion)", background: "var(--color-dojo-vermilion)", color: "#fff", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
             Remove from collection
           </button>
@@ -1088,7 +1112,9 @@ export default function PortfolioPage() {
       )}
 
       {/* ── Content ── */}
-      {isLoading ? (
+      {/* QA #9a: hold on the skeleton until the client-side view default is
+          resolved, so desktop never paints the list and then jumps to grid. */}
+      {isLoading || !viewResolved ? (
         <div className="dojo-card-grid" style={{ gap: "12px" }}>
           {Array.from({ length: 10 }).map((_, i) => (
             <div key={i} style={{ background: "var(--color-dojo-card)", border: "1px solid var(--color-dojo-stroke)", padding: "11px" }}>

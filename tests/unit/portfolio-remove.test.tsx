@@ -109,6 +109,37 @@ it("a failed removal keeps that card selected and the dialog open with an error"
   expect(screen.getByText(/1 selected/i)).toBeTruthy();
 });
 
+// QA #9b — no layout shift when selecting: the bulk-action bar reserves its
+// space for the whole Select-mode session. It must NOT be inserted into flow
+// only when a card is selected (which shoved the list down). So: absent before
+// Select mode, present as soon as Select mode is on (nothing selected yet, and
+// aria-hidden so it's not announced), and still the SAME single container after
+// selecting a card — selecting changes visibility/contents, never the box count.
+it("the bulk-action bar reserves its space in select mode so selecting never shifts the list", async () => {
+  stubFetch([item("u1", "Alakazam", "col_main")], [{ id: "col_main", name: "Main" }]);
+  renderPage();
+  await screen.findByText("Alakazam");
+
+  // Before Select mode: no reserved bar in flow.
+  expect(screen.queryByTestId("bulk-bar")).toBeNull();
+
+  // Enter Select mode: bar is present (reserving space) but hidden from a11y.
+  fireEvent.click(screen.getByRole("button", { name: "Select" }));
+  const reservedEmpty = screen.getByTestId("bulk-bar");
+  expect(reservedEmpty).toBeTruthy();
+  expect(reservedEmpty.getAttribute("aria-hidden")).toBe("true");
+
+  // Select a card: SAME single container (no insert/remove → no shift), now
+  // visible and announced, with a working Remove button.
+  const row = screen.getByText("Alakazam").closest("[aria-pressed]") as HTMLElement;
+  fireEvent.click(row);
+  const bars = screen.getAllByTestId("bulk-bar");
+  expect(bars).toHaveLength(1);
+  expect(bars[0].getAttribute("aria-hidden")).toBeNull();
+  expect(within(bars[0]).getByText(/1 selected/i)).toBeTruthy();
+  expect(within(bars[0]).getByRole("button", { name: "Remove from collection" })).toBeTruthy();
+});
+
 it("hides the Uncategorized filter when no lot is unassigned; shows it when one is (null rows still listed)", async () => {
   stubFetch([item("u1", "Alakazam", "col_main")], [{ id: "col_main", name: "Main" }, { id: "__uncat__" }]);
   const first = renderPage();
