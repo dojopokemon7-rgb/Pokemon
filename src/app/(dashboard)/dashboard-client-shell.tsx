@@ -4,8 +4,12 @@
  * Dashboard Client Shell — (dashboard)
  *
  * Provides:
- *   - Top header: DOJO wordmark + search + bell icons + log out button
- *   - Fixed bottom nav: Home · Portfolio · Explore · You
+ *   - Top header: page-injected left slot + notifications bell (no brand
+ *     logo lives here — the brand mark sits in the desktop sidebar below)
+ *   - Nav bar: fixed bottom tab bar on mobile, static left sidebar on desktop
+ *     (Home · Portfolio · Explore · You). On desktop the Dojo brand mark +
+ *     wordmark render at the TOP of the sidebar (`.dojo-shell-logo`, a Link
+ *     back to /dashboard), hidden on mobile where the bottom bar has no room.
  *   - Content area with safe padding above the bottom nav
  *
  * Nav item naming/routing/iconography is ported verbatim from the Dojo
@@ -78,6 +82,22 @@ function UserIcon() {
 }
 
 // (SearchIcon removed — the top-line search icon was dropped per plan §4.)
+
+// The Dojo brand mark — torii-gate glyph path taken verbatim from the
+// reference prototype (dojo-prototype/data.js: DOJO_PATH), the SAME path the
+// login screen renders. Drawn off-white (#F2F1ED) so it reads on the dark
+// sidebar, mirroring the login page's DojoMark treatment. Decorative — the
+// accessible name lives on the wrapping <Link>, so this is aria-hidden.
+const DOJO_MARK_PATH =
+  "M19.7373 0.022325C46.3088 -0.0059576 72.885 0.0176164 99.4565 0.0129026C120.301 0.0741816 141.164 -0.10495 161.999 0.107169C171.313 9.16231 180.255 18.6087 189.489 27.744C202.575 41.0085 215.59 54.3485 228.708 67.58C228.666 80.5712 228.67 93.5717 228.618 106.558C226.064 96.6262 221.915 86.9913 215.561 78.8836C213.143 75.419 209.815 72.7699 206.963 69.6871C189.9 52.6327 173.01 35.4039 156.008 18.2929C154.933 17.5764 153.448 18.0902 152.222 17.9394C113.819 17.9582 75.4116 17.9205 37.0038 17.9676C37.0085 66.7504 37.0274 115.533 36.9944 164.316C44.1923 164.377 51.3949 164.288 58.5976 164.344C58.6306 123.485 58.6211 82.6263 58.6117 41.7674C87.6862 41.791 116.756 41.8051 145.831 41.7627C172.454 68.5369 199.049 95.3394 225.913 121.873C226.893 122.863 228.081 123.688 228.892 124.838C231.267 138.489 230.428 152.607 227.346 166.084C221.51 190.166 207.769 212.42 188.292 227.839C172.081 240.773 151.892 249.046 131.086 249.96C106.838 250.031 82.5906 249.989 58.343 249.974C58.3572 233.179 58.3383 216.384 58.3477 199.589C78.3388 199.613 98.3252 199.613 118.316 199.58C129.106 199.311 139.764 195.992 149.017 190.487C164.242 181.512 175.838 166.715 181.099 149.859C183.013 143.589 184.224 137.061 184.182 130.49C184.172 121.868 184.224 113.247 184.135 104.625C169.244 89.4236 154.08 74.4291 139.142 59.2508C118.085 59.2696 97.0336 59.2696 75.9772 59.2602C76.1422 62.5881 75.619 65.9066 75.9537 69.2204C76.0197 70.9456 75.9442 72.6709 75.982 74.4008C75.9537 78.6574 75.9725 82.9139 75.9772 87.1704C75.9961 88.7165 75.9914 90.2579 75.9772 91.804C75.9867 103.914 75.9489 116.023 75.9961 128.128C75.9442 130.33 75.9631 132.531 75.982 134.732C75.9631 137.084 75.9584 139.437 75.9866 141.794C75.9442 142.581 75.9395 143.373 75.9725 144.165C75.9537 145.107 75.9395 146.05 75.9678 146.998C75.9207 150.457 75.784 153.903 75.9772 157.363C76.0149 159.404 75.8971 161.441 75.784 163.482C75.8217 164.74 75.8028 165.999 75.7745 167.262C75.7274 170.265 75.9207 173.258 75.9772 176.261C75.718 178.09 75.7887 179.942 75.784 181.785C61.6709 181.771 47.5579 181.78 33.4449 181.78C28.882 181.672 24.3191 182.087 19.7609 181.743C19.7467 121.171 19.775 60.5989 19.7373 0.022325ZM201.392 121.666C201.34 123.82 201.368 125.974 201.382 128.133C201.26 140.672 198.691 153.21 193.567 164.669C187.462 178.424 177.936 190.704 165.911 199.778C151.93 210.445 134.569 216.841 116.921 216.912C103.152 216.931 89.3832 216.879 75.6143 216.94C75.586 222.3 75.6284 227.659 75.5907 233.019C91.8673 232.962 108.144 233 124.421 232.991C132.052 233.184 139.717 232.265 147.084 230.233C173.062 223.016 194.712 203.087 205.441 178.523C211.503 164.269 214.406 148.511 212.804 133.049C209.033 129.222 205.116 125.54 201.392 121.666Z";
+
+function DojoMark({ size = 28 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 250 250" aria-hidden="true" focusable="false">
+      <path d={DOJO_MARK_PATH} fill="#F2F1ED" />
+    </svg>
+  );
+}
 
 // ── Nav item definition ────────────────────────────────────────────
 // "Explore" routes to /search — per the reference, the fourth tab's
@@ -175,6 +195,16 @@ function ShellInner({ children }: { children: React.ReactNode }) {
       {/* ── Bottom/Side navigation bar ── */
       /* Desktop: moves to left side sidebar. Mobile: bottom bar. */}
       <nav className="dojo-shell-nav" aria-label="Main navigation">
+        {/* Brand mark + DOJO wordmark — desktop sidebar only. `.dojo-shell-nav`
+            is the SAME element in both layouts (bottom bar on mobile, left
+            sidebar on desktop), so this is gated to >=768px via CSS
+            (`.dojo-shell-logo` is display:none below the breakpoint). Links
+            home; the accessible name lives here, the SVG parts are decorative. */}
+        <Link href="/dashboard" className="dojo-shell-logo" aria-label="Dojo home" prefetch>
+          <DojoMark />
+          <span className="dojo-shell-logo-word" aria-hidden="true">DOJO</span>
+        </Link>
+
         {NAV_ITEMS.map(({ href, label, Icon }) => {
           const active =
             href === "/dashboard"
