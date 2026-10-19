@@ -16,7 +16,9 @@
  *                search-rank.ts). Any other key (CardSortEnum) overrides it.
  *   - `set`      Optional (F-06). Filter to one set by name.
  *   - `rarity`   Optional (F-06). Filter by rarity (contains match).
- *   - `graded`   Optional (F-06). `"graded"` | `"ungraded"` (rarity-based).
+ *   - `graded`   Optional (F-06). `"graded"` | `"ungraded"` — based on
+ *                GRADED PRICING AVAILABILITY (does the card have a graded
+ *                CurrentPrice row with a non-null price), NOT a card attribute.
  *   - `minPrice` Optional (F-06). Min marketPrice (USD).
  *   - `maxPrice` Optional (F-06). Max marketPrice (USD).
  *   - `hasPrice` Optional. `"true"`/`"1"` → keep ONLY cards that actually
@@ -66,11 +68,6 @@ const ENFORCE_AUTH = false;
 /** Cap results at a sensible page — the UI grid renders ~60 tiles well. */
 const RESULT_LIMIT = 60;
 
-/** Grading companies — a card is "graded" when its rarity names one of
- *  these (there's no dedicated grade column yet; graded-ness rides on
- *  `rarity`, e.g. "PSA 10"). See prisma/seed-test.ts. */
-const GRADERS = ["PSA", "BGS", "CGC", "SGC", "Beckett"] as const;
-
 const SearchQuerySchema = z.object({
   game: z.enum(["pokemon", "onepiece"]),
   // Optional (browse mode): an empty/omitted query is valid ONLY when at least
@@ -83,8 +80,11 @@ const SearchQuerySchema = z.object({
   set: z.string().trim().min(1).max(100).optional(),
   // F-06: optional rarity filter — matches on Card.rarity (case-insensitive).
   rarity: z.string().trim().min(1).max(50).optional(),
-  // F-06: graded/ungraded filter. "graded" → rarity names a grader;
-  // "ungraded" → it doesn't; omitted → both.
+  // F-06 (QA D5): graded-pricing-availability filter. "graded" → the card has
+  // at least one graded CurrentPrice row with a non-null price; "ungraded" →
+  // it has none; omitted → both. (Grading is NOT a catalog-card attribute — it
+  // belongs to a user's owned copy — so the filter means "has graded pricing
+  // data available", which IS a real catalog signal.)
   graded: z.enum(["graded", "ungraded"]).optional(),
   // F-06: price range on Card.marketPrice (USD). Coerced from query strings;
   // non-numeric/negative values are rejected.
@@ -201,12 +201,20 @@ export async function GET(request: Request): Promise<NextResponse> {
   // trending + admin routes). Ordering favours priced cards first so
   // notable/valuable cards surface above unpriced filler.
 
-  // F-06 graded/ungraded: graded-ness lives in `rarity` (e.g. "PSA 10").
-  // A card is graded when its rarity starts with a grader name; ungraded
-  // is the negation. Built as OR-of-startsWith across the known graders.
-  const gradedMatch = GRADERS.map((g) => ({
-    rarity: { startsWith: g, mode: "insensitive" as const },
-  }));
+  // F-06 (QA D5) graded-pricing-availability: a card counts as "graded" when it
+  // has at least one graded CurrentPrice row with a non-null price (the SAME
+  // shape the enrich route reads: `type:"graded", priceMarket:{ not:null }`),
+  // "ungraded" is the negation. Grading is NOT a card attribute — the old
+  // rarity-startsWith check matched the seed-test "PSA 10" rarities but NOTHING
+  // in the real Scrydex catalog (rarities are "Rare Holo", "Common", …), so it
+  // returned zero rows. This relation query is a real, honest catalog signal.
+  // It sits at the TOP LEVEL of baseWhere (a single `currentPrices` key for
+  // graded, a single top-level `NOT` for ungraded) — the only other top-level
+  // `NOT` user (language `en`) nests under `AND`, and the hasPrice filter's
+  // `currentPrices` also nests under `AND`, so neither collides with this.
+  const GRADED_PRICING = {
+    currentPrices: { some: { type: "graded", priceMarket: { not: null } } },
+  } as const;
 
   // F-06 price range on marketPrice. Compose gte/lte only for the bounds
   // that were provided.
@@ -298,8 +306,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   // Card.marketPrice but a real CurrentPrice NM row, so a price gate would hide
   // them. These two clauses are UNCONDITIONAL (not behind hasPrice/language) and
   // live in their OWN nested `AND` fragment so they ride the same `AND` concat
-  // as hasPrice/language and NEVER clobber the graded top-level `NOT:{OR}` /
-  // `OR` or the language `NOT`.
+  // as hasPrice/language and NEVER clobber the graded top-level
+  // `currentPrices` / `NOT:{currentPrices}` or the language `NOT`.
   const imagePresentFilter: Prisma.CardWhereInput = {
     AND: [{ imageUrl: { not: null } }, { NOT: { imageUrl: "" } }],
   };
@@ -314,14 +322,14 @@ export async function GET(request: Request): Promise<NextResponse> {
     },
     // F-06: rarity filter (case-insensitive exact-ish contains match).
     ...(rarity ? { rarity: { contains: rarity, mode: "insensitive" } } : {}),
-    // F-06: graded → rarity names a grader; ungraded → it doesn't.
-    ...(graded === "graded" ? { OR: gradedMatch } : {}),
-    ...(graded === "ungraded" ? { NOT: { OR: gradedMatch } } : {}),
+    // F-06 (QA D5): graded → card HAS graded pricing; ungraded → it doesn't.
+    ...(graded === "graded" ? GRADED_PRICING : {}),
+    ...(graded === "ungraded" ? { NOT: GRADED_PRICING } : {}),
     // F-06: price range.
     ...priceFilter,
     // "Has price data", Language, and the unconditional image-presence filter
     // all use a nested `AND` (so their top-level `NOT`/`OR` never clobber the
-    // graded top-level `OR`/`NOT`). Spreading them would let one `AND` key
+    // graded top-level `currentPrices`/`NOT`). Spreading them would let one `AND` key
     // overwrite another, so their clauses are concatenated into ONE `AND` array
     // here. The image-presence clauses are ALWAYS folded in (imagePresentFilter
     // has no opt-in gate); `all` language contributes an empty object → no clause.

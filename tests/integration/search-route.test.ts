@@ -157,6 +157,50 @@ describe("hasPrice filter", () => {
   });
 });
 
+describe("graded-pricing filter (QA D5)", () => {
+  // QA D5: grading is NOT a catalog-card attribute — the old rarity-startsWith
+  // check matched the seed "PSA 10" rarities but NOTHING in the real Scrydex
+  // catalog, so "graded" returned zero rows. The filter now means "has graded
+  // PRICING data": the card has a graded CurrentPrice row with a non-null
+  // price — the SAME relation shape the enrich route reads. These literals pin
+  // the new meaning; a regression to the rarity-startsWith OR fails here.
+  const GRADED_PRICING = {
+    currentPrices: { some: { type: "graded", priceMarket: { not: null } } },
+  };
+
+  it("graded=graded adds the graded-pricing relation query (top-level), NOT a rarity match", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // no name hit → stage 2 runs
+    await call("game=pokemon&query=charzard&graded=graded");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2); // stage 1 + stage 2 recall
+    for (const w of ws) {
+      expect(w.currentPrices).toEqual(GRADED_PRICING.currentPrices);
+      // No rarity-startsWith OR anywhere (the removed old behavior).
+      expect(JSON.stringify(w)).not.toContain('"startsWith":"PSA"');
+    }
+  });
+
+  it("graded=ungraded negates the graded-pricing relation query (top-level NOT)", async () => {
+    prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // stage 2 recall too
+    await call("game=pokemon&query=charzard&graded=ungraded");
+    const ws = wheres();
+    expect(ws.length).toBeGreaterThanOrEqual(2);
+    for (const w of ws) {
+      expect(w.NOT).toEqual(GRADED_PRICING);
+    }
+  });
+
+  it("returns a card WITH a graded price for graded=graded (mock-side: Prisma does the filtering)", async () => {
+    // The relation filter runs in Postgres; with Prisma mocked we assert the
+    // WHERE shape (above) + that a returned graded-priced card maps through.
+    prismaMock.card.findMany.mockResolvedValue([
+      { ...row("graded-1", "Charizard", "4", "Base", null), currentPrices: [] },
+    ]);
+    const body = await (await call("game=pokemon&query=charizard&graded=graded")).json();
+    expect(body.cards.map((c: { id: string }) => c.id)).toContain("graded-1");
+  });
+});
+
 describe("language filter", () => {
   // Language is inferred from the "_ja-" externalId marker (no language column).
   // The underscore MUST be escaped so Postgres LIKE matches it literally — the
@@ -195,14 +239,17 @@ describe("language filter", () => {
     // Regression guard: both branches used to key on a bare top-level `NOT`,
     // so a plain spread let language overwrite the ungraded filter. The
     // language `NOT` now lives inside `AND`, so BOTH must survive together.
+    // (QA D5: ungraded's top-level NOT now wraps the graded-pricing relation
+    // query, not a rarity OR.)
     prismaMock.card.findMany.mockResolvedValue([row("x-1", "Raichu")]); // stage 2 recall too
     await call("game=pokemon&query=charzard&graded=ungraded&language=en");
     const ws = wheres();
     expect(ws.length).toBeGreaterThanOrEqual(2);
     for (const w of ws) {
-      // ungraded's top-level NOT:{OR} is untouched...
-      expect(w.NOT).toBeDefined();
-      expect((w.NOT as { OR?: unknown }).OR).toBeDefined();
+      // ungraded's top-level NOT:{currentPrices…} is untouched...
+      expect(w.NOT).toEqual({
+        currentPrices: { some: { type: "graded", priceMarket: { not: null } } },
+      });
       // ...and the language NOT:{externalId} rides in the AND array.
       expect(andOf(w)).toEqual(expect.arrayContaining([NOT_JA_CLAUSE]));
     }
@@ -251,9 +298,10 @@ describe("image presence filter", () => {
     const ws = wheres();
     expect(ws.length).toBeGreaterThanOrEqual(2);
     for (const w of ws) {
-      // graded ungraded's top-level NOT:{OR} is untouched...
-      expect(w.NOT).toBeDefined();
-      expect((w.NOT as { OR?: unknown }).OR).toBeDefined();
+      // graded ungraded's top-level NOT:{currentPrices…} is untouched (QA D5)...
+      expect(w.NOT).toEqual({
+        currentPrices: { some: { type: "graded", priceMarket: { not: null } } },
+      });
       // ...language NOT:{externalId} rides in the AND...
       expect(andOf(w)).toEqual(
         expect.arrayContaining([{ NOT: { externalId: { contains: "\\_ja-" } } }])

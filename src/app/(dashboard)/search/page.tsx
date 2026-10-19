@@ -1434,18 +1434,24 @@ function SearchPageInner() {
               )}
 
               <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
-                <label className="dojo-label" htmlFor="graded-filter">Graded</label>
+                {/* QA D5: grading is NOT a catalog-card attribute (it belongs
+                    to a user's owned copy). This filter is about graded PRICING
+                    AVAILABILITY — whether the card has graded CurrentPrice data
+                    — so the label/options say exactly that. Underlying values
+                    ('' / 'graded' / 'ungraded') and the ?graded= URL param are
+                    unchanged; only the human-readable text + meaning change. */}
+                <label className="dojo-label" htmlFor="graded-filter">Graded pricing</label>
                 <select
                   id="graded-filter"
                   data-testid="graded-filter"
-                  aria-label="Filter by graded"
+                  aria-label="Filter by graded pricing availability"
                   className="dojo-select"
                   value={gradedFilter}
                   onChange={(e) => applyFilters({ graded: e.target.value })}
                 >
-                  <option value="">Both</option>
-                  <option value="graded">Graded only</option>
-                  <option value="ungraded">Ungraded only</option>
+                  <option value="">All cards</option>
+                  <option value="graded">Has graded pricing</option>
+                  <option value="ungraded">No graded pricing</option>
                 </select>
               </div>
 
