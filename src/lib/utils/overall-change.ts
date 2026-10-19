@@ -32,6 +32,17 @@ export interface OverallChange {
 const NONE: OverallChange = { delta: null, pct: null };
 
 /**
+ * True when at least one series has ≥2 real points — i.e. the chart draws a
+ * line rather than its honest empty state. Reuses the EXACT `drawable` rule the
+ * chart (and computeOverallChange) use so the range-selector gate can never
+ * drift from the chart's empty-vs-drawn decision. When false, a timeframe
+ * selector would have nothing to filter, so the dashboard hides it.
+ */
+export function hasChartableHistory(seriesList: readonly ValueSeries[]): boolean {
+  return seriesList.some((s) => s.data.length >= 2);
+}
+
+/**
  * Aggregate the selected collections' real series into one value curve, then
  * take (last − first). Series of differing length are RIGHT-ALIGNED and
  * left-padded by carrying each series' first real value backward — the exact

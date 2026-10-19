@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 // Pure helper for the dashboard headline overall change — must be a REAL
 // (last − first)/first value from the drawn chart series, with an honest null
 // when there isn't enough history (AGENTS.md RULE 2: never fabricate).
-import { computeOverallChange, type ValueSeries } from "@/lib/utils/overall-change";
+import { computeOverallChange, hasChartableHistory, type ValueSeries } from "@/lib/utils/overall-change";
 
 describe("computeOverallChange — real series", () => {
   it("(a) ≥2 real points → delta/pct = (last − first)/first", () => {
@@ -42,5 +42,24 @@ describe("computeOverallChange — honest null (insufficient history)", () => {
     const { delta, pct } = computeOverallChange([{ data: [{ value: 0 }, { value: 25 }] }]);
     expect(delta).toBe(25);
     expect(pct).toBeNull();
+  });
+});
+
+describe("hasChartableHistory — range-selector gate (QA #7)", () => {
+  it("0 drawable series (all <2 points) → false (hide range tabs)", () => {
+    expect(hasChartableHistory([])).toBe(false);
+    expect(hasChartableHistory([{ data: [] }])).toBe(false);
+    expect(hasChartableHistory([{ data: [{ value: 100 }] }])).toBe(false);
+    expect(
+      hasChartableHistory([{ data: [{ value: 1 }] }, { data: [] }]),
+    ).toBe(false);
+  });
+
+  it("≥1 drawable series (≥2 points) → true (show range tabs)", () => {
+    expect(hasChartableHistory([{ data: [{ value: 100 }, { value: 110 }] }])).toBe(true);
+    // Mixed: one empty, one drawable → still chartable.
+    expect(
+      hasChartableHistory([{ data: [{ value: 5 }] }, { data: [{ value: 1 }, { value: 2 }] }]),
+    ).toBe(true);
   });
 });

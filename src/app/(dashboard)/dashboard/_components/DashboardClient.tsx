@@ -27,7 +27,7 @@ import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/componen
 import { Skeleton } from "@/components/Skeleton";
 import { useDelayedFlag } from "@/components/useDelayedFlag";
 import { toHistoryToken, shouldShowUncategorized } from "@/lib/utils/collection-ids";
-import { computeOverallChange } from "@/lib/utils/overall-change";
+import { computeOverallChange, hasChartableHistory } from "@/lib/utils/overall-change";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 import { HeaderLeftSlot } from "../../header-slot";
@@ -821,6 +821,16 @@ export default function DashboardClient({
     return computeOverallChange(scoped);
   }, [chartSeriesList, focusedId, activeSelectedIds]);
 
+  // Whether the chart draws a line (≥1 drawable series) vs its honest empty
+  // state. Reuses the SAME `drawable` rule the chart uses so the range tabs and
+  // the chart can never disagree. False → the 1D-MAX timeframe selector has
+  // nothing to filter, so we hide it rather than show clickable tabs over an
+  // empty chart (QA #7).
+  const hasChartableHistory_ = useMemo(
+    () => hasChartableHistory(chartSeriesList),
+    [chartSeriesList],
+  );
+
   // Active tab card rows
   const getActiveRows = () => {
     switch (activeTab) {
@@ -1094,33 +1104,39 @@ export default function DashboardClient({
           </div>
 
           {/* ── Range selector tabs with centered gold underline bar ── */}
-          <div style={{ display: "flex", borderBottom: "1px solid var(--color-dojo-divider)", marginTop: "8px" }}>
-            {RANGES.map((r) => {
-              const on = activeRange === r;
-              return (
-                <button
-                  key={r}
-                  onClick={() => setActiveRange(r)}
-                  style={{
-                    flex: 1, textAlign: "center", padding: "10px 0 8px", cursor: "pointer",
-                    background: "transparent", border: "none", position: "relative",
-                    fontFamily: "var(--font-display)", fontWeight: on ? 800 : 700, fontSize: "10px", letterSpacing: "0.14em",
-                    color: on ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
-                  }}
-                >
-                  {r}
-                  {on && (
-                    <span
-                      style={{
-                        position: "absolute", bottom: -1, left: "22%", right: "22%",
-                        height: "2.5px", background: "var(--color-dojo-gold)",
-                      }}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          {/* Only render the 1D-MAX timeframe selector when the chart actually
+              draws a line (≥1 drawable series). In the honest empty state there
+              is nothing to filter, so clickable tabs over an empty chart would
+              mislead (QA #7). Same `drawable` rule the chart uses — can't drift. */}
+          {hasChartableHistory_ && (
+            <div style={{ display: "flex", borderBottom: "1px solid var(--color-dojo-divider)", marginTop: "8px" }}>
+              {RANGES.map((r) => {
+                const on = activeRange === r;
+                return (
+                  <button
+                    key={r}
+                    onClick={() => setActiveRange(r)}
+                    style={{
+                      flex: 1, textAlign: "center", padding: "10px 0 8px", cursor: "pointer",
+                      background: "transparent", border: "none", position: "relative",
+                      fontFamily: "var(--font-display)", fontWeight: on ? 800 : 700, fontSize: "10px", letterSpacing: "0.14em",
+                      color: on ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+                    }}
+                  >
+                    {r}
+                    {on && (
+                      <span
+                        style={{
+                          position: "absolute", bottom: -1, left: "22%", right: "22%",
+                          height: "2.5px", background: "var(--color-dojo-gold)",
+                        }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div>
