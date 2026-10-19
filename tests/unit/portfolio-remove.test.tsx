@@ -162,6 +162,33 @@ it("shows a neutral dash (not $0.00 / 0 items) in the summary while the collecti
   expect(screen.getAllByText("—").length).toBeGreaterThan(0);
 });
 
+// QA #12a — the "Refresh prices" and "Select" toolbar controls aren't
+// meaningful in the SOLD-only view (sold records are historical — no live price
+// to refresh — and each sold row has its own per-card Revert instead of
+// bulk-delete). They must be present in the Active (default) view and absent in
+// the Sold view. (Per-card Revert is gated separately by `canSelect`/`owned`
+// and is unaffected — not under test here.)
+it("hides 'Refresh prices' and 'Select' in the Sold view but shows them in the Active view", async () => {
+  stubFetch(
+    [item("u1", "Alakazam", "col_main"), { ...item("u2", "Charizard", "col_main"), isSold: true, soldPrice: 50, soldAt: "2026-02-01T00:00:00.000Z" }],
+    [{ id: "col_main", name: "Main" }],
+  );
+  renderPage();
+  await screen.findByText("Alakazam");
+
+  // Active view (default): both controls render.
+  expect(screen.getByRole("button", { name: "Refresh prices" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Select" })).toBeTruthy();
+
+  // Switch the card-type filter to "Sold cards".
+  fireEvent.click(screen.getByTestId("card-type-filter"));
+  fireEvent.click(await screen.findByRole("option", { name: "Sold cards" }));
+
+  // Sold view: neither control renders.
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Refresh prices" })).toBeNull());
+  expect(screen.queryByRole("button", { name: "Select" })).toBeNull();
+});
+
 it("hides the Uncategorized filter when no lot is unassigned; shows it when one is (null rows still listed)", async () => {
   stubFetch([item("u1", "Alakazam", "col_main")], [{ id: "col_main", name: "Main" }, { id: "__uncat__" }]);
   const first = renderPage();

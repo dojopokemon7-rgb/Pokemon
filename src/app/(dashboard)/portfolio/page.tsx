@@ -890,7 +890,17 @@ export default function PortfolioPage() {
 
   const typeLabel = CARD_TYPE_OPTIONS.find((o) => o.id === cardType)!.label;
   const collLabel = collOptions.find((o) => o.id === selectedColl)?.name ?? "All collections";
+  // `canSelect` is load-bearing for PER-CARD affordances: it's passed as
+  // `owned` to CardGrid/CardRow, which gates the per-card Revert (unsell) on
+  // SOLD rows and Mark-Sold/Want-Sell on active rows. It must stay TRUE for the
+  // sold view so Revert keeps rendering — so we do NOT narrow it here.
   const canSelect = cardType !== "want-to-buy";
+  // QA #12a: the "Refresh prices" + "Select" toolbar controls aren't meaningful
+  // in the SOLD-only view (sold records are historical — no live price to
+  // refresh — and each sold row has its own per-card Revert instead of
+  // bulk-delete). Hide them for the sold-only view; active/all/high-value are
+  // unchanged. Separate from `canSelect` so per-card actions (above) are intact.
+  const showActiveTools = cardType !== "want-to-buy" && cardType !== "sold";
 
   const toggleSelectId = (id: string) => {
     const item = consolidatedItems.find((i) => i.id === id);
@@ -907,7 +917,14 @@ export default function PortfolioPage() {
   };
 
   return (
-    <div style={{ padding: "6px 22px 24px" }}>
+    // QA #12b: the (dashboard) shell reserves 80px under its fixed bottom nav
+    // (.dojo-shell-main padding-bottom), but the nav ALSO grows by
+    // env(safe-area-inset-bottom) (home-indicator devices) — that inset isn't in
+    // the shell's fixed 80px, so this grid's last row is clipped behind the nav.
+    // Add the same safe-area inset the nav uses to this page's bottom padding so
+    // the final row always clears it. Matches the env(safe-area-inset-bottom)
+    // convention already used by .dojo-shell-nav and the scanner bar.
+    <div style={{ padding: "6px 22px calc(24px + env(safe-area-inset-bottom, 0px))" }}>
       <div className="dojo-desktop-grid">
         <div>
       {/* ── Search bar + filter icon ── */}
@@ -1051,7 +1068,7 @@ export default function PortfolioPage() {
           {isLoading ? "—" : `${filteredItems.length} item${filteredItems.length !== 1 ? "s" : ""}`}
         </span>
 
-        {canSelect && (
+        {showActiveTools && (
           <button
             type="button"
             onClick={() => refreshPrices.mutate()}
@@ -1063,7 +1080,7 @@ export default function PortfolioPage() {
           </button>
         )}
 
-        {canSelect && (
+        {showActiveTools && (
           <button
             type="button"
             onClick={() => { setSelectMode((v) => !v); setSelectedIds(new Set()); }}
