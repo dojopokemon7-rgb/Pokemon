@@ -57,10 +57,25 @@ function gameSlug(game: Game): "pokemon" | "onepiece" {
 
 // --- Zod schemas mapping the REAL shape (design §3.2) ---------------------
 
+// Scrydex is inconsistent across games: some numeric price/trend fields arrive
+// as a JSON number, others (observed on certain Pokémon catalog pages) as a
+// numeric STRING ("1.23"). Parse loosely at the boundary (RULE 4): accept a
+// number OR a numeric string, coerce to number, and treat empty/non-numeric as
+// null rather than throwing (a whole page would otherwise fail to parse and the
+// re-ingest would stop mid-catalog — exactly what happened on Pokémon page 28).
+const looseNumber = z
+  .union([z.number(), z.string()])
+  .nullish()
+  .transform((v) => {
+    if (v == null || v === "") return null;
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) ? n : null;
+  });
+
 const TrendDeltaSchema = z
   .object({
-    price_change: z.number().nullish(),
-    percent_change: z.number().nullish(),
+    price_change: looseNumber,
+    percent_change: looseNumber,
   })
   .nullish();
 
@@ -69,8 +84,8 @@ const PriceEntrySchema = z.object({
   grade: z.string().nullish(),
   company: z.string().nullish(),
   type: z.string(), // "raw" = ungraded; else graded
-  low: z.number().nullish(),
-  market: z.number().nullish(),
+  low: looseNumber,
+  market: looseNumber,
   currency: z.string().default("USD"),
   trends: z
     .object({ days_1: TrendDeltaSchema, days_7: TrendDeltaSchema, days_14: TrendDeltaSchema })

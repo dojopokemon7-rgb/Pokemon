@@ -259,15 +259,20 @@ export function assertPerSetInvariants(
     );
   }
 
-  // (3) net increase equals non-base printings CREATED THIS RUN (re-run safe:
-  // 0 === 0 on a clean second apply). A cross-set Pokemon set-name split lands
-  // +N new rows here (1 green-field base + N-1 non-base) while createdNonBase is
-  // only N-1 → fires.
+  // (3) net Card increase equals ALL rows CREATED THIS RUN = non-base printings
+  // PLUS green-field base rows. Re-run safe (0 === 0 on a clean second apply).
+  // A brand-new set the catalog didn't have yet (e.g. a freshly-released
+  // Pokémon set like tcgp-B4b) legitimately creates base rows — those are real
+  // adds and MUST count toward the expected increase. The base rows upsert onto
+  // EXISTING matched rows for known cards (0 created), so for already-present
+  // sets createdBase stays 0 and this reduces to the old non-base check; only a
+  // genuinely-new set drives createdBase > 0, which is correct, not corruption.
   const netIncrease = after.cardCount - before.cardCount;
-  if (netIncrease !== tallies.createdNonBase) {
+  const createdThisRun = tallies.createdNonBase + tallies.createdBase;
+  if (netIncrease !== createdThisRun) {
     throw new Error(
-      `[reingest] set ${setKey}: net Card increase ${netIncrease} !== non-base created this run ${tallies.createdNonBase} ` +
-        `(created base this run=${tallies.createdBase}) — assertion (3) failed`
+      `[reingest] set ${setKey}: net Card increase ${netIncrease} !== rows created this run ${createdThisRun} ` +
+        `(non-base=${tallies.createdNonBase}, base=${tallies.createdBase}) — assertion (3) failed`
     );
   }
 }

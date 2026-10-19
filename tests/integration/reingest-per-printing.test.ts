@@ -176,17 +176,33 @@ describe("assertPerSetInvariants (addendum MEDIUM-1)", () => {
     ).not.toThrow();
   });
 
-  it("cross-set set-name split: green-field base makes net=+N but createdNonBase=N-1 → FIRES assertion (3)", () => {
-    // On a seed-set-name MISS the match step green-fields the base into the
-    // Scrydex-keyed set, so that set GAINS all N printings (1 green-field base +
-    // N-1 non-base) → net +N, while createdNonBase counts only the N-1 non-base
-    // rows → N !== N-1 fires. This is the SOLE catcher of a clean set-name miss
-    // (addendum MEDIUM-1).
+  it("genuinely-new set: green-field base + non-base, net === base+nonBase → does NOT fire assertion (3)", () => {
+    // A brand-new set the catalog didn't have yet (e.g. a freshly-released
+    // Pokémon set) legitimately creates ALL its rows: 1 green-field base + N-1
+    // non-base. net === createdBase + createdNonBase, so assertion (3) must NOT
+    // fire — creating a new set's cards is correct, not corruption. (This is the
+    // real tcgp-B4b case the prod run hit: +N base rows, net === created.)
     expect(() =>
       assertPerSetInvariants(
         "pokemon-me55c",
         { cardCount: 0 },
         { cardCount: 3 }, // +3 (1 green-field base + 2 non-base)
+        { createdNonBase: 2, createdBase: 1, updated: 0, skipped: 0 },
+        new Map([["4", 1]])
+      )
+    ).not.toThrow();
+  });
+
+  it("net increase exceeds rows created this run (unexpected extra rows) → FIRES assertion (3)", () => {
+    // The real guard: if the Card count grew by MORE than this run created
+    // (non-base + base), something wrote rows the tally didn't account for —
+    // the corruption signal assertion (3) exists to catch. Here net=+5 but only
+    // 3 were created (2 non-base + 1 base) → fires.
+    expect(() =>
+      assertPerSetInvariants(
+        "pokemon-me55c",
+        { cardCount: 0 },
+        { cardCount: 5 },
         { createdNonBase: 2, createdBase: 1, updated: 0, skipped: 0 },
         new Map([["4", 1]])
       )
