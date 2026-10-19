@@ -1151,6 +1151,24 @@ body {
   }
 }
 
+/* --- Your Collections tile grid (QA D8) ---
+   A text-summary tile grid for the dashboard "Your Collections" section.
+   NOT .dojo-card-grid: that goes 2→6 columns for tall card IMAGES, which
+   reads cramped for text tiles (name + count + value). This caps at 3
+   columns so every tile stays legible: 2 cols on phone, 3 on tablet/desktop.
+   Square corners, design tokens only — no new color. */
+.dojo-coll-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (min-width: 768px) {
+  .dojo-coll-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
 /* --- Interactive card tile hover state (Phase 3.2) ---
    Subtle lift + shadow on hover for every clickable card tile
    (search results, trending grid, portfolio grid/list, dashboard

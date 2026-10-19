@@ -1140,6 +1140,65 @@ export default function DashboardClient({
         </div>
 
         <div>
+          {/* ── Your Collections — card tiles on the DEFAULT view (QA D8) ──
+              Client's words: "Dashboard doesn't show multiple collections as
+              separate cards." Owner decision (Option 2+3): surface each
+              collection as its OWN card tile on the default dashboard view, not
+              only as thin rows inside the non-default Collections tab. These
+              tiles reuse the EXISTING `collOptions` aggregation verbatim (same
+              marketValue/cardCount/color the selector + chart legend use) — NO
+              recompute, NO fabricated numbers (AGENTS.md RULE 2). The section is
+              hidden entirely when there are no collections (no empty box).
+              Clicking a tile reuses the existing per-collection focus wiring
+              (setSelectedIds + setFocusedId) — the same contract the selector
+              dropdown + focus pills already drive; no new routing contract. */}
+          {collOptions.length > 0 && (
+            <div style={{ marginTop: "20px" }}>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--color-dojo-body)", marginBottom: "10px" }}>
+                Your Collections
+              </div>
+              <div className="dojo-coll-grid">
+                {collOptions.map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-testid="collection-card"
+                    aria-label={`View ${opt.name} collection`}
+                    onClick={() => {
+                      setSelectedIds(new Set([opt.id]));
+                      setFocusedId(opt.id);
+                    }}
+                    style={{
+                      display: "flex", flexDirection: "column", gap: "8px", textAlign: "left",
+                      cursor: "pointer", padding: "14px 15px",
+                      background: "var(--color-dojo-card)",
+                      border: "1px solid var(--color-dojo-stroke)",
+                      boxShadow: "5px 5px 0 0 #000",
+                    }}
+                  >
+                    {/* Color accent + name. Accent is NOT the only distinguisher:
+                        name/count/value are always present as text (a11y). */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                      <span aria-hidden="true" style={{ flex: "none", width: "10px", height: "10px", background: opt.color }} />
+                      <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "12px", letterSpacing: "0.04em", color: "var(--color-dojo-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {opt.name}
+                      </span>
+                    </div>
+                    {/* Card COUNT — "0 cards" for empty collections, never hidden. */}
+                    <div style={{ fontSize: "11px", color: "var(--color-dojo-body)" }}>
+                      {opt.cardCount} card{opt.cardCount !== 1 ? "s" : ""}
+                    </div>
+                    {/* Total VALUE via the shared fmt helper. No delta is rendered
+                        (per-collection weekly delta is always null → never fabricate). */}
+                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "18px", fontVariantNumeric: "tabular-nums", color: "var(--color-dojo-ink)" }}>
+                      {hidden ? `$ ${mask}` : fmt(opt.marketValue)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* ── Tab selector — solid gold active tab matching Image 1 ── */}
           <div className="dojo-scroll-hidden" style={{ display: "flex", gap: "8px", overflowX: "auto", marginTop: "20px", paddingBottom: "2px" }}>
               {TABS.map((tab) => {
