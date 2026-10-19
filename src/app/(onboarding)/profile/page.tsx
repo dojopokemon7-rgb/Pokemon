@@ -64,9 +64,6 @@ export default function CreateProfilePage() {
   const router = useRouter();
   const { data: session } = useSession();
 
-  const defaultUsername = session?.user?.name ?? "";
-
-  const [username, setUsername]         = useState(defaultUsername);
   const [currency, setCurrency]         = useState<Currency>("USD");
   const [currencyMenuOpen, setCurrMenu] = useState(false);
   const [location, setLocation]         = useState("");
@@ -132,7 +129,6 @@ export default function CreateProfilePage() {
   // ── Submit — go straight to /search per client feedback ─────
   async function handleContinue(e: React.FormEvent) {
     e.preventDefault();
-    if (!username.trim()) return;
 
     setLoading(true);
 
@@ -178,7 +174,7 @@ export default function CreateProfilePage() {
                 style={{ width: "100%", height: "100%", objectFit: "cover" }}
               />
             ) : (
-              initials(username || "kenji.dojo")
+              initials(session?.user?.name || "kenji.dojo")
             )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
@@ -208,24 +204,9 @@ export default function CreateProfilePage() {
           aria-hidden="true"
         />
 
-        {/* ── Username ── */}
-        <div className="dojo-input-wrap" style={{ marginBottom: "6px" }}>
-          <label htmlFor="profile-username" className="dojo-label">Username</label>
-          <input
-            id="profile-username"
-            type="text"
-            autoComplete="username"
-            placeholder="pick a handle"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            disabled={loading}
-            className="dojo-input"
-          />
-        </div>
-        <p className="dojo-faint" style={{ marginBottom: "22px" }}>
-          auto-filled from sign up.
-        </p>
+        {/* ── Username captured at sign-up (QA M2, Option A): the handle is
+            already persisted via Better Auth on the signup page, so the
+            onboarding step no longer re-asks for it. ── */}
 
         {/* ── Location — 15 world cities ── */}
         <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "8px", marginBottom: "22px" }}>
@@ -314,7 +295,7 @@ export default function CreateProfilePage() {
           <button
             id="btn-create-profile"
             type="submit"
-            disabled={loading || !username.trim()}
+            disabled={loading}
             className="dojo-btn dojo-btn-primary"
           >
             {loading ? "Setting up…" : (
