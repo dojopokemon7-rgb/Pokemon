@@ -239,3 +239,36 @@
 - `test:unit` runs BOTH `tests/unit` and `src`; keep new pure tests under `tests/unit`.
 - The chosen multi-printing Pokémon sample for parity (item 9/11) is picked by the implementer from a
   card with reverse-holo + holo + normal; document the pick in the script.
+
+
+---
+
+## EXECUTION LOG — One Piece DONE & LIVE (2026-10-17)
+
+**One Piece per-printing Scrydex parity is COMPLETE and LIVE on dojocollect.com.**
+Verified: `GET /api/cards/search?query=OP01-120&game=onepiece` returns all printings
+(altArt $76.68, foil $8.01, mangaAltArt $3998.74, nonTexturedMangaAltArt, premiumAltArt,
+reprint, serializedFoil) — each its own card row with its own image + price.
+
+### What was run (owner, on the Droplet, direct 5432 connection)
+1. Schema migration `20250112000000_card_per_printing_model` (added `Card.printing`, relaxed `scrydexId` unique) — applied via `npx -y prisma@6 migrate deploy`.
+2. `scripts/reconcile-onepiece-sets.ts --apply` — collapsed 64 duplicate/phantom OP sets, moved 95 cards, 2897→2897 (invariant held). REQUIRED FIRST — the duplicate code-ID sets (onepiece-OP17 etc.) broke the per-printing per-set accounting.
+3. `scripts/reingest-per-printing.ts --game=onepiece --apply` — 59/60 sets committed; OP catalog 2897 → **5635 cards (2738 ::variant rows)**. Credit-gated, direct connection.
+4. `docker compose up -d --build app` — rebuilt to ship the search fix.
+5. Redis FLUSHDB after each data change.
+
+### Environment gotchas hit + fixed (bake into any future run / the Pokémon run)
+- Run scripts via the one-off container mounting scripts/+src/+prisma/+**tsconfig.json**, with `npx -y tsx --tsconfig /app/tsconfig.json` (else `@/` alias fails), `npm i dotenv` first (missing dep), and after a schema change `npx -y prisma@6 generate` OR a full `docker compose up -d --build app` (the baked Prisma client must know `printing`).
+- Interactive `$transaction` MUST use the DIRECT connection: pass `-e DATABASE_URL="$DIRECT_URL"` (the pooled 6543 pgbouncer URL closes interactive transactions).
+- Per-set `$transaction` timeout raised to 120s (large sets over the remote DB exceeded the 5s default) — commit af93399.
+- Dedupe buffered printings by externalId within a set (a number appearing in two merged source expansions) — commit 0c673f4.
+- Search surfacing: ranker now scores by BASE id (strip `::variant`) + the identifier pool query matches `Card.number contains <full-code>` (set externalId is a slug after reconcile) — commit 9320d26.
+
+### STILL OPEN (two items — deliberate follow-ups, NOT done)
+1. **Promos set (`onepiece-P`, 116 cards)** — the ONLY OP set not per-printing-expanded. The re-ingest halted on it with assertion (3): `net Card increase 283 !== non-base created 166 (createdBase=0)`. Rolled back cleanly (promos still 116 single rows, no corruption, no dup base rows). ROOT CAUSE NOT YET CONFIRMED — do NOT blindly loosen the assertion. The promos set is an aggregate of P-xxx promo numbers; the 283-vs-166 gap (117 unaccounted) needs the FULL run output + a read of how promo printings are tallied vs counted. Fix precisely, then re-run `--game=onepiece --apply` (idempotent — the 59 done sets will all-skip).
+2. **Pokémon (~475 Scrydex credits)** — NOT started. Same `reingest-per-printing.ts --game=pokemon --apply`, now proven on OP. BUT: Pokémon has the match-then-upsert set-name pre-check (Scrydex `me55c-4` ≠ seeded `base1-4`) and far more sets → expect more per-set accounting edges like promos. Resolve the promos accounting model FIRST (same class of bug), then run Pokémon with full attention. Budget the agent session for a long interactive run.
+
+### Commits (all pushed to origin/master)
+d43f534 restore per-printing pull-full-catalog + track it · af93399 tx timeout 120s ·
+0c673f4 dedupe printings within a set · 9320d26 search surfaces per-printing rows.
+(On top of the 7 earlier scrydex-parity build commits ending 10e20d6.)
