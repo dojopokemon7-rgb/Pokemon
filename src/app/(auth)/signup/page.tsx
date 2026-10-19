@@ -293,9 +293,9 @@ export default function SignUpPage() {
             Sign in ›
           </Link>
         </p>
-        <button type="button" className="dojo-link" style={{ fontSize: "9px", letterSpacing: "0.18em" }}>
+        <a href="mailto:dojo.collect@nodwin.com?subject=Dojo%20%E2%80%94%20help%20with%20sign%20in" className="dojo-link" style={{ fontSize: "9px", letterSpacing: "0.18em" }}>
           NEED HELP?
-        </button>
+        </a>
       </div>
 
       {timeoutMsg && (
