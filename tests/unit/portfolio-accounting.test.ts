@@ -99,6 +99,20 @@ describe("statsFromLots (shared dashboard + portfolio aggregation)", () => {
     expect(s.unrealized).toBe(50); // only the both-resolved lot: (40−15)×2
   });
 
+  it("QA #2: an added-with-no-payment lot (null basis) shows no fabricated $0 Paid/Unrealized", () => {
+    // The exact Finding #2 scenario: a single active lot added with NO payment,
+    // so purchasePrice is null while the market value is known ($342.73). Paid
+    // and Unrealized must NOT be a fake $0 (which is what auto-filling Paid with
+    // the market value produced); the lot is counted as unresolved instead.
+    const s = statsFromLots([
+      { quantity: 1, purchasePrice: null, marketPrice: 342.73, isSold: false },
+    ]);
+    expect(s.marketValue).toBe(342.73); // real value still shown
+    expect(s.paid).toBe(0); // null basis NOT added into Paid (not 342.73, not a fabricated number)
+    expect(s.unrealized).toBe(0); // no fabricated +$0 gain — the lot is excluded, not treated as basis = market
+    expect(s.unresolvedCount).toBe(1); // surfaced as "no cost basis" in the UI
+  });
+
   it("null marketPrice on an active lot is NOT counted as $0 value", () => {
     const s = statsFromLots([
       { quantity: 2, purchasePrice: 10, marketPrice: null, isSold: false },

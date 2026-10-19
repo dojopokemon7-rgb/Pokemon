@@ -322,22 +322,22 @@ export async function POST(request: Request): Promise<NextResponse> {
         });
       }
 
-      // Cost-basis capture (plan §5): prefer the user-entered price, else
-      // SNAPSHOT the current price at add-time. Record the SOURCE + CURRENCY +
-      // attempt timestamp so an unresolved basis (null) is distinguishable from
-      // "never tried" and never silently becomes 0. We never fabricate a cost.
-      // SECURITY: the snapshot fallback uses the REAL catalog price only — a
-      // user-supplied item.marketPrice must not set even the user's own basis
-      // ambiently (an EXPLICIT item.purchasePrice below is their own cost record
-      // and is still honored).
+      // Cost-basis capture (plan §5, QA #2 / Option A): store a cost basis ONLY
+      // when the USER explicitly supplied one. We NO LONGER snapshot the current
+      // market price as the user's cost basis — auto-filling "Paid" with the
+      // market value made Unrealized gain always $0 and profit tracking
+      // meaningless (RULE 2 — never fabricate a cost the user never paid). When
+      // no payment is entered the basis stays UNRESOLVED (null) and the UI shows
+      // "No cost basis recorded" rather than a misleading $0. We still stamp
+      // costBasisAttemptedAt on BOTH paths so "tried, no user cost" is
+      // distinguishable from a legacy null.
       //
-      // QA #1 ("price you see ≠ price you pay"): AddCardSheet shows the GRADED
-      // price for a graded selection (e.g. "PSA 10") but we previously snapshotted
-      // the RAW card.marketPrice as cost basis. For a graded add, resolve the
-      // grade-correct price from the SERVER'S OWN CurrentPrice graded rows (never
-      // item.marketPrice) so the stored basis matches what the user saw. RULE 2:
-      // no matching graded row → fall back to raw card.marketPrice (never invent a
-      // graded number). Raw adds skip the extra query (fast path unchanged).
+      // QA #1 ("price you see ≠ price you pay"): the grade-correct price lookup
+      // below is KEPT — it still feeds the SHARED pricing_history add-snapshot
+      // point (the portfolio-chart datapoint), a DIFFERENT concern from the
+      // user's cost basis. For a graded add we resolve the grade-correct price
+      // from the SERVER'S OWN CurrentPrice graded rows (never item.marketPrice);
+      // RULE 2: no matching graded row → fall back to raw card.marketPrice.
       const parsedGrade = parseGradedCondition(item.condition);
       let gradedSnap: number | null = null;
       if (parsedGrade) {
@@ -355,18 +355,14 @@ export async function POST(request: Request): Promise<NextResponse> {
         });
         gradedSnap = pickGradedFromRows(priceRows, parsedGrade.company, parsedGrade.grade);
       }
-      const snapshotPrice = (parsedGrade ? gradedSnap : null) ?? card.marketPrice ?? null;
       let purchasePrice: number | null;
       let costBasisSource: string | null;
       if (item.purchasePrice != null) {
         purchasePrice = item.purchasePrice;
         costBasisSource = "user";
-      } else if (snapshotPrice != null && snapshotPrice > 0) {
-        purchasePrice = snapshotPrice;
-        costBasisSource = "add-snapshot";
       } else {
-        // No usable price → UNRESOLVED (null + attempt marker). A later price
-        // fetch can lazily resolve it; until then P&L shows "unresolved".
+        // No user-entered payment → UNRESOLVED (null + attempt marker). We do
+        // NOT snapshot the market price as the basis (QA #2 / Option A).
         purchasePrice = null;
         costBasisSource = "unresolved";
       }

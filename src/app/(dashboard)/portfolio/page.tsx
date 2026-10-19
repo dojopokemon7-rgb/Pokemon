@@ -118,7 +118,18 @@ function GainLossTag({ item }: { item: CollectionItem }) {
     );
   }
 
-  if (item.purchasePrice == null || item.card.marketPrice == null) return null;
+  // QA #2 (Option A): an ACTIVE lot with no user-entered cost basis
+  // (purchasePrice=null) is UNRESOLVED — show an honest "No cost basis recorded"
+  // label instead of silently rendering a value with no P&L context (and never a
+  // fabricated +$0.00 / 0%). The summary already excludes it from Paid/Unrealized.
+  if (item.purchasePrice == null) {
+    return (
+      <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+        No cost basis recorded
+      </span>
+    );
+  }
+  if (item.card.marketPrice == null) return null;
   // BUG-1: graded holdings compare against their GRADED market price, not raw
   // (same resolution as the portfolio summary via statsFromLots).
   const marketPerCopy = isGraded(item.condition)
@@ -977,6 +988,15 @@ export default function PortfolioPage() {
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
             Unrealized <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: portfolioStats.unrealized >= 0 ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)" }}>{portfolioStats.unrealized >= 0 ? "+" : ""}{fmt(portfolioStats.unrealized)}</span>
           </span>
+          {/* QA #2: surface the honest exclusion. Lots added with no payment keep
+              an UNRESOLVED cost basis (purchasePrice=null) — they are left OUT of
+              Paid/Unrealized above (never a fabricated $0). Reuse the engine's
+              existing unresolvedCount rather than inventing a parallel concept. */}
+          {portfolioStats.unresolvedCount > 0 && (
+            <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
+              {portfolioStats.unresolvedCount} card{portfolioStats.unresolvedCount !== 1 ? "s" : ""} with no cost basis
+            </span>
+          )}
         </div>
 
         {/* ── Portfolio value chart ── Real stored collection-value history

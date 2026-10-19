@@ -47,6 +47,19 @@ it.each([
   expect(qty()).toContain("1");
 });
 
+it("QA #2: the payment field is hidden by default and, when revealed, is NOT pre-filled with the market price", () => {
+  mount({ marketPrice: 500, gradedPrices: GRADED });
+  // Collapsed by default — no "Price paid" input until the user opts in.
+  expect(screen.queryByLabelText("Price paid")).toBeNull();
+  // Reveal it via the "+ Add" (Record Payment) control.
+  fireEvent.click(screen.getByText("+ Add"));
+  const input = screen.getByLabelText("Price paid") as HTMLInputElement;
+  // Must start blank — never auto-filled with the card's live/market price
+  // (auto-filling Paid with the market value is exactly what QA #2 rejects).
+  expect(input.value).toBe("");
+  expect(input.value).not.toBe("500");
+});
+
 it("quantity cannot go below 1 or above 999", () => {
   mount({ marketPrice: 12 });
   fireEvent.click(screen.getByLabelText("Decrease quantity"));
