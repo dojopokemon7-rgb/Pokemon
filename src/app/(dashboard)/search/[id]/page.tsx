@@ -614,6 +614,10 @@ function CardDetailInner() {
             <MoreIcon />
           </button>
           {menuOpen && (
+            <>
+              {/* Click-away scrim — closes on outside click (QA #10). Below the
+                  .dojo-menu z-index (60) so the menu's own rows stay clickable. */}
+              <div onClick={() => setMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 59 }} />
             <div className="dojo-menu" style={{ top: "42px", right: 0, left: "auto", width: "210px" }}>
               {["Report image issue", "Report pricing issue", "Report missing product"].map((l) => (
                 <div
@@ -631,6 +635,7 @@ function CardDetailInner() {
                 </div>
               ))}
             </div>
+            </>
           )}
         </div>
         {/* bottom-right: share */}
@@ -648,6 +653,10 @@ function CardDetailInner() {
             <ShareIcon />
           </button>
           {shareOpen && (
+            <>
+              {/* Click-away scrim — closes on outside click (QA #10). Below the
+                  .dojo-menu z-index (60) so the menu's own rows stay clickable. */}
+              <div onClick={() => setShareOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 59 }} />
             <div className="dojo-menu" style={{ bottom: "46px", right: 0, left: "auto", top: "auto", width: "190px" }}>
               {["Instagram", "WhatsApp", "X", "Copy link"].map((l) => (
                 <div key={l} className="row" onClick={() => setShareOpen(false)}>
@@ -655,6 +664,7 @@ function CardDetailInner() {
                 </div>
               ))}
             </div>
+            </>
           )}
         </div>
       </div>
