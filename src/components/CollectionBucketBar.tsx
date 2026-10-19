@@ -5,8 +5,9 @@
  *
  * Presentational only: it renders the counts from `GET /api/collections.buckets`
  * (the `["collections"]` TanStack query). Main · All · Want to Buy · Want to Sell
- * · Sold. Main/All/Sold are summed QUANTITIES; Buy/Sell are ROW COUNTS (design
- * §6a). Uses design tokens --color-dojo-*, square corners (radius 0 by design),
+ * · Sold. Main/All are summed QUANTITIES; Buy/Sell/Sold are ROW COUNTS — Sold is
+ * a CONSOLIDATED row count that matches the Sold view's item count (QA #4), not a
+ * summed quantity (design §6a). Uses design tokens --color-dojo-*, square corners
  * hard-offset shadows (no blur).
  */
 

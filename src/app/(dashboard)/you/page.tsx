@@ -24,6 +24,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSession, authClient } from "@/lib/auth-client";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
+import { activeCardCounts } from "@/lib/utils/active-card-counts";
 import { CollectionsSection } from "./_components/CollectionsSection";
 import { ContactSupport } from "./_components/ContactSupport";
 
@@ -114,21 +115,13 @@ export default function YouAccountPage() {
 
   const stats = useMemo(() => {
     const rows = items ?? [];
-    // Total cards = sum of quantities (matches how the admin panel and
-    // trending route count "cards owned" — see admin-metrics.ts).
-    const totalCards = rows.reduce((s, r) => s + (r.quantity ?? 0), 0);
-
-    // "Graded" is inferred from the free-text `condition` field until a
-    // proper `grader` / `grade` column lands on UserCollection. Anything
-    // matching a common grading company name counts. Loose but honest —
-    // this matches how a user labels a slabbed card in the add flow.
-    // ponytail: heuristic count (regex on free-text) — upgrade path is
-    // a dedicated grading schema on UserCollection.
-    const gradedRe = /\b(psa|bgs|cgc|sgc|beckett)\b/i;
-    const graded = rows.reduce(
-      (s, r) => s + (r.condition && gradedRe.test(r.condition) ? r.quantity : 0),
-      0
-    );
+    // Cards / Graded count ACTIVE lots only. SOLD lots (isSold=true) are still
+    // returned by GET /collection but no longer owned, so they must not inflate
+    // the counts (QA #4 — mirrors statsFromLots, which already excludes sold from
+    // the Paid/Value split below). "Graded" is inferred from the free-text
+    // `condition` field (same heuristic the add flow uses) until a proper grading
+    // schema lands on UserCollection.
+    const { totalCards, graded } = activeCardCounts(rows);
     // No schema field for sealed product yet — kept as 0 rather than
     // faked. Wire when a `isSealed` column exists on UserCollection.
     const sealed = 0;

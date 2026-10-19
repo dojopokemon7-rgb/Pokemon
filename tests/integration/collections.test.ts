@@ -203,14 +203,21 @@ describe("CollectionTypeEnum", () => {
 // =============================================================
 
 describe("listCollectionsWithBuckets — per-collection bucket counts", () => {
-  it("assembles main/all/sold (Σ quantity) and buy/sell (row count) per collection + __uncat__", async () => {
+  it("assembles main/all (Σ qty) + buy/sell (row count) + sold (CONSOLIDATED row count, QA #4) per collection + __uncat__", async () => {
     prismaMock.collection.findMany.mockResolvedValue([
       { id: "col_1", userId: USER_ID, name: "Vintage", isPrivate: true, typeTag: "POKEMON" },
     ]);
+    // Active quantities (groupBy now filters isSold:false, so no isSold key).
     prismaMock.userCollection.groupBy.mockResolvedValue([
-      { collectionId: "col_1", isSold: false, _sum: { quantity: 120 } },
-      { collectionId: "col_1", isSold: true, _sum: { quantity: 8 } },
-      { collectionId: null, isSold: false, _sum: { quantity: 5 } },
+      { collectionId: "col_1", _sum: { quantity: 120 } },
+      { collectionId: null, _sum: { quantity: 5 } },
+    ]);
+    // Sold lots are read separately and consolidated to row counts (QA #4):
+    // col_1 has two sold lots of the SAME card/foil/condition/soldPrice (qty 8
+    // total) → ONE consolidated row, matching the Sold view's item count.
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { collectionId: "col_1", cardId: "card_a", isFoil: false, condition: null, soldPrice: 10 },
+      { collectionId: "col_1", cardId: "card_a", isFoil: false, condition: null, soldPrice: 10 },
     ]);
     prismaMock.wantListItem.groupBy.mockResolvedValue([
       { collectionId: "col_1", intent: "BUY", _count: { _all: 3 } },
@@ -220,17 +227,18 @@ describe("listCollectionsWithBuckets — per-collection bucket counts", () => {
 
     const data = await listCollectionsWithBuckets(USER_ID);
     const col1 = data.find((c) => c.id === "col_1")!;
-    expect(col1.buckets).toEqual({ main: 120, all: 120, buy: 3, sell: 1, sold: 8 });
+    expect(col1.buckets).toEqual({ main: 120, all: 120, buy: 3, sell: 1, sold: 1 });
 
     const uncat = data.find((c) => c.id === "__uncat__")!;
     expect(uncat.buckets).toEqual({ main: 5, all: 5, buy: 2, sell: 0, sold: 0 });
   });
 
-  it("degrades to ZEROED buckets (never omitted) when a groupBy throws", async () => {
+  it("degrades to ZEROED buckets (never omitted) when a read throws", async () => {
     prismaMock.collection.findMany.mockResolvedValue([
       { id: "col_1", userId: USER_ID, name: "Vintage", isPrivate: true, typeTag: "POKEMON" },
     ]);
     prismaMock.userCollection.groupBy.mockRejectedValue(new Error("db down"));
+    prismaMock.userCollection.findMany.mockRejectedValue(new Error("db down"));
     prismaMock.wantListItem.groupBy.mockRejectedValue(new Error("db down"));
 
     const data = await listCollectionsWithBuckets(USER_ID);

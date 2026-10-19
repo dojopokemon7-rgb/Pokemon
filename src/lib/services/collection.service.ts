@@ -22,6 +22,7 @@ import {
   type UpdateCollectionSettingsInput,
 } from "@/lib/validators/collection.validator";
 import { isVirtualCollectionId, ALL_VIEW_NAME } from "@/lib/utils/collections-virtual";
+import { countSoldRowsByCollection } from "@/lib/utils/sold-bucket";
 import { isMainCollectionName, MAIN_COLLECTION_NAME } from "@/lib/utils/main-collection";
 import { invalidateUserCaches } from "@/lib/utils/cache";
 import { Prisma } from "@prisma/client";
@@ -125,11 +126,15 @@ async function safeGroupBy<T>(fn: () => Promise<T[]>, key: (row: T) => string, v
 /**
  * Lists the user's collections WITH their five derived buckets (F-#8, design §6a).
  *
- * UNITS (the two halves of `buckets` carry DIFFERENT units):
- *   main / all / sold = summed QUANTITIES (_sum.quantity)
- *   buy  / sell       = ROW COUNTS        (_count._all)
+ * UNITS (the buckets carry DIFFERENT units):
+ *   main / all  = summed QUANTITIES (_sum.quantity)
+ *   buy  / sell = ROW COUNTS        (_count._all)
+ *   sold        = CONSOLIDATED ROW COUNT — one per distinct card+foil+condition
+ *                 +soldPrice lot, matching the Sold VIEW's item count (QA #4).
+ *                 Previously this summed quantity, so "Sold 2" disagreed with the
+ *                 view's "1 item"; countSoldRowsByCollection collapses to parity.
  *
- * Two grouped queries (no N+1). A groupBy hiccup degrades to an empty Map, so
+ * Three grouped reads (no N+1). A groupBy hiccup degrades to an empty Map, so
  * every collection's buckets are ASSEMBLED with `?? 0` → always ZEROED, never
  * undefined. The base findMany is NOT wrapped here — the route owns that fallback.
  * A `__uncat__` pseudo-collection carries the loose (collectionId=null) counts.
@@ -143,13 +148,26 @@ export async function listCollectionsWithBuckets(userId: string) {
   const activeMap = await safeGroupBy(
     () =>
       prisma.userCollection.groupBy({
-        by: ["collectionId", "isSold"],
-        where: { userId },
+        by: ["collectionId"],
+        where: { userId, isSold: false },
         _sum: { quantity: true },
       }),
-    (r) => `${r.collectionId ?? UNCATEGORIZED_ID}|${r.isSold}`,
+    (r) => `${r.collectionId ?? UNCATEGORIZED_ID}`,
     (r) => r._sum.quantity ?? 0
   );
+  // Sold = count of CONSOLIDATED sold rows (parity with the Sold view, QA #4), so
+  // we pull the sold lots' identity fields and collapse them in a pure util rather
+  // than summing quantity. Same graceful degradation: a read fault → empty Map → 0.
+  let soldMap = new Map<string, number>();
+  try {
+    const soldLots = await prisma.userCollection.findMany({
+      where: { userId, isSold: true },
+      select: { collectionId: true, cardId: true, isFoil: true, condition: true, soldPrice: true },
+    });
+    soldMap = countSoldRowsByCollection(soldLots);
+  } catch (err) {
+    console.warn("[collections] sold-bucket read failed:", err instanceof Error ? err.message : err);
+  }
   const wantMap = await safeGroupBy(
     () =>
       prisma.wantListItem.groupBy({
@@ -162,11 +180,11 @@ export async function listCollectionsWithBuckets(userId: string) {
   );
 
   const bucketsFor = (id: string): CollectionBuckets => {
-    const active = activeMap.get(`${id}|false`) ?? 0; // Σ quantity
+    const active = activeMap.get(id) ?? 0; // Σ quantity
     return {
       main: active,
       all: active,
-      sold: activeMap.get(`${id}|true`) ?? 0, // Σ quantity
+      sold: soldMap.get(id) ?? 0, // consolidated row count (parity with Sold view)
       buy: wantMap.get(`${id}|BUY`) ?? 0, // row count
       sell: wantMap.get(`${id}|SELL`) ?? 0, // row count
     };
