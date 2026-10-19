@@ -779,6 +779,52 @@ body {
   }
 }
 
+/* --- Add-card sheet: bottom sheet on mobile, centered modal on desktop (QA D6a) ---
+   One element (AddCardSheet's [data-testid="graded-add-modal"]) serves both the
+   Explore grid and the card-detail add flow. The MOBILE base below is the
+   original bottom-sheet geometry (full-width, glued to the bottom edge, slide-up).
+   At >=768px it becomes a centered modal: square corners (radius 0, by design),
+   a full border, bounded width, and a fade/scale-in in place of the slide.
+   Positioning lives here (not inline) so the breakpoint can override it cleanly;
+   truly dynamic inline styles (background, padding, max-height/overflow) stay in
+   the component. 768px matches the breakpoint used elsewhere in this file. */
+.dojo-add-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-top: 1px solid var(--color-dojo-stroke);
+  animation: dojo-sheet-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@media (min-width: 768px) {
+  .dojo-add-sheet {
+    top: 50%;
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    transform: translate(-50%, -50%);
+    width: calc(100% - 48px);
+    max-width: 460px;
+    border: 1px solid var(--color-dojo-stroke);
+    border-radius: 0; /* square corners stay square on desktop (RULE 10) */
+    animation: dojo-add-sheet-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  /* The drag-handle pill is a bottom-sheet affordance — hide it on desktop. */
+  .dojo-add-sheet > .dojo-add-sheet-handle {
+    display: none;
+  }
+}
+@keyframes dojo-add-sheet-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
 @keyframes dojo-fade-in {
   from {
     opacity: 0;

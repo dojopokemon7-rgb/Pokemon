@@ -144,6 +144,11 @@ export function AddCardSheet({
     parsed && byCompany.has(parsed.grader) ? `Grade ${parsed.grade}` : gradesFor(initialGrader)[0].value
   );
   const [collectionId, setCollectionId] = useState<string>("");
+  // QA D6b — inline "new collection" create, without leaving the add sheet.
+  const [creatingCollection, setCreatingCollection] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [creatingBusy, setCreatingBusy] = useState(false);
+  const [collectionErr, setCollectionErr] = useState<string | null>(null);
   const [qty, setQty] = useState(1);
   const [showPayment, setShowPayment] = useState(false);
   const [pricePaid, setPricePaid] = useState("");
@@ -163,6 +168,49 @@ export function AddCardSheet({
     setGrader(g);
     setCondition(gradesFor(g)[0].value);
   };
+
+  // QA D6b — create a collection from inside the add sheet, then file into it.
+  // Mirrors the You-page create: POST /api/collections { name, isPrivate:true,
+  // typeTag:"MIXED" } → 201 { data }. On success invalidate ["collections"] so
+  // the picker refreshes, select the new row, and collapse the inline input.
+  // Name is validated client-side (non-empty, trimmed, ≤100) to match
+  // CollectionNameSchema; the server re-validates and is the final authority.
+  async function handleCreateCollection() {
+    const name = newCollectionName.trim();
+    setCollectionErr(null);
+    if (!name) {
+      setCollectionErr("Collection name is required.");
+      return;
+    }
+    if (name.length > 100) {
+      setCollectionErr("Collection name is too long (max 100 characters).");
+      return;
+    }
+    setCreatingBusy(true);
+    try {
+      const res = await fetch("/api/collections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name, isPrivate: true, typeTag: "MIXED" }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(json?.message ?? "Could not create this collection.");
+      }
+      const created = json?.data as { id: string; name: string } | undefined;
+      if (!created?.id) throw new Error("Could not create this collection.");
+      // Refresh the picker list, then select the new collection.
+      await queryClient.invalidateQueries({ queryKey: ["collections"] });
+      setCollectionId(created.id);
+      setNewCollectionName("");
+      setCreatingCollection(false);
+    } catch (err) {
+      setCollectionErr(err instanceof Error ? err.message : "Could not create this collection.");
+    } finally {
+      setCreatingBusy(false);
+    }
+  }
 
   // LIVE price for the current grader + grade selection. Raw → marketPrice;
   // graded → the stored price for that company+grade. Drives the big header
@@ -234,18 +282,20 @@ export function AddCardSheet({
         role="dialog"
         aria-label="Add card to portfolio"
         data-testid="graded-add-modal"
+        // Positioning + border + mount animation live in .dojo-add-sheet so the
+        // 768px breakpoint can flip it from a bottom sheet to a centered modal
+        // (QA D6a). Only truly dynamic/non-positional styles stay inline here.
+        className="dojo-add-sheet"
         style={{
-          position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 91,
+          zIndex: 91,
           background: "var(--color-dojo-card)",
-          borderTop: "1px solid var(--color-dojo-stroke)",
           padding: "10px 22px 26px",
           paddingBottom: "calc(26px + env(safe-area-inset-bottom, 0px))",
           maxHeight: "90vh", overflowY: "auto",
-          animation: "dojo-slide-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both",
-          maxWidth: "480px", marginLeft: "auto", marginRight: "auto",
+          marginLeft: "auto", marginRight: "auto",
         }}
       >
-        <div aria-hidden="true" style={{ width: "40px", height: "4px", borderRadius: "2px", background: "var(--color-dojo-stroke)", margin: "0 auto 14px" }} />
+        <div aria-hidden="true" className="dojo-add-sheet-handle" style={{ width: "40px", height: "4px", borderRadius: "2px", background: "var(--color-dojo-stroke)", margin: "0 auto 14px" }} />
 
         <div style={{ display: "flex", alignItems: "center", marginBottom: "16px" }}>
           <span style={label}>Add Card</span>
@@ -317,22 +367,74 @@ export function AddCardSheet({
         {/* COLLECTION + QTY */}
         <div style={{ display: "flex", gap: "12px", marginBottom: "18px" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ ...label, marginBottom: "8px" }}>Collection</div>
-            <DojoSelect
-              ariaLabel="Collection"
-              testId="collection-select"
-              value={collectionId}
-              // "" = Main (the server files it under the user's Main). A real
-              // Main row and the nameless "__uncat__" pseudo-entry are dropped
-              // so Main is not listed twice.
-              options={[
-                { label: "Main", value: "" },
-                ...collections
-                  .filter((c) => c.name && !isMainCollectionName(c.name))
-                  .map((c) => ({ label: c.name, value: c.id })),
-              ]}
-              onChange={setCollectionId}
-            />
+            <div style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+              <span style={label}>Collection</span>
+              {/* QA D6b — reveal an inline name input to create + file into a
+                  brand-new collection without leaving the add sheet. */}
+              {!creatingCollection && (
+                <button
+                  type="button"
+                  onClick={() => { setCollectionErr(null); setCreatingCollection(true); }}
+                  style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-gold)" }}
+                >
+                  + New
+                </button>
+              )}
+            </div>
+            {creatingCollection ? (
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  autoFocus
+                  maxLength={100}
+                  placeholder="Collection name"
+                  aria-label="New collection name"
+                  value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !creatingBusy) handleCreateCollection(); }}
+                  className="dojo-input"
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                <button
+                  type="button"
+                  aria-label="Create collection"
+                  onClick={handleCreateCollection}
+                  disabled={creatingBusy}
+                  className="dojo-btn dojo-btn-primary"
+                  style={{ flex: "none", padding: "0 14px" }}
+                >
+                  {creatingBusy ? "…" : "Create"}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Cancel new collection"
+                  onClick={() => { setCreatingCollection(false); setNewCollectionName(""); setCollectionErr(null); }}
+                  disabled={creatingBusy}
+                  style={{ flex: "none", background: "none", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-body)", cursor: "pointer", padding: "0 12px" }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <DojoSelect
+                ariaLabel="Collection"
+                testId="collection-select"
+                value={collectionId}
+                // "" = Main (the server files it under the user's Main). A real
+                // Main row and the nameless "__uncat__" pseudo-entry are dropped
+                // so Main is not listed twice.
+                options={[
+                  { label: "Main", value: "" },
+                  ...collections
+                    .filter((c) => c.name && !isMainCollectionName(c.name))
+                    .map((c) => ({ label: c.name, value: c.id })),
+                ]}
+                onChange={setCollectionId}
+              />
+            )}
+            {collectionErr && (
+              <p role="alert" className="dojo-error" style={{ margin: "8px 0 0", fontSize: "11px" }}>{collectionErr}</p>
+            )}
           </div>
           <div style={{ flex: "none" }}>
             <div style={{ ...label, marginBottom: "8px" }}>Qty</div>
