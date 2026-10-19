@@ -27,7 +27,7 @@ import { statsFromLots, isSellQtyValid } from "@/lib/utils/portfolio-accounting"
 import { gradedPrice, isGraded, parseGrade } from "@/lib/utils/graded-price";
 
 // ── Real collection item shape ──
-interface CollectionItem {
+export interface CollectionItem {
   id: string;
   cardId: string;
   quantity: number;
@@ -143,6 +143,27 @@ function GainLossTag({ item }: { item: CollectionItem }) {
       {up ? "▲" : "▼"} {up ? "+" : ""}{pct.toFixed(1)}%
     </span>
   );
+}
+
+/**
+ * Headline price shown on a tile/row.
+ *
+ * BUG D7: an ACTIVE graded lot must display its GRADED market price, not the
+ * raw `card.marketPrice`, so a PSA 10 copy and a Raw copy of the same card no
+ * longer render the same number. This applies the SAME graded resolution the
+ * gain tag (GainLossTag) and the summary (statsFromLots) already use, so the
+ * tile price, the gain %, and the summary can never disagree.
+ *   - sold row → soldPrice (actual recorded gross; UNCHANGED).
+ *   - active + graded → gradedPrice(raw, grade).
+ *   - active + raw → raw market price.
+ * Null marketPrice stays null → UI renders "—" (never a fabricated 0).
+ */
+export function displayPrice(item: CollectionItem): number | null {
+  if (item.isSold) return item.soldPrice ?? null;
+  if (item.card.marketPrice == null) return null;
+  return isGraded(item.condition)
+    ? gradedPrice(item.card.marketPrice, parseGrade(item.condition as string))
+    : item.card.marketPrice;
 }
 
 /** Sub-line like "Obsidian Flames · PSA 10" / "Base Set · Raw · Foil". */
@@ -351,7 +372,7 @@ function CardGrid({
   onRevertSold: (id: string) => void;
   owned: boolean;
 }) {
-  const price = item.isSold ? item.soldPrice : item.card.marketPrice;
+  const price = displayPrice(item);
   const inner = (
     <>
       {selectMode && <SelectCheckbox checked={selected} />}
@@ -459,7 +480,7 @@ function CardRow({
   onRevertSold: (id: string) => void;
   owned: boolean;
 }) {
-  const price = item.isSold ? item.soldPrice : item.card.marketPrice;
+  const price = displayPrice(item);
   const inner = (
     <>
       {selectMode && (
