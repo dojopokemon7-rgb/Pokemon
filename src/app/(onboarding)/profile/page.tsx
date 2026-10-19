@@ -211,57 +211,67 @@ export default function CreateProfilePage() {
         {/* ── Location — 15 world cities ── */}
         <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "8px", marginBottom: "22px" }}>
           <label className="dojo-label">Location</label>
-          <div
-            className={`dojo-select-trigger${locMenuOpen ? " open" : ""}`}
-            onClick={() => { setLocMenuOpen((v) => !v); setCurrMenu(false); }}
-          >
-            <span className={`val${location ? "" : " ph"}`}>{location || "pick your city"}</span>
-            <span className="chev"><ChevronDown /></span>
+          {/* Trigger-relative wrapper: the .dojo-menu anchors to the TRIGGER
+              (position:relative here), so top:calc(100% + 6px) sits it snugly
+              under the trigger with a small gap — NOT past the helper caption.
+              Caption lives below but outside this box, so it never shifts the
+              menu's anchor (QA D2 fix). */}
+          <div style={{ position: "relative" }}>
+            <div
+              className={`dojo-select-trigger${locMenuOpen ? " open" : ""}`}
+              onClick={() => { setLocMenuOpen((v) => !v); setCurrMenu(false); }}
+            >
+              <span className={`val${location ? "" : " ph"}`}>{location || "pick your city"}</span>
+              <span className="chev"><ChevronDown /></span>
+            </div>
+            {locMenuOpen && (
+              <div className="dojo-menu" style={{ top: "calc(100% + 6px)", maxHeight: "260px", overflowY: "auto" }}>
+                {CITIES.map((city) => (
+                  <div
+                    key={city}
+                    className={`row${location === city ? " on" : ""}`}
+                    onClick={() => pickLocation(city)}
+                  >
+                    <span style={{ flex: 1 }}>{city}</span>
+                    {location === city && <span className="mk">◆</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <p className="dojo-faint">buyers and sellers near you get shown first.</p>
-          {locMenuOpen && (
-            <div className="dojo-menu" style={{ top: "100%", marginTop: "68px", maxHeight: "260px", overflowY: "auto" }}>
-              {CITIES.map((city) => (
-                <div
-                  key={city}
-                  className={`row${location === city ? " on" : ""}`}
-                  onClick={() => pickLocation(city)}
-                >
-                  <span style={{ flex: 1 }}>{city}</span>
-                  {location === city && <span className="mk">◆</span>}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* ── Currency — real dropdown menu with USD + INR ── */}
         <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "8px", marginBottom: "22px" }}>
           <label className="dojo-label">Currency</label>
-          <div
-            className={`dojo-select-trigger${currencyMenuOpen ? " open" : ""}`}
-            onClick={() => { setCurrMenu((v) => !v); setLocMenuOpen(false); }}
-          >
-            <span className="val">
-              {CURRENCIES.find((c) => c.code === currency)?.label}
-            </span>
-            <span className="chev"><ChevronDown /></span>
+          {/* Trigger-relative wrapper — see Location dropdown above (QA D2 fix). */}
+          <div style={{ position: "relative" }}>
+            <div
+              className={`dojo-select-trigger${currencyMenuOpen ? " open" : ""}`}
+              onClick={() => { setCurrMenu((v) => !v); setLocMenuOpen(false); }}
+            >
+              <span className="val">
+                {CURRENCIES.find((c) => c.code === currency)?.label}
+              </span>
+              <span className="chev"><ChevronDown /></span>
+            </div>
+            {currencyMenuOpen && (
+              <div className="dojo-menu" style={{ top: "calc(100% + 6px)" }}>
+                {CURRENCIES.map((c) => (
+                  <div
+                    key={c.code}
+                    className={`row${currency === c.code ? " on" : ""}`}
+                    onClick={() => pickCurrency(c.code)}
+                  >
+                    <span style={{ flex: 1 }}>{c.label}</span>
+                    {currency === c.code && <span className="mk">◆</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <p className="dojo-faint">usd and inr supported for now.</p>
-          {currencyMenuOpen && (
-            <div className="dojo-menu" style={{ top: "100%", marginTop: "68px" }}>
-              {CURRENCIES.map((c) => (
-                <div
-                  key={c.code}
-                  className={`row${currency === c.code ? " on" : ""}`}
-                  onClick={() => pickCurrency(c.code)}
-                >
-                  <span style={{ flex: 1 }}>{c.label}</span>
-                  {currency === c.code && <span className="mk">◆</span>}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* ── Profile visibility ── */}
