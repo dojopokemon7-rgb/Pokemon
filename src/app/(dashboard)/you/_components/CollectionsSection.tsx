@@ -11,6 +11,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CollectionBucketBar, type CollectionBuckets } from "@/components/CollectionBucketBar";
+import { Skeleton } from "@/components/Skeleton";
 
 type TypeTag = "POKEMON" | "ONE_PIECE" | "MIXED";
 
@@ -256,8 +257,24 @@ export function CollectionsSection() {
         />
       )}
 
+      {/* QA #8: the first load previously showed a short "Loading collections…"
+          line, so content below JUMPED (CLS) when the taller real rows arrived.
+          Render skeleton rows that reserve the real row's box instead — same
+          borderBottom + "13px 0" padding, name + caption lines composed from the
+          shared <Skeleton> primitive — so the swap to real rows (or to the empty
+          state) shifts nothing. Two rows match a typical short list without
+          overshooting. .dojo-fade-in-fast eases the swap like the dashboard. */}
       {isLoading && (
-        <p className="dojo-body" style={{ marginTop: "8px" }}>Loading collections…</p>
+        <div data-testid="collections-skeleton" className="dojo-fade-in-fast">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} style={{ borderBottom: "1px solid var(--color-dojo-divider)" }}>
+              <div style={{ padding: "13px 0", display: "flex", flexDirection: "column", gap: "6px" }}>
+                <Skeleton height={14} width="45%" />
+                <Skeleton height={9} width="28%" />
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       {!isLoading && collections.length === 0 && !adding && (
