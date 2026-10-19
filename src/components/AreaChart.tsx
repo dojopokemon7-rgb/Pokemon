@@ -37,6 +37,18 @@ export function valueAtFraction(f: number, max: number, min: number): number {
 // three interior gridlines the chart already draws.
 const Y_AXIS_FRACTIONS = [0, 0.25, 0.5, 0.75, 1];
 
+// A filled gradient AREA under the line implies a price TREND — a shape the eye
+// reads as "value swooped from here to there". With only 1-2 real points that
+// shape is a lie: two near-identical carried-forward prices (e.g. a lone owned
+// lot valued at `addedAt` and again at `now`) draw a straight line, but the area
+// fill below it still paints a big dramatic region (QA #6a). A trend needs >= 3
+// real points; below that we draw the honest bare line/markers with NO area fill
+// — no data is hidden, none is invented (AGENTS.md RULE 2), the empty-state path
+// (chartData.length < 2) is untouched. Pure + exported so it's unit-testable.
+export function hasAreaTrend(pointCount: number): boolean {
+  return pointCount >= 3;
+}
+
 // Left gutter (px) reserved for the Y-axis value labels so they sit BESIDE the
 // plot (right-aligned, Collectr-style) instead of overlaying the line. The plot
 // (svg + tooltip) and the x-axis tick row are both shifted right by this amount
@@ -445,6 +457,9 @@ export function AreaChart({
   const trendCol = color || (trendColor ? (rising ? JADE : VERM) : ACCENT);
   const line = smoothLinePath(coords);
   const area = `${line} L ${w} ${h} L 0 ${h} Z`;
+  // Only paint the gradient area under a real TREND (>= 3 points). 1-2 points
+  // draw the honest bare line instead — see hasAreaTrend (QA #6a).
+  const drawArea = hasAreaTrend(coords.length);
 
   return (
     <div
@@ -482,8 +497,16 @@ export function AreaChart({
             [0.25, 0.5, 0.75].map((f, i) => (
               <line key={i} x1={0} x2={w} y1={h * f} y2={h * f} stroke={STROKE_CARD} strokeWidth={1} />
             ))}
-          <path d={area} fill={`url(#${gidBase})`} />
+          {drawArea && <path d={area} fill={`url(#${gidBase})`} />}
           <path d={line} fill="none" stroke={trendCol} strokeWidth={2} />
+          {/* No-trend (1-2 points): the bare line is the only mark, so render
+              static dot markers for each real point — otherwise two carried-
+              forward prices look like an empty plot. With a trend the area fill
+              carries the shape and markers stay hover-only (design port). */}
+          {!drawArea &&
+            coords.map((c, i) => (
+              <circle key={`m${i}`} cx={c[0]} cy={c[1]} r={4} fill={trendCol} stroke={SURFACE_CARD} strokeWidth={2} />
+            ))}
           {coords.map((c, i) => (
             // Point selection: onMouseEnter drives desktop hover; the added
             // pointer/focus/click handlers let a mobile tap() (which has no
