@@ -391,6 +391,32 @@ async function pageAndBuffer(
   const scrydexExpansionNames = new Set<string>();
   let invalid = 0;
 
+  // PERF: the Pokemon baseId resolver matches each card against existing rows.
+  // Done per-card against the remote DB that is ~47k sequential round-trips
+  // (minutes of silent grinding). Pre-load the existing Pokemon rows ONCE into
+  // in-memory indexes and resolve against those — one batched read instead of
+  // 47k. One Piece doesn't resolve (its card.id IS the externalId), so skip.
+  const byScrydexIdMap = new Map<string, ExistingCardRow>();
+  const bySetNumberMap = new Map<string, ExistingCardRow[]>();
+  if (game === Game.POKEMON) {
+    console.log("[reingest] Pass 1: pre-loading existing Pokemon rows for matching…");
+    const existing = await prisma.card.findMany({
+      where: { game: Game.POKEMON },
+      select: { externalId: true, number: true, scrydexId: true, set: { select: { name: true } } },
+    });
+    for (const r of existing) {
+      if (r.scrydexId) byScrydexIdMap.set(r.scrydexId, { externalId: r.externalId, number: r.number });
+      const setName = r.set?.name ?? "";
+      if (setName) {
+        const k = setName.toLowerCase();
+        const list = bySetNumberMap.get(k) ?? [];
+        list.push({ externalId: r.externalId, number: r.number });
+        bySetNumberMap.set(k, list);
+      }
+    }
+    console.log(`[reingest] Pass 1: indexed ${existing.length} existing Pokemon rows (${byScrydexIdMap.size} by scrydexId).`);
+  }
+
   const absorb = async (cards: ScrydexCard[]): Promise<void> => {
     for (const card of cards) {
       const setName = (card.expansion?.name ?? "").trim();
@@ -408,17 +434,11 @@ async function pageAndBuffer(
       if (game === Game.ONE_PIECE) {
         buffered = onePieceToBuffered(card);
       } else {
+        // In-memory resolver (no DB round-trip): same match order as
+        // resolvePokemonBaseId — scrydexId first, else set-name+number.
         const baseId = await resolvePokemonBaseId(card, setName, {
-          byScrydexId: (scrydexId) =>
-            prisma.card.findFirst({
-              where: { scrydexId },
-              select: { externalId: true, number: true },
-            }),
-          byGameSetNumber: (name, _num) =>
-            prisma.card.findMany({
-              where: { game: Game.POKEMON, set: { name } },
-              select: { externalId: true, number: true },
-            }),
+          byScrydexId: async (scrydexId) => byScrydexIdMap.get(scrydexId) ?? null,
+          byGameSetNumber: async (name) => bySetNumberMap.get(name.toLowerCase()) ?? [],
         });
         buffered = pokemonToBuffered(card, baseId);
       }
@@ -441,6 +461,10 @@ async function pageAndBuffer(
       break;
     }
     await absorb(page.cards);
+    // Progress heartbeat so Pass 1 isn't a silent multi-minute pull.
+    if (p % 20 === 0 || p === totalPages) {
+      console.log(`[reingest] Pass 1: paged ${p}/${totalPages} (${bySet.size} sets buffered so far)`);
+    }
     if (p < totalPages) await sleep(REQUEST_DELAY_MS);
   }
 
