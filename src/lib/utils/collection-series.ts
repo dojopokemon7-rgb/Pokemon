@@ -117,14 +117,38 @@ export function buildCollectionSeries(
     const graded = parseGradedCondition(condition);
     let filtered: PricePoint[];
     if (graded) {
-      // Graded lot: only this company+grade's graded points.
+      // Graded lot: only this company+grade's graded points, AND only ONE
+      // deterministic variant among them — the same default-variant rule
+      // pickGradedFromRows (the /graded route + statsFromLots/displayPrice) uses.
+      // Without this, two priced variants at the SAME recordedAt under one
+      // company+grade would let the last-sorted (DB tie order) row win, so the
+      // chart could disagree with the displayed value. pickDefaultVariant ranks
+      // by variant priority (order-independent), falling back to the first
+      // listed variant when nothing raw ranks.
       const company = graded.company.toUpperCase();
-      filtered = all.filter(
+      const gradeRows = all.filter(
         (p) =>
           (p.type ?? "") === "graded" &&
           (p.company ?? "").toUpperCase() === company &&
           (p.grade ?? "") === graded.grade
       );
+      const wantVariant = pickDefaultVariant(
+        gradeRows.map((p) => ({
+          type: p.type,
+          company: p.company,
+          grade: p.grade,
+          variant: p.variant,
+          condition: p.condition,
+          priceMarket: p.price,
+        }))
+      );
+      filtered =
+        wantVariant == null
+          ? gradeRows
+          : gradeRows.filter((p) => (p.variant ?? "normal") === wantVariant);
+      // Guard against a variant string that matched nothing (shouldn't happen —
+      // wantVariant is derived from gradeRows — but keep the series non-empty).
+      if (filtered.length === 0) filtered = gradeRows;
     } else {
       // Raw lot: raw points only, at the best available raw condition. The
       // shared helpers (pickBestRaw/pickDefaultVariant) read priceMarket, so

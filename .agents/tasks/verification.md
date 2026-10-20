@@ -4,6 +4,63 @@ Worktree `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`, branch
 `fix-chart-data-bugs` (based on local `master` @ 459605b). Windows / PowerShell;
 the repo path contains a space — every path quoted.
 
+## Iteration 2 — review blocking finding resolved
+
+`review.json` (verdict `CHANGES_REQUESTED`) carried ONE blocking finding:
+
+> **Same-grade variant ambiguity in the graded chart branch**
+> (`collection-series.ts`). After filtering carry-forward history to the lot's
+> company+grade, the graded branch kept ALL matching variants and let the last
+> equal-timestamp row win, so the chosen price depended on Prisma/DB tie order.
+> The raw branch already picked a deterministic condition+variant; the graded
+> branch had no equivalent. Fix: select ONE deterministic graded variant (the
+> same default-variant rule display/stats use) before carry-forward, and add a
+> regression pinning two same-grade variants returned in opposite orders.
+
+**Fix applied** (`src/lib/utils/collection-series.ts`, graded branch): after
+filtering to the lot's company+grade, derive a single deterministic variant via
+`pickDefaultVariant` (the SAME rule `pickGradedFromRows` — i.e. the `/graded`
+route + `statsFromLots`/`displayPrice` accounting — uses) and keep only that
+variant's points before carry-forward. For graded-only rows `pickDefaultVariant`
+falls through `pickBestRaw` (no raw rows) to `listVariants(rows)[0]`, which is
+variant-priority ordered (`normal` before `holofoil`, …) — order-independent. A
+defensive guard keeps the series non-empty if the derived variant somehow matches
+nothing. No fabrication: an empty company+grade match still yields an honest null
+gap (RULE 2 preserved). The raw branch and every other path are unchanged.
+
+**Regression added** (`tests/unit/collection-series.test.ts`, new case "a PSA 9
+lot picks the default variant deterministically regardless of row order"): one
+cardId, one PSA 9 company+grade, TWO priced variants at the SAME `recordedAt`
+(`normal`=500, `holofoil`=777). Fed in BOTH orders (`[normal,holo]` and
+`[holo,normal]`); both assert the lot values at **500** (the `normal` default
+variant), proving the result no longer depends on array/DB tie order. The prior
+regressions used only `variant:"normal"`, so this is the first test that detects
+the ambiguity.
+
+Non-blocking finding (standalone build + E2E Back flow not run because the remote
+DB was busy) is acknowledged and unchanged from iteration 1 — those layers stall
+in this environment per the step instructions and are left for a DB-available run.
+
+### Iteration-2 commands run (from the worktree root)
+
+| Command | Result |
+|---|---|
+| `npx vitest run tests/unit/collection-series.test.ts` | **PASS** — 15 tests, 0 failures (new deterministic-variant case green). |
+| `npm run type-check` (`tsc --noEmit`) | **PASS** — exit 0. |
+| `npm run lint` (`eslint .`) | **PASS** — exit 0. |
+| `npm run test:unit` | **PASS** — **72 files, 546 tests, 0 failures** (545 + 1 new regression). |
+| `npm run test:integration` | **PASS** — **60 files, 425 tests, 0 failures**. |
+
+Page-export guard re-checked after the edit: no `page.tsx` was touched this
+iteration; the only changed source file is `src/lib/utils/collection-series.ts`
+(a `src/lib` util, not a page). The three previously-touched pages still export
+only `default` (+ the pre-existing erased `interface CollectionItem` type in
+portfolio). Symptoms 4/7 and the Scrydex config remain untouched (no such files
+in the iteration-2 diff).
+
+---
+
+
 ## Iteration note
 
 This was the **FIRST implementation iteration** of the five bugs. The on-disk

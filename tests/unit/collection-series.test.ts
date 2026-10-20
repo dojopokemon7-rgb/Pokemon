@@ -150,6 +150,33 @@ describe("BUG 1 & 8 — a lot is valued from the price series matching ITS OWN g
     const [series] = buildCollectionSeries(holdings, legacy, [t0]);
     expect(series.points[0].value).toBe(84); // 42 × 2, raw as before
   });
+
+  // Review-blocking: two priced variants at the SAME recordedAt under ONE
+  // company+grade must resolve to a DETERMINISTIC variant (the same
+  // default-variant rule pickGradedFromRows / statsFromLots use), not whichever
+  // row sorts last in DB/array order. "normal" outranks "holofoil" in the
+  // variant priority, so a PSA 9 lot must value at the "normal" price (500)
+  // regardless of the order the rows arrive in.
+  it("a PSA 9 lot picks the default variant deterministically regardless of row order", () => {
+    const makePrices = (order: "normal-first" | "holo-first"): PricePoint[] => {
+      const normal: PricePoint = {
+        cardId: "c1", at: t0, price: 500, type: "graded", company: "PSA", grade: "9", variant: "normal",
+      };
+      const holo: PricePoint = {
+        cardId: "c1", at: t0, price: 777, type: "graded", company: "PSA", grade: "9", variant: "holofoil",
+      };
+      return order === "normal-first" ? [normal, holo] : [holo, normal];
+    };
+    const valueFor = (ps: PricePoint[]) => {
+      const holdings: HoldingInterval[] = [
+        { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9" },
+      ];
+      return buildCollectionSeries(holdings, ps, [t0])[0].points[0].value;
+    };
+    // Opposite orders → identical deterministic result (the "normal" variant).
+    expect(valueFor(makePrices("normal-first"))).toBe(500);
+    expect(valueFor(makePrices("holo-first"))).toBe(500);
+  });
 });
 
 describe("isVirtualCollectionId", () => {
