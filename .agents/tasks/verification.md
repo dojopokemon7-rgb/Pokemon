@@ -1,3 +1,102 @@
+# Verification — Portfolio value-over-time chart rework (A / B / C)
+
+Worktree `d:\Pokemon\Pokemon\.worktrees\portfolio-value-series`, branch
+`portfolio-value-series` (based on local `master` @ `d8eb93a`). Windows /
+PowerShell — every path quoted.
+
+> NOTE on the stale control files: the `review.json` present at the start of this
+> run carried verdict `APPROVED` but its single finding + `reviewDoc` pointed at an
+> UNRELATED `perf-optimize` worktree, and the `fix-chart-data-bugs` log below is a
+> prior task's record. The branch HEAD contained NO A/B/C work (the QA#6b flat
+> branch was still present in `collection-history.service.ts`, and the service had
+> no missing-current-grade historical fallback / bounded-window seed). So the
+> APPROVED verdict did NOT correspond to this task. This is the FIRST real
+> iteration of the A/B/C plan; implemented from scratch per `.agents/tasks/plan.md`.
+
+## What changed (per requirement)
+
+**A — real moving time-series.** Removed the QA#6b short-window flat branch from
+`src/lib/services/collection-history.service.ts` (the `SHORT_WINDOW_DAYS` const,
+the `isAllRange` computation, and the `earliestAdded >= now - SHORT_WINDOW_DAYS`
+2-point flat block). A recent-but-real portfolio now flows through the existing
+dense daily-grid + addedAt-anchor path, so the line MOVES with real stored
+`PricingHistory` (carry-forward). RULE 2 preserved: honest null gaps, no fabricated
+0/interpolation; the page's >=2-real-points empty state is untouched. The dashboard
+multi-series comparison chart (same builder) is NOT regressed — the multi-month
+dense-series and bounded-1M tests still pass.
+
+**B — sale drops the line (active holdings only).** Already enforced by the
+`[addedAt, soldAt)` ownership gate in `buildCollectionSeries`; pinned with a new
+regression (two lots, one sold mid-timeline → the line drops by exactly the sold
+lot's active value, realized proceeds never folded onto the line). `statsFromLots`
+Paid/Realized/Unrealized semantics unchanged.
+
+**C — single source of truth for per-lot (grade, variant).**
+- `src/lib/utils/raw-price.ts`: added `pickGradedRow(rows, company, grade, variant?)`
+  returning `{ price, variant, condition } | null`; `pickGradedFromRows` re-expressed
+  on top of it so there is exactly ONE graded-selection rule.
+- `collection-history.service.ts`: each graded lot's identity resolved ONCE —
+  current `CurrentPrice` snapshot first (keeps chart↔display parity), else the
+  most-recent REAL graded `PricingHistory` row for that company+grade (missing-
+  current-grade historical fallback), preserving the real row's variant (never
+  invented). Added a BOUNDED-WINDOW SEED read (`recordedAt < startDate`, latest row
+  per identity) prepended to the carry-forward so a display-valued lot whose last
+  real point predates the window is drawable, not an all-null gap. Prisma-only, ZERO
+  credits.
+- `src/app/api/users/me/collection/route.ts`: the GET `gradedPrices` payload appends
+  ONE `source:"history"` entry (real variant + condition) for a graded lot the
+  current snapshot can't price; no match anywhere → no entry (UI "—"). Prior payload
+  shape preserved when there is no fallback.
+- `docs/API_REFERENCE.md`: `gradedPrices` provenance documented (current rows vs the
+  `source:"history"` historical fallback; bounded-window seed; honest gap).
+
+## Mandatory regressions added
+1. (A/B) `collection-history-service.test.ts` — recent-but-real portfolio over ALL
+   yields a DENSE moving series (>3 points, contains both 8 and 11, not flat, no 0);
+   `collection-series.test.ts` — sale step-down (line drops by the sold lot's value,
+   soldPrice never added).
+2. (C) single-source variant parity with TWO DIFFERENT row-set arrays (current =
+   PSA 9 holofoil-only; history = PSA 9 {normal,holofoil}) → chart and display both
+   resolve PSA 9 holofoil (777); `raw-price.test.ts` `pickGradedRow` cases.
+3. (C) bounded-window parity — last real point predates the 1M window; the seed read
+   makes the lot drawable at the real carried-forward value; service + integration
+   (`collection-add-dashboard.test.ts`) missing-current-grade fallback + "no entry
+   when neither prices it".
+
+## Commands run (from the worktree root, paths quoted)
+
+| Command | Result |
+|---|---|
+| `npm run type-check` (`tsc --noEmit`) | **PASS** — exit 0. |
+| `npm run lint` (`eslint .`) | **PASS** — exit 0. |
+| `npm run test:unit` | **PASS** — **72 files, 561 tests, 0 failures** (full run; the known flake `add-invalidates-chart.test.tsx` passed in the full run and also passes in isolation). |
+| `npm run test:integration` | **PASS** — **60 files, 428 tests, 0 failures** (+2 new C fallback tests vs the 426 baseline). |
+
+Not run (per the task — remote DB busy, they stall): `build:standalone`, `test:e2e`,
+`test:chart-accuracy`.
+
+**Known-flake note:** an earlier full-suite unit run showed only
+`tests/unit/add-invalidates-chart.test.tsx` timing out (1 of 561). Re-ran it in
+isolation → PASS (1 test, 993ms). The final full unit run above had 0 failures.
+
+**Page-export guard (manual, tsc does not catch it):** no `page.tsx` is in the diff
+(changes are `src/lib/**`, `src/app/api/**` route, `docs/**`, and tests). A grep of
+`Get-ChildItem -Recurse src/app -Filter page.tsx | Select-String '^export (const|...)'`
+returns ONLY pre-existing, allowed items: two `export const dynamic = "force-dynamic"`
+(valid Next route-segment config) and `export interface CollectionItem` in
+`portfolio/page.tsx` (a type — erased at runtime, unchanged from `master`). NO new
+non-default page export was added.
+
+**Constraints honored:** `prisma/schema.prisma` and `src/lib/auth.ts` untouched; no
+Scrydex enrich / credit-gate / `SCRYDEX_ONVIEW` file touched; ZERO external credits
+(all new reads are `prisma.*.findMany`); history/current joined by internal `cardId`;
+`statsFromLots` Paid/Realized/Unrealized semantics unchanged (only the per-lot price
+SOURCE unified through the shared selector).
+
+Commits (no push): `6a01903` feat(A), `3cf8e2f` test(B), `f11877a` feat(C).
+
+---
+
 # Verification — Five confirmed chart/price-data bugs (fix-chart-data-bugs)
 
 Worktree `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`, branch
