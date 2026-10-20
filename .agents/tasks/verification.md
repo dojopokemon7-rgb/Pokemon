@@ -512,3 +512,101 @@ Checked every `page.tsx` I touched for new non-default exports:
 ```
 (`.agents/tasks/plan.md` shows as modified — pre-existing working-tree state, not
 committed by this work.)
+
+---
+
+## Iteration 6 — review-b blocking findings resolved (review.json `CHANGES_REQUESTED`)
+
+`review.json` carried TWO blocking findings (both from review-b.md; review-a.md
+APPROVED) + one non-blocking. Each addressed below.
+
+### Finding 1 [likely, blocking] — cross-snapshot graded VARIANT drift
+- **Reasoning (review-b)**: iteration 5 made `pickGradedVariant` raw-independent,
+  which fixes a divergence driven by differing RAW rows. But it does NOT help when
+  the GRADED variant SET itself differs between the two snapshots. The chart
+  selects over windowed `PricingHistory` (accumulates) while display selects over
+  the latest `CurrentPrice` (deleted+recreated by `scrydex-pricing.service.ts`).
+  If history has PSA 9 {normal, holofoil} but current has only {holofoil}, the
+  chart picks `normal` (priority) and display picks `holofoil` — still a divergence.
+- **Fix**: decide the graded variant ONCE over the STABLE current-price snapshot
+  and thread it into the history valuation.
+  - `collection-history.service.ts`: added a `prisma.currentPrice.findMany`
+    (type:"graded", priceMarket not null; Prisma-only, ZERO credits) for the
+    card set, then `pickGradedVariant` (the SAME selector display's
+    `pickRealGradedPrice` uses) picks the variant per (cardId, company, grade),
+    memoized, and sets it on each `HoldingInterval.gradedVariant`.
+  - `collection-series.ts`: `HoldingInterval` gained optional `gradedVariant`.
+    When present the lot's history series is filtered to that EXACT
+    company+grade+variant — history lacking it → honest null gap (RULE 2, never a
+    re-pick onto another variant). When absent (legacy/tests) it falls back to the
+    shared `pickGradedVariant` over the lot's own rows (unchanged behavior).
+- **Regression added** (`tests/unit/collection-history-service.test.ts`, new
+  "REVIEW B" cases): (a) current snapshot has PSA 9 {holofoil} only while history
+  has PSA 9 {normal (500), holofoil (777)} → chart values 777 (holofoil, matching
+  display), never 500 (normal, the priority pick a history-only decision would
+  make); (b) current has no PSA 9 row (only PSA 10) → chart leaves an honest null
+  gap for the PSA 9 lot even though history carries a PSA 9 series. The existing
+  graded service test was updated to also provide the current snapshot (PSA 9
+  normal), reflecting that the variant is now anchored on current.
+
+### Finding 2 [confirmed, blocking] — selector/fallback documentation drift
+- **Reasoning (review-b)**: added/edited docs contradicted runtime: CODE_MAP named
+  a nonexistent `parseSort` helper (the export is `paramOrDefault`); API_REFERENCE
+  said empty `gradedPrices` falls back to raw `marketPrice` (a graded lot actually
+  uses the `gradedPrice(raw, grade)` multiplier); and the `GradedPriceRow` /
+  `pickGradedVariant` comments still said raw rows inform the default variant.
+- **Fix**:
+  - `docs/CODE_MAP.md`: both `parseSort` references → `paramOrDefault`; the
+    `collection-series.ts` entry rewritten to describe the current-snapshot
+    variant threading.
+  - `docs/API_REFERENCE.md`: the `gradedPrices` fallback corrected — RAW lot →
+    raw `marketPrice`; GRADED lot with no matching company+grade row → the coarse
+    `gradedPrice(raw, grade)` multiplier (null market stays null); plus a note that
+    the chart threads the current-snapshot variant into history valuation.
+  - `src/lib/utils/graded-price.ts` (`GradedPriceRow` + `pickRealGradedPrice`
+    comments) and `src/lib/utils/raw-price.ts` (`pickGradedVariant` comment):
+    corrected to state raw-independence AND that parity now relies on the chart
+    deciding the variant over the current snapshot (not raw-independence alone).
+
+### Finding 3 [confirmed, non-blocking] — no production-browser Back test
+- Not runnable here: Playwright needs the standalone DB-backed gate (remote DB
+  busy, per instructions do NOT run build:standalone/e2e). Left as a follow-up to
+  run when the gate is available, exactly as review-b scoped it. The control↔URL
+  mapping remains unit-pinned (`list-controls.test.ts`).
+
+### Verification (iteration 6) — exact commands + results, run from the worktree
+All run with cwd = `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`.
+- `npm run type-check` → **PASS** (exit 0, `tsc --noEmit`).
+- `npm run lint` → **PASS** (exit 0, `eslint .`).
+- `npm run test:unit` → **PASS** — 72 files, **553 tests** (was 551; +2 new
+  cross-snapshot regressions in `collection-history-service.test.ts`).
+- `npm run test:integration` → **PASS** — 60 files, **426 tests** (first run failed
+  1: `collection-add-dashboard.test.ts` needed `currentPrice.findMany` added to its
+  hoisted Prisma mock since the service now reads it — added + defaulted to `[]`;
+  re-run all green).
+- `build:standalone` / `e2e` / `test:chart-accuracy` — NOT run (remote DB busy;
+  per instructions). Fast-layer evidence above is the verified gate.
+- KNOWN flake `tests/unit/add-invalidates-chart.test.tsx` — did not fail in the
+  full unit run this iteration.
+
+### Page-export guard (manual, iteration 6) — PASS
+No `page.tsx` was modified this iteration (changes were in `src/lib/**`, `docs/**`,
+and tests). `git grep "^export " -- src/app/**/page.tsx` shows only `default` +
+`export const dynamic` route config + the pre-existing `export interface
+CollectionItem` (type, erased at compile, identical on master). No new non-default
+page export introduced.
+
+### Out-of-scope confirmation (iteration 6) — untouched
+- Symptom 4 (QA #6b short-window flat path): `collection-history.service.ts` gained
+  only the `currentPrice` variant lookup + `gradedVariant` thread; `SHORT_WINDOW_DAYS`,
+  `isAllRange`, and the flat-anchor logic are unchanged.
+- Symptom 7 (active-value-only series / `[addedAt, soldAt)` ownership gate):
+  `collection-series.ts` ownership gate unchanged.
+- Scrydex enrich flag / credit gate / data coverage: no such files touched (the
+  `currentPrice.findMany` read is a plain DB read, ZERO credits, no Scrydex call).
+
+### Commits (iteration 6, branch fix-chart-data-bugs, NOT pushed)
+- `3c30338` fix: decide chart graded variant from the stable current snapshot
+  (cross-snapshot parity) — service + series + 3 test files.
+- `3b60a2d` docs: align selector/fallback docs and comments with runtime behavior
+  — API_REFERENCE + CODE_MAP + graded-price.ts + raw-price.ts.
