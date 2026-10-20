@@ -64,6 +64,36 @@ describe("buildCollectionSeries (plan §6 honesty rules)", () => {
   });
 });
 
+describe("sale drops the line (B — active-value only, option b)", () => {
+  // Requirement B: a sold lot stops contributing at soldAt, so the ACTIVE-value
+  // line DROPS by that lot's value at sale time. The realized proceeds live in
+  // the Realized stat (statsFromLots), NOT on this line — soldPrice is NEVER
+  // folded in here. Two lots: L1 (qty 1 @ 10) held throughout; L2 (qty 2 @ 25,
+  // soldPrice 999) sold mid-timeline at t0+2DAY.
+  it("drops by exactly the sold lot's active contribution after soldAt, never adding soldPrice", () => {
+    const holdings: HoldingInterval[] = [
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null },
+      { collectionId: "A", cardId: "c2", quantity: 2, addedAt: t0, soldAt: t0 + 2 * DAY },
+    ];
+    const prices: PricePoint[] = [
+      { cardId: "c1", at: t0, price: 10 },
+      { cardId: "c2", at: t0, price: 25 },
+    ];
+    const [series] = buildCollectionSeries(holdings, prices, timeline);
+    const values = series.points.map((p) => p.value);
+    // Before soldAt: L1 (10) + L2 (25×2=50) = 60.
+    expect(values[0]).toBe(60);
+    expect(values[1]).toBe(60);
+    // At/after soldAt (exclusive end): L2 drops out → line = L1 alone (10),
+    // lower by exactly L2's active value (50). Never 60-ish + 999 (soldPrice).
+    expect(values[2]).toBe(10);
+    expect(values[3]).toBe(10);
+    // The sold lot's realized proceeds (999) never appear on the line.
+    expect(values).not.toContain(999);
+    expect(values.some((v) => v != null && v > 60)).toBe(false);
+  });
+});
+
 describe("Sold-per-collection at the series layer (F-#8 FR-5.2)", () => {
   it("a NAMED-collection sold lot's [addedAt, soldAt) interval stays in that collection's series", () => {
     const holdings: HoldingInterval[] = [
