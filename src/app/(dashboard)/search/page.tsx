@@ -43,6 +43,7 @@ import { DojoSelect } from "@/components/DojoSelect";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import { hasActiveFilter as anyFilterActive } from "@/lib/utils/search-query";
+import { paramOrDefault } from "@/lib/utils/list-controls";
 import { Toast } from "@/components/Toast";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
@@ -1021,13 +1022,15 @@ function SearchPageInner() {
       maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter,
     });
 
-  // Sort state — persisted only in memory. Query keys below include
-  // `sort` so switching the filter sheet triggers a refetch without a
-  // URL bounce. Default `recent` matches the trending route's own
-  // default so the grid opens the way users expect (most recently
-  // synced first) and the filter chip only appears once they've
-  // actively re-sorted.
-  const [sort, setSort] = useState<SortKey>("trending");
+  // Sort state. BUG 2: now persisted to the URL (?sort=) so it survives the
+  // Back remount after opening a card (it used to be in-memory only and reset).
+  // Init FROM the URL (validated against SortKey; unknown/absent → "trending").
+  // Query keys below include `sort` so switching it triggers a refetch; the
+  // setSort call sites also mirror the value into the URL via setSortParam.
+  const SORT_KEYS = ["trending", "market_desc", "market_asc", "name_asc", "recent"] as const;
+  const [sort, setSort] = useState<SortKey>(() =>
+    paramOrDefault(searchParams.get("sort"), SORT_KEYS, "trending")
+  );
   const [filterOpen, setFilterOpen] = useState(false);
 
   // "Track this card" (star) adds the card to the user's Want to Buy list
@@ -1279,9 +1282,24 @@ function SearchPageInner() {
     for (const [k, v] of Object.entries(current)) {
       if (v) params.set(k, v);
     }
+    // BUG 2: preserve the active sort across filter changes (it rides the URL
+    // now). Only written when non-default so default URLs stay clean.
+    if (sort !== "trending") params.set("sort", sort);
     router.replace(`/search?${params.toString()}`);
   };
   const applySetFilter = (nextSet: string) => applyFilters({ set: nextSet });
+
+  // BUG 2: change the sort AND mirror it to the URL (replace, not push) so it
+  // survives a Back remount. Rebuilds from the current params so every active
+  // filter + the query/game are preserved; drops ?sort= when it is the default.
+  const changeSort = (next: SortKey) => {
+    setSort(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "trending") params.delete("sort");
+    else params.set("sort", next);
+    const qs = params.toString();
+    router.replace(qs ? `/search?${qs}` : "/search");
+  };
 
   // Rarity options: unique rarities present in the (unfiltered) results,
   // remembered the same way sets are so they stay selectable while filtered.
@@ -1671,7 +1689,7 @@ function SearchPageInner() {
               {sort !== "trending" && (
                 <button
                   type="button"
-                  onClick={() => setSort("trending")}
+                  onClick={() => changeSort("trending")}
                   title="Clear sort"
                   style={{
                     display: "inline-flex", alignItems: "center", gap: "6px",
@@ -1816,7 +1834,7 @@ function SearchPageInner() {
         <FilterSheet
           currentSort={sort}
           onSelect={(next) => {
-            setSort(next);
+            changeSort(next);
             setFilterOpen(false);
           }}
           onClose={() => setFilterOpen(false)}

@@ -15,8 +15,9 @@
  *   - Grid/list toggle, bulk selection mode for deletion.
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback, Suspense } from "react";
 import Link from "next/link";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { Toast } from "@/components/Toast";
@@ -25,6 +26,7 @@ import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
 import { statsFromLots, isSellQtyValid } from "@/lib/utils/portfolio-accounting";
 import { isGraded, displayPrice } from "@/lib/utils/graded-price";
+import { paramOrDefault } from "@/lib/utils/list-controls";
 
 // ── Real collection item shape ──
 export interface CollectionItem {
@@ -590,9 +592,40 @@ const CARD_TYPE_OPTIONS: { id: CardType; label: string }[] = [
   { id: "high-value", label: "High value tracker" },
 ];
 const HIGH_VALUE_THRESHOLD = 100;
+const CARD_TYPE_IDS = CARD_TYPE_OPTIONS.map((o) => o.id) as readonly CardType[];
 
-export default function PortfolioPage() {
+function PortfolioPageInner() {
+  // BUG 2: the list controls (cardType / selectedColl / view) are persisted to
+  // the URL so they survive the Back remount after opening a card. We INIT from
+  // the query params (SSR-safe — useSearchParams is read-only here) and update
+  // the URL with router.replace (NOT push, so Back still returns to the search
+  // grid, not through every control change). Hydration-safe: no window /
+  // sessionStorage read in a useState initializer — searchParams is the source.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // ponytail: scroll-offset restoration on Back is deferred (sessionStorage by
+  // pathname proved fragile against the list/grid skeleton swap + virtualized
+  // remount). The hard requirement — controls (cardType/coll/view) surviving the
+  // Back remount — is met via the URL below; scroll is a best-effort follow-up.
+
+  // Build the next URL from the current params, dropping a key when it equals
+  // its default so clean (default) URLs stay clean. replace, never push.
+  const setParam = useCallback(
+    (key: string, value: string, defaultValue: string) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (value === defaultValue) next.delete(key);
+      else next.set(key, value);
+      const qs = next.toString();
+      router.replace(qs ? `/portfolio?${qs}` : "/portfolio", { scroll: false });
+    },
+    [searchParams, router]
+  );
+
   const [query, setQuery] = useState("");
+  // view: default follows the responsive resolution below; the URL param (when
+  // present) overrides it. "list" is the SSR/first-render value for hydration
+  // parity (see QA #9a note); a ?view= param is applied post-mount via effect.
   const [view, setView] = useState<"grid" | "list">("list");
   // QA #9a: the desktop default (grid) can only be known on the client — the
   // server (and therefore the client's FIRST render, for hydration parity)
@@ -602,9 +635,13 @@ export default function PortfolioPage() {
   // is NOT safe here: this is an SSR'd client component, so it would make the
   // client's first render ("grid") mismatch the server's ("list").
   const [viewResolved, setViewResolved] = useState(false);
-  const [cardType, setCardType] = useState<CardType>("active");
+  // cardType / selectedColl init FROM the URL (validated) so a Back-remount
+  // restores the user's filter. paramOrDefault rejects an unknown value.
+  const [cardType, setCardType] = useState<CardType>(() =>
+    paramOrDefault(searchParams.get("type"), CARD_TYPE_IDS, "active")
+  );
   const [typeOpen, setTypeOpen] = useState(false);
-  const [selectedColl, setSelectedColl] = useState<string>("all");
+  const [selectedColl, setSelectedColl] = useState<string>(() => searchParams.get("coll") ?? "all");
   const [collOpen, setCollOpen] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -699,12 +736,20 @@ export default function PortfolioPage() {
   });
 
   useEffect(() => {
-    if (typeof window !== "undefined" && window.matchMedia("(min-width: 640px)").matches) {
+    // BUG 2: a persisted ?view= param wins over the responsive default (so a
+    // Back-remount restores the user's explicit grid/list pick). Only when no
+    // param is present do we fall back to the desktop→grid media-query default.
+    const viewParam = searchParams.get("view");
+    if (viewParam === "grid" || viewParam === "list") {
+      setView(viewParam);
+    } else if (typeof window !== "undefined" && window.matchMedia("(min-width: 640px)").matches) {
       setView("grid");
     }
     // Mark the client-side default resolved so the content can paint without the
     // list→grid jump on desktop (QA #9a).
     setViewResolved(true);
+    // Run once on mount — searchParams is read for the initial restore only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Portfolio value history for the chart — ALL owned lots (collectionIds=all),
@@ -983,7 +1028,7 @@ export default function PortfolioPage() {
                     const on = cardType === o.id;
                     return (
                       <button key={o.id} type="button" role="option" aria-selected={on}
-                        onClick={() => { setCardType(o.id); setTypeOpen(false); setSelectMode(false); setSelectedIds(new Set()); }}
+                        onClick={() => { setCardType(o.id); setParam("type", o.id, "active"); setTypeOpen(false); setSelectMode(false); setSelectedIds(new Set()); }}
                         style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", cursor: "pointer", background: on ? "rgba(233,180,59,0.08)" : "none", border: "none", borderBottom: "1px solid var(--color-dojo-divider)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: on ? "var(--color-dojo-gold)" : "var(--color-dojo-ink)" }}
                       >
                         {o.label}
@@ -1012,7 +1057,7 @@ export default function PortfolioPage() {
                     const on = selectedColl === o.id;
                     return (
                       <button key={o.id} type="button" role="option" aria-selected={on}
-                        onClick={() => { setSelectedColl(o.id); setCollOpen(false); }}
+                        onClick={() => { setSelectedColl(o.id); setParam("coll", o.id, "all"); setCollOpen(false); }}
                         style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", cursor: "pointer", background: on ? "rgba(233,180,59,0.08)" : "none", border: "none", borderBottom: "1px solid var(--color-dojo-divider)", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px", color: on ? "var(--color-dojo-gold)" : "var(--color-dojo-ink)" }}
                       >
                         {o.name}
@@ -1100,11 +1145,14 @@ export default function PortfolioPage() {
         )}
 
         <div style={{ display: "flex" }}>
-          <button onClick={() => setView("list")} aria-label="List view"
+          {/* BUG 2: persist an EXPLICIT view pick to the URL (empty default so
+              it is always written — the responsive default only applies when no
+              ?view= param exists). */}
+          <button onClick={() => { setView("list"); setParam("view", "list", ""); }} aria-label="List view"
             style={{ width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", border: "none", padding: 0, background: view === "list" ? "var(--color-dojo-gold)" : "transparent", color: view === "list" ? "var(--color-dojo-app)" : "var(--color-dojo-faint)", boxShadow: view === "list" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)" }}>
             <ListIcon />
           </button>
-          <button onClick={() => setView("grid")} aria-label="Grid view"
+          <button onClick={() => { setView("grid"); setParam("view", "grid", ""); }} aria-label="Grid view"
             style={{ width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", border: "none", padding: 0, background: view === "grid" ? "var(--color-dojo-gold)" : "transparent", color: view === "grid" ? "var(--color-dojo-app)" : "var(--color-dojo-faint)", boxShadow: view === "grid" ? "none" : "inset 0 0 0 1px var(--color-dojo-stroke)" }}>
             <GridIcon />
           </button>
@@ -1252,5 +1300,17 @@ export default function PortfolioPage() {
 
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
+  );
+}
+
+// BUG 2: PortfolioPageInner reads useSearchParams to restore its list controls
+// from the URL; Next 15 requires a Suspense boundary around useSearchParams
+// (mirrors search/page.tsx's SearchPageInner wrapper). The fallback is an empty
+// shell — the inner component's own skeletons handle the data-loading states.
+export default function PortfolioPage() {
+  return (
+    <Suspense fallback={null}>
+      <PortfolioPageInner />
+    </Suspense>
   );
 }
