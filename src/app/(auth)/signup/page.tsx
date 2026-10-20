@@ -40,9 +40,18 @@ function CheckIcon() {
 }
 
 // ── Password validation ─────────────────────────────────────────
+// Mirrors the AUTHORITATIVE server-side policy in
+// src/app/api/auth/[...all]/route.ts (8–128 chars, ≥1 number, ≥1 lowercase,
+// ≥1 uppercase). The server is the source of truth; this is UX only — keeping
+// the two in sync just prevents a confusing "passed here, rejected there".
+const PW_RULE_HINT = "eight characters minimum, with an uppercase, a lowercase, and a number.";
+
 function validatePassword(pw: string): string | null {
-  if (pw.length < 8) return "eight characters minimum, at least one number.";
-  if (!/\d/.test(pw))  return "eight characters minimum, at least one number.";
+  if (pw.length < 8) return PW_RULE_HINT;
+  if (pw.length > 128) return "password must be at most 128 characters.";
+  if (!/\d/.test(pw)) return PW_RULE_HINT;
+  if (!/[a-z]/.test(pw)) return PW_RULE_HINT;
+  if (!/[A-Z]/.test(pw)) return PW_RULE_HINT;
   return null;
 }
 
@@ -66,7 +75,9 @@ export default function SignUpPage() {
 
   // Live-validate password only once the user has started typing
   const pwHint = password.length > 0 ? validatePassword(password) : null;
-  const pwOk = password.length >= 8 && /\d/.test(password);
+  // pwOk mirrors validatePassword() passing (server policy): length + number +
+  // lowercase + uppercase. Drives the confirm-match indicator and submit gate.
+  const pwOk = validatePassword(password) === null;
 
   // Confirm-password match state — ported from app.js doSignup():
   // suMismatch / suMatched. Gates the submit button the same way the
@@ -197,7 +208,7 @@ export default function SignUpPage() {
             className={pwHint ? "dojo-error" : "dojo-faint"}
             style={{ marginTop: "2px" }}
           >
-            eight characters minimum, at least one number.
+            {PW_RULE_HINT}
           </p>
         </div>
 

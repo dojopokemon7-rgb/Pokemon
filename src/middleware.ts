@@ -44,6 +44,7 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server";
+import { isValidCallbackUrl } from "@/lib/utils/redirect";
 
 // ----------------------------------------------------------------
 // Constants
@@ -120,7 +121,13 @@ function redirectToLogin(request: NextRequest): NextResponse {
  */
 function redirectToDashboard(request: NextRequest): NextResponse {
   const callbackUrl = request.nextUrl.searchParams.get("callbackUrl");
-  const destination = callbackUrl ?? DEFAULT_AUTHENTICATED_PATH;
+  // M-3: NEVER trust callbackUrl as-is — a crafted absolute or protocol-relative
+  // value is an open-redirect. Accept it only when it's a safe same-origin path;
+  // otherwise silently fall back to the dashboard.
+  const destination =
+    callbackUrl && isValidCallbackUrl(callbackUrl, request.nextUrl.origin)
+      ? callbackUrl
+      : DEFAULT_AUTHENTICATED_PATH;
   return NextResponse.redirect(new URL(destination, request.url));
 }
 

@@ -18,9 +18,64 @@
 
 import { auth } from "@/lib/auth";
 import { toNextJsHandler } from "better-auth/next-js";
+import { NextResponse } from "next/server";
+import { z } from "zod";
 import { enforceRateLimit, authTier, clientIp } from "@/lib/utils/rate-limit";
 
 const handlers = toNextJsHandler(auth);
+
+// ---------------------------------------------------------------------------
+// H-1 — Server-side password policy (OWASP A07/A04)
+// ---------------------------------------------------------------------------
+// The signup PAGE validates "8+ chars, 1+ number" client-side, but that check
+// is trivially bypassed by POSTing straight to /api/auth/sign-up/email. The
+// Better Auth core only enforces `minPasswordLength`, so we gate the password
+// HERE — on the server — before the request reaches the sign-up handler.
+//
+// Policy: 8–128 chars, at least one number, one lowercase, one uppercase.
+// (128 stays within bcrypt's 72-byte ceiling as configured in lib/auth.ts.)
+const passwordPolicy = z
+  .string()
+  .min(8, "Password must be at least 8 characters.")
+  .max(128, "Password must be at most 128 characters.")
+  .regex(/\d/, "Password must contain at least one number.")
+  .regex(/[a-z]/, "Password must contain at least one lowercase letter.")
+  .regex(/[A-Z]/, "Password must contain at least one uppercase letter.");
+
+/**
+ * Validates the password on a /sign-up/email POST. Returns a 400 `Response`
+ * when the policy is violated, otherwise `null` (let the request proceed).
+ *
+ * The request body stream can only be read once, so the CALLER must pass a
+ * clone — the untouched original is what reaches Better Auth's handler.
+ * Fail-open on a malformed/unreadable body: we don't own sign-up's own
+ * validation (missing fields, bad email, etc.), so we defer those 400s to
+ * Better Auth rather than second-guessing the payload shape here.
+ */
+async function validateSignUpPassword(clone: Request): Promise<Response | null> {
+  let body: unknown;
+  try {
+    body = await clone.json();
+  } catch {
+    return null; // not JSON / empty — let Better Auth reject it.
+  }
+
+  const password = (body as { password?: unknown })?.password;
+  if (typeof password !== "string") return null; // let Better Auth handle it.
+
+  const result = passwordPolicy.safeParse(password);
+  if (result.success) return null;
+
+  return NextResponse.json(
+    {
+      // Mirror Better Auth's error shape so the signup page's
+      // `authError.message` rendering surfaces this unchanged.
+      code: "PASSWORD_POLICY_VIOLATION",
+      message: result.error.issues[0]?.message ?? "Password does not meet the requirements.",
+    },
+    { status: 400 }
+  );
+}
 
 // GET is exported UNWRAPPED: `get-session` is a GET fired on EVERY page load,
 // so it must NEVER be rate-limited — doing so would break normal navigation.
@@ -53,5 +108,13 @@ export async function POST(request: Request): Promise<Response> {
     });
     if (limited) return limited;
   }
+
+  // H-1: enforce the password policy on sign-up BEFORE Better Auth sees it.
+  // Clone so the body stream stays unconsumed for the real handler below.
+  if (pathname.startsWith("/api/auth/sign-up/email")) {
+    const rejected = await validateSignUpPassword(request.clone());
+    if (rejected) return rejected;
+  }
+
   return handlers.POST(request);
 }
