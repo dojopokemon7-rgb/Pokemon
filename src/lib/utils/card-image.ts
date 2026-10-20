@@ -133,14 +133,31 @@ export function proxiedCardImage(url: string | null | undefined): string | null 
 }
 
 /**
+ * Cache-busting version for the id-based proxy. BUG 3 (review-blocking): the
+ * composite/case-insensitive resolver fix only helps requests that actually
+ * reach the server — a previously cached WRONG 200 (max-age 86400,
+ * stale-while-revalidate 604800) would otherwise keep serving the stale/wrong
+ * art for up to a week under the unchanged URL key. Bumping this version
+ * changes the request URL (the edge/CDN cache key), so every client fetch after
+ * the rollout misses the poisoned entry and re-resolves against the corrected
+ * DB lookup. Increment on any future image-resolution correctness fix.
+ */
+export const CARD_IMG_CACHE_VERSION = "2";
+
+/**
  * Same-origin id-based proxy URL for a Pokémon card, e.g.
- * `/api/card-img/base1-4`. Unlike proxiedCardImage (which puts the upstream
+ * `/api/card-img/base1-4?v=2`. Unlike proxiedCardImage (which puts the upstream
  * CDN url in a `?u=` query param), this exposes ONLY the card id — the server
  * resolves `Card.imageUrl` and never reveals `images.scrydex.com` to the
- * browser. `hi` requests the hi-res variant (?hi=1). The id is url-encoded.
+ * browser. `hi` requests the hi-res variant (?hi=1). A `v=` cache-version busts
+ * any previously cached wrong response (see CARD_IMG_CACHE_VERSION). The server
+ * ignores `v`; it only partitions the cache key. The id is url-encoded.
  */
 export function cardImgById(externalId: string, hi = false): string {
-  return `/api/card-img/${encodeURIComponent(externalId)}${hi ? "?hi=1" : ""}`;
+  const params = new URLSearchParams();
+  if (hi) params.set("hi", "1");
+  params.set("v", CARD_IMG_CACHE_VERSION);
+  return `/api/card-img/${encodeURIComponent(externalId)}?${params.toString()}`;
 }
 
 // Set-coded cards (OP/ST/EB/PRB) + P-### promos — the codes Bandai's CDN hosts.

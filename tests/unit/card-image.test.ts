@@ -5,6 +5,7 @@ import {
   isOnePieceCode,
   proxiedCardImage,
   cardImgById,
+  CARD_IMG_CACHE_VERSION,
   parseVariantImages,
   onePieceVariantImageUrl,
   VariantImagesReadSchema,
@@ -157,18 +158,26 @@ describe("proxiedCardImage", () => {
 describe("cardImgById", () => {
   it("builds the same-origin id-based proxy url (not ?u=...)", () => {
     const src = cardImgById("base1-4");
-    expect(src).toBe("/api/card-img/base1-4");
+    expect(src.startsWith("/api/card-img/base1-4?")).toBe(true);
     expect(src).not.toContain("?u=");
     expect(src).not.toContain("scrydex");
   });
 
-  it("appends ?hi=1 only when hi-res is requested", () => {
-    expect(cardImgById("base1-4", false)).toBe("/api/card-img/base1-4");
-    expect(cardImgById("base1-4", true)).toBe("/api/card-img/base1-4?hi=1");
+  it("carries the cache-busting v= so a previously cached wrong 200 is bypassed (BUG 3)", () => {
+    // The composite/case-insensitive resolver fix only reaches the DB when the
+    // request isn't served from an old cached entry; the v= partitions the
+    // cache key so stale/wrong art can't survive the rollout.
+    expect(cardImgById("base1-4")).toContain(`v=${CARD_IMG_CACHE_VERSION}`);
+    expect(cardImgById("base1-4", true)).toContain(`v=${CARD_IMG_CACHE_VERSION}`);
+  });
+
+  it("appends ?hi=1 only when hi-res is requested (alongside v=)", () => {
+    expect(cardImgById("base1-4", false)).not.toContain("hi=1");
+    expect(cardImgById("base1-4", true)).toContain("hi=1");
   });
 
   it("url-encodes the id", () => {
-    expect(cardImgById("sv3pt5-199/ foo")).toBe(
+    expect(cardImgById("sv3pt5-199/ foo")).toContain(
       "/api/card-img/" + encodeURIComponent("sv3pt5-199/ foo")
     );
   });

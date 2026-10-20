@@ -17,17 +17,24 @@
  *   works. On any miss (no card, no stored URL) we 404 and the client's
  *   CardImage falls through to its remaining candidates (graceful degradation).
  *
- *   BUG 3 — case-insensitive, composite-safe externalId resolve. The id
+ *   BUG 3 — composite-safe, EXACT-then-insensitive externalId resolve. The id
  *   arrives URL-encoded (a composite per-printing id like
  *   `gym1-1::unlimitedHolofoil` is `gym1-1%3A%3AunlimitedHolofoil`) and may be
  *   mis-cased (shared/typed link → `GYM1-1::unlimitedHolofoil`). We
- *   decodeURIComponent it and match externalId case-INSENSITIVELY so a mis-cased
- *   id still resolves the stored (lower-case) row. We do NOT strip the
- *   `::printing` suffix — a composite externalId is its OWN distinct Card row
- *   with its OWN image (AGENTS.md rule 3 per-printing model), so looking up the
- *   whole composite id returns that printing's art, not the base card's. A miss
- *   returns 404 WITHOUT a Cache-Control header (see below) so a later
- *   correctly-cased lookup is never served a cached negative.
+ *   decodeURIComponent it, then look up externalId EXACTLY first and only fall
+ *   back to a case-INSENSITIVE match. `Card.externalId` is a case-SENSITIVE
+ *   @unique column, so case-only duplicate rows are possible; exact-first means
+ *   a correctly-cased request always gets its own row and the insensitive
+ *   fallback can never hand it a different case-fold sibling (it only rescues a
+ *   mis-cased id). We do NOT strip the `::printing` suffix — a composite
+ *   externalId is its OWN distinct Card row with its OWN image (AGENTS.md rule 3
+ *   per-printing model), so looking up the whole composite id returns that
+ *   printing's art, not the base card's. A miss returns 404 WITHOUT a
+ *   Cache-Control header (see below) so a later correctly-cased lookup is never
+ *   served a cached negative. A previously cached WRONG 200 is bypassed by the
+ *   client-side cache-version bump (cardImgById's `?v=` — CARD_IMG_CACHE_VERSION
+ *   in card-image.ts): the version changes the request URL / cache key so the
+ *   corrected lookup runs instead of the week-long stale-while-revalidate entry.
  *
  * Security — DB-sourced is NOT trusted:
  *   Even though the URL comes from our own `Card.imageUrl`, we re-run the SAME
@@ -69,20 +76,32 @@ export async function GET(
   // medium imageUrl when no hi-res is stored. Default = medium.
   const wantHi = request.nextUrl.searchParams.get("hi") === "1";
 
+  const imgSelect = { imageUrl: true, imageUrlHi: true } as const;
   let card: { imageUrl: string | null; imageUrlHi: string | null } | null = null;
   try {
-    // Resolve by catalog externalId first (AGENTS.md rule 3), CASE-INSENSITIVELY
-    // so a mis-cased composite id resolves the stored lower-case row (BUG 3);
-    // the whole decoded id (suffix intact) is the lookup key. Fall back to the
-    // internal cuid — the UI may hold either.
+    // Resolve by catalog externalId first (AGENTS.md rule 3). Order matters:
+    //   1. EXACT externalId (`findUnique` on the @unique column). `Card.externalId`
+    //      is case-SENSITIVE unique, so case-only duplicate rows are POSSIBLE
+    //      (e.g. a legacy `GYM1-1::..` beside `gym1-1::..`). An exact-first hit
+    //      means a correctly-cased request ALWAYS gets its own row — the
+    //      insensitive fallback can never hand it a different case-fold sibling.
+    //   2. CASE-INSENSITIVE externalId (`findFirst`) — only when no exact row
+    //      exists, so a mis-cased shared/typed link still resolves the stored
+    //      row (BUG 3). The whole decoded id (composite `::printing` suffix
+    //      intact) is the key; we never strip it (per-printing model, rule 3).
+    //   3. Internal cuid fallback — the UI may hold either identifier.
     card =
+      (await prisma.card.findUnique({
+        where: { externalId: decoded },
+        select: imgSelect,
+      })) ??
       (await prisma.card.findFirst({
         where: { externalId: { equals: decoded, mode: "insensitive" } },
-        select: { imageUrl: true, imageUrlHi: true },
+        select: imgSelect,
       })) ??
       (await prisma.card.findUnique({
         where: { id: decoded },
-        select: { imageUrl: true, imageUrlHi: true },
+        select: imgSelect,
       }));
   } catch (err) {
     console.error(
