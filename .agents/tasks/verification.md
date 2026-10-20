@@ -4,6 +4,115 @@ Worktree `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`, branch
 `fix-chart-data-bugs` (based on local `master` @ 459605b). Windows / PowerShell;
 the repo path contains a space — every path quoted.
 
+## Iteration 5 — four blocking review findings resolved
+
+`review.json` (verdict `CHANGES_REQUESTED`, reviewDoc review-a.md [APPROVED] +
+review-b.md [NEEDS_CHANGES]) carried FOUR blocking findings + one non-blocking.
+Each resolved below.
+
+### Finding 1 [confirmed, blocking] — split price sources (chart↔display variant divergence)
+- **Reasoning (from review-b)**: the chart is fed WINDOWED `PricingHistory` while
+  display/accounting is fed the LATEST `CurrentPrice`. The shared selector picked
+  the graded variant via `pickDefaultVariant(rows)`, which reads the RAW rows to
+  decide the default. `PricingHistory` accumulates historical raw rows while the
+  Scrydex writer REPLACES the CurrentPrice set, so the two snapshots carry
+  DIFFERENT raw rows → the same PSA 9 lot could resolve to `holofoil` on the chart
+  and `normal` on the tiles. The old parity tests reused ONE fixture across both
+  helpers, so they could not expose this topology.
+- **Fix**: made the graded-variant selection INDEPENDENT of the surrounding raw
+  rows. `src/lib/utils/raw-price.ts` `pickGradedVariant` now chooses the variant
+  from the GRADED MATCHES THEMSELVES by the module's `VARIANT_PRIORITY`
+  (`cmpVariant`), never via `pickDefaultVariant(rows)`. So any company+grade
+  resolves to the same variant regardless of which raw rows accompany it, and the
+  chart and tiles/summary agree even across divergent snapshots. `pickGradedFromRows`'
+  tie-break fallback now also uses `cmpVariant` (was a bare `localeCompare`) for
+  consistency. Comments in `collection-series.ts`, `graded-price.ts`, and the
+  collection route updated to state the new rule (the full-set select is kept —
+  it is harmless and the raw rows simply no longer drive the graded default).
+  RULE 2 preserved: an empty company+grade match still returns null → honest gap.
+- **Regression added** (`tests/unit/collection-series.test.ts`, rewrote the
+  multi-variant parity describe): the key new case feeds the chart `historyRows`
+  with a raw HOLOFOIL (no raw normal) and feeds display `currentRows` with a raw
+  NORMAL — the exact divergent topology the review named — and asserts BOTH price
+  the PSA 9 at 500 (`normal`, the graded default) and that `chart === display`.
+  Plus order-independence and a `statsFromLots === chart` case. The old
+  "a graded lot follows the card default variant set by a RAW row (→777)" case
+  (which encoded the raw-driven behavior that caused the divergence) was replaced
+  by "the graded variant ignores the raw rows (picks graded default 500)".
+
+### Finding 2 [likely, blocking] — a previously cached WRONG 200 survives the fix
+- **Reasoning**: the composite/case-insensitive resolver only helps requests that
+  reach the server; a wrong `200` already cached under the unchanged proxy URL
+  stays fresh 86,400s / stale-eligible 604,800s. The new no-cache assertion covers
+  only `404`.
+- **Fix**: `src/lib/utils/card-image.ts` — `cardImgById` now appends a
+  cache-busting `?v=<CARD_IMG_CACHE_VERSION>` (exported, set to `"2"`). The version
+  changes the request URL / edge-cache key so every client fetch after rollout
+  misses any poisoned entry and re-resolves against the corrected DB lookup. The
+  server ignores `v`. The route file-header documents the mechanism.
+- **Regression**: `tests/unit/card-image.test.ts` asserts `cardImgById(...)`
+  carries `v=CARD_IMG_CACHE_VERSION` (with and without `hi=1`) and still never
+  leaks the CDN host; the exact-URL assertions were relaxed to `startsWith`/`toContain`.
+
+### Finding 3 [likely, blocking] — case-folded image lookup is ambiguous
+- **Reasoning**: `Card.externalId` is case-SENSITIVE `@unique`, so case-only
+  duplicate rows are possible; an insensitive `findFirst` with no exact-first path
+  could return either row.
+- **Fix**: `src/app/api/card-img/[id]/route.ts` now tries an EXACT
+  `findUnique({ where: { externalId: decoded } })` FIRST, then the case-insensitive
+  `findFirst`, then the cuid `findUnique`. A correctly-cased request always hits
+  its own row and never consults the ambiguous insensitive match; the insensitive
+  fallback only rescues a genuinely mis-cased id.
+- **Regression** (`tests/integration/card-img-by-id.test.ts`): the Prisma mock now
+  routes `findUnique` by `where` key (externalId-exact vs cuid). Added a
+  collision-safe case: when the exact row exists, the insensitive fallback (stubbed
+  to a WRONG sibling) is NEVER consulted and the exact row's image streams. The
+  mis-cased case now asserts exact-miss → insensitive-hit ordering; the composite
+  `::` case asserts the exact lookup key keeps the suffix.
+
+### Finding 4 [confirmed, blocking] — stale behavior docs
+- **Fix**: updated `docs/CODE_MAP.md` — search `sort` is now URL-backed (BUG 2),
+  range tabs derive from `maxAvailableSpanDays` + `largestEnabledRange` (BUG 5/6),
+  portfolio `type`/`coll`/`view` are URL-backed (BUG 2), `collection-series.ts`
+  values each lot by its grade via the raw-independent shared selector (BUG 1/8),
+  the `card-img-by-id` test line notes exact-then-insensitive + composite, and
+  `card-detail-chips-matrix`/`list-controls` added to the unit-test index. Updated
+  `docs/API_REFERENCE.md` — `GET /api/users/me/collection` now documents
+  `card.gradedPrices` (full priced raw+graded set with `type`/`variant`/`condition`)
+  and the shared variant selector.
+
+### Finding 5 [confirmed, non-blocking] — no production-browser Back-flow evidence
+- Unchanged and acknowledged: `build:standalone` + Playwright e2e + chart-accuracy
+  are NOT runnable here (remote DB busy — they stall, per the step instructions).
+  Left for a DB-available production gate.
+
+### Iteration-5 commands run (from the worktree root, paths quoted)
+
+| Command | Result |
+|---|---|
+| `npm run type-check` (`tsc --noEmit`) | **PASS** — exit 0. |
+| `npm run lint` (`eslint .`) | **PASS** — exit 0. |
+| `npm run test:unit` | **PASS** — **72 files, 551 tests, 0 failures**. |
+| `npm run test:integration` | **PASS** — **60 files, 426 tests, 0 failures**. |
+| `npx vitest run tests/unit/collection-series.test.ts tests/unit/card-image.test.ts tests/integration/card-img-by-id.test.ts tests/integration/card-img-proxy.test.ts` | **PASS** — 64 tests (19 + 19 + 16 + 10), 0 failures. |
+
+Known flake `tests/unit/add-invalidates-chart.test.tsx` did NOT fail (full unit
+suite green). `build:standalone`/e2e/chart-accuracy NOT run (remote DB busy).
+
+**Page-export guard (iteration 5):** no `page.tsx` was touched this iteration.
+Changed source files: `src/lib/utils/raw-price.ts`, `src/lib/utils/card-image.ts`,
+`src/lib/utils/collection-series.ts`, `src/lib/utils/graded-price.ts` (all `src/lib`
+utils), `src/app/api/card-img/[id]/route.ts` + `src/app/api/users/me/collection/route.ts`
+(API routes), and `docs/*`. `git grep "^export "` on the three previously-touched
+pages still shows ONLY `export default` + the pre-existing erased
+`interface CollectionItem` in portfolio (confirmed identical to `master`). New
+runtime helpers (`CARD_IMG_CACHE_VERSION`) live in `src/lib`. **Symptoms 4/7 and
+the Scrydex config remain untouched** — no `collection-history.service.ts` change
+this iteration (QA #6b flat path + `[addedAt, soldAt)` ownership gate intact), no
+active-value-series change, no Scrydex/enrich/credit-gate file in the diff.
+
+---
+
 ## Iteration 4 — review blocking finding resolved (chart↔display graded-variant parity, BOTH sides)
 
 `review.json` (verdict `CHANGES_REQUESTED`) carried ONE **blocking** finding
