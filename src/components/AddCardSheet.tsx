@@ -373,27 +373,32 @@ export function AddCardSheet({
             modal). Not creating → the normal two-column COLLECTION + QTY row. */}
         {creatingCollection ? (
           <div style={{ marginBottom: "18px" }}>
-            <div style={{ ...label, marginBottom: "8px" }}>Collection</div>
-            <div style={{ display: "flex", gap: "8px" }}>
-              <input
-                type="text"
-                autoFocus
-                maxLength={100}
-                placeholder="Collection name"
-                aria-label="New collection name"
-                value={newCollectionName}
-                onChange={(e) => setNewCollectionName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !creatingBusy) handleCreateCollection(); }}
-                className="dojo-input"
-                style={{ flex: 1, minWidth: 0 }}
-              />
+            <div style={{ ...label, marginBottom: "8px" }}>New Collection</div>
+            {/* Input on its OWN full-width line so it's always comfortably
+                sized, then Create/Cancel on a row beneath it (Create fills the
+                remaining width, Cancel compact). Previously the input shared a
+                flex row with the buttons and the primary CREATE button starved
+                it down to a sliver. */}
+            <input
+              type="text"
+              autoFocus
+              maxLength={100}
+              placeholder="Collection name"
+              aria-label="New collection name"
+              value={newCollectionName}
+              onChange={(e) => setNewCollectionName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !creatingBusy) handleCreateCollection(); }}
+              className="dojo-input"
+              style={{ width: "100%", display: "block" }}
+            />
+            <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
               <button
                 type="button"
                 aria-label="Create collection"
                 onClick={handleCreateCollection}
                 disabled={creatingBusy}
                 className="dojo-btn dojo-btn-primary"
-                style={{ flex: "none", padding: "0 14px" }}
+                style={{ flex: 1, minWidth: 0 }}
               >
                 {creatingBusy ? "…" : "Create"}
               </button>
@@ -402,7 +407,7 @@ export function AddCardSheet({
                 aria-label="Cancel new collection"
                 onClick={() => { setCreatingCollection(false); setNewCollectionName(""); setCollectionErr(null); }}
                 disabled={creatingBusy}
-                style={{ flex: "none", background: "none", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-body)", cursor: "pointer", padding: "0 12px" }}
+                style={{ flex: "none", background: "none", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-body)", cursor: "pointer", padding: "0 16px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: "10px", letterSpacing: "0.14em", textTransform: "uppercase" }}
               >
                 Cancel
               </button>
