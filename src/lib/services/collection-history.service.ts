@@ -33,22 +33,15 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// QA #6b: ALL/MAX builds a DAILY grid spanning 5 years, but the ownership gate
-// nulls every instant before the earliest lot's addedAt. A brand-new portfolio
-// (all lots added within the last couple of days) therefore survives only the
-// few daily-grid instants inside that tiny real window — and because there are
-// still >= 3 of them crammed into ~2 days, AreaChart's Catmull-Rom smoothing
-// bows their near-identical carried-forward values into a DRAMATIC multi-peak
-// "swoosh" with a big filled area, implying a price trend that did NOT happen.
-// When the earliest valued instant is this recent, a dense daily grid invents
-// no values (carry-forward is honest) but its DENSITY is what the smoothing
-// exaggerates. The honest fix: over ALL/MAX, when the real window is shorter
-// than this, emit a SPARSE series of the real valuation instants only (each
-// lot's clamped addedAt + now) instead of the dense grid — few points → the
-// chart draws an honest near-flat line/markers (hasAreaTrend < 3 → no area),
-// never a fabricated trend. Longer real history keeps the full dense grid and
-// its genuine shape. 7 days is comfortably inside any real multi-month trend.
-const SHORT_WINDOW_DAYS = 7;
+// A — real moving time-series (owner-confirmed): a recent-but-real portfolio
+// flows through the DENSE daily grid below, so its line MOVES with the real
+// stored PricingHistory (carry-forward) instead of being flattened. The old
+// QA #6b short-window branch replaced the dense grid with a 2-point FLAT line
+// whenever the earliest lot was added within SHORT_WINDOW_DAYS — that masked
+// genuine price movement on a freshly-built portfolio. It is removed: the dense
+// grid is already honest (carry-forward of REAL points, honest null gaps
+// otherwise — RULE 2), and the page's >=2-real-points empty state still guards
+// genuinely sparse portfolios ("Not enough history to chart yet").
 
 /**
  * Build per-collection value histories for one user over `range`.
@@ -79,19 +72,6 @@ export async function buildCollectionHistories(
   else if (range === "6M") startDate.setMonth(now.getMonth() - 6);
   else if (range === "12M" || range === "1Y") startDate.setFullYear(now.getFullYear() - 1);
   else startDate.setFullYear(now.getFullYear() - 5); // ALL / MAX
-
-  // ALL/MAX is the only range whose grid spans years (5y back) — the only one
-  // where a ~2-day-old portfolio's few surviving grid points get smoothed into
-  // a fake swoosh (QA #6b). Bounded ranges (1D–1Y) already window tightly, so
-  // the sparse-window shaping below is gated to ALL/MAX only.
-  const isAllRange =
-    range !== "1D" &&
-    range !== "7D" &&
-    range !== "1M" &&
-    range !== "3M" &&
-    range !== "6M" &&
-    range !== "12M" &&
-    range !== "1Y";
 
   const histories: Record<string, { date: string; value: number | null }[]> = {};
 
@@ -228,45 +208,6 @@ export async function buildCollectionHistories(
     // Daily timeline from the window start to now (inclusive).
     const startMs = startDate.getTime();
     const nowMs = now.getTime();
-
-    // QA #6b — sparse short-window path (ALL/MAX only). The real valued window
-    // begins at the EARLIEST lot addedAt (nothing is valued before it). When
-    // that earliest add is within SHORT_WINDOW_DAYS of now, the dense 5-year
-    // daily grid contributes only a few points in that tiny window, which the
-    // chart smooths into a fake multi-peak trend. Instead emit ONLY the real
-    // valuation instants: each lot's clamped addedAt + the `now` endpoint. No
-    // value is invented (buildCollectionSeries still carry-forwards real prices
-    // and emits honest null gaps); the series is just SPARSE, so the chart reads
-    // as a near-flat honest line/markers rather than a smoothed swoosh.
-    const addedTimes = lots
-      .map((l) => l.addedAt.getTime())
-      .filter((t) => Number.isFinite(t));
-    const earliestAdded = addedTimes.length ? Math.min(...addedTimes) : nowMs;
-    if (isAllRange && earliestAdded >= nowMs - SHORT_WINDOW_DAYS * DAY_MS) {
-      // QA #6b (v2) — a portfolio whose lots were ALL added within the last few
-      // days has NO meaningful PRICE history: card prices are static snapshots,
-      // so the only thing that "changed" is cards being ADDED, not prices moving.
-      // Anchoring at each lot's addedAt produced a misleading 0→value RAMP (as
-      // successive lots switched on), reading as "the portfolio grew from zero".
-      // That conflates "added cards" with "price growth" — dishonest (RULE 2).
-      //
-      // Instead value the CURRENT holdings at two instants that are BOTH after
-      // the latest acquisition (so every held lot counts at both) → a FLAT line
-      // at the current total value: the honest truth that the value hasn't moved
-      // over this short window. No value is invented; both points are the real
-      // current valuation. (If a lot has no price at all it stays a null gap and
-      // the chart's >=2-real-points rule falls back to the empty state.)
-      const latestAdded = addedTimes.length ? Math.max(...addedTimes) : nowMs;
-      // Two flat anchors in [latestAdded, now]: the span start (clamped) and now.
-      const flatStart = Math.min(Math.max(latestAdded, startMs), nowMs);
-      const flat = flatStart === nowMs ? [nowMs] : [flatStart, nowMs];
-      const [series] = buildCollectionSeries(holdings, prices, flat);
-      histories[collId] = (series?.points ?? []).map((p) => ({
-        date: new Date(p.t).toISOString().slice(0, 10),
-        value: p.value,
-      }));
-      continue;
-    }
 
     const timeline: number[] = [];
     // Daily grid instants (startMs + k·DAY_MS), ascending. Each carries the

@@ -223,55 +223,39 @@ describe("buildCollectionHistories — addedAt timeline anchor (A1)", () => {
   });
 });
 
-describe("buildCollectionHistories — QA #6b short-window sparse shaping (ALL/MAX)", () => {
+describe("buildCollectionHistories — real moving series for a recent-but-real portfolio (A)", () => {
   const DAY = 24 * 60 * 60 * 1000;
 
-  it("a brand-new (~2-day-old) portfolio over ALL yields a SPARSE honest series (anchors + now), not a dense many-point grid", async () => {
-    // All lots added ~2 days ago. The old dense 5-year daily grid survived only
-    // the handful of grid instants inside that 2-day window — enough (>=3) for
-    // Catmull-Rom to bow into a fake swoosh. QA #6b v2: anchoring at each lot's
-    // addedAt instead produced a misleading 0→value RAMP (lots switching on).
-    // The fix values the CURRENT holdings at two instants BOTH after the latest
-    // acquisition → a FLAT line at the current total (value hasn't moved).
-    const addedA = new Date(Date.now() - 2 * DAY);
-    const addedB = new Date(Date.now() - 1 * DAY);
-    prismaMock.userCollection.findMany.mockResolvedValue([
-      { cardId: "card_1", quantity: 1, addedAt: addedA, soldAt: null, isSold: false },
-      { cardId: "card_2", quantity: 1, addedAt: addedB, soldAt: null, isSold: false },
-    ]);
-    // Real prices recorded before each add so carry-forward values them.
-    prismaMock.pricingHistory.findMany.mockResolvedValue([
-      { cardId: "card_1", recordedAt: new Date(addedA.getTime() - DAY), priceMarket: 5 },
-      { cardId: "card_2", recordedAt: new Date(addedB.getTime() - DAY), priceMarket: 7 },
-    ]);
-
-    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
-
-    const series = histories["all"];
-    // Anchors = [latestAdded (addedB), now] → exactly 2 flat points (a dense
-    // grid would be dozens+). Both value ALL current holdings → 5+7=12, FLAT.
-    expect(series.length).toBe(2);
-    const values = series.map((p) => p.value);
-    expect(values.some((v) => v === 0)).toBe(false); // never fabricated 0
-    // Flat honest line: both points at the current total (no 0→value ramp).
-    expect(values.every((v) => v === 12)).toBe(true);
-  });
-
-  it("a single-lot brand-new portfolio over ALL yields exactly 2 points (flat line at current value) — no smoothed area", async () => {
+  it("a ~2-day-old portfolio with REAL moving prices over ALL yields a DENSE moving series (not a 2-point flat line)", async () => {
+    // Requirement A: the old QA #6b branch flattened a recent portfolio to a
+    // 2-point line, masking real movement. Removed — the dense daily grid now
+    // carries the REAL stored PricingHistory (carry-forward), so a portfolio
+    // whose prices MOVED (5 → 8 → 11) shows that movement honestly.
     const added = new Date(Date.now() - 2 * DAY);
     prismaMock.userCollection.findMany.mockResolvedValue([
-      { cardId: "card_1", quantity: 2, addedAt: added, soldAt: null, isSold: false },
+      { cardId: "card_1", quantity: 1, addedAt: added, soldAt: null, isSold: false },
     ]);
+    // Real prices that MOVE across the short window (before + during ownership).
     prismaMock.pricingHistory.findMany.mockResolvedValue([
-      { cardId: "card_1", recordedAt: new Date(added.getTime() - DAY), priceMarket: 9 },
+      { cardId: "card_1", recordedAt: new Date(added.getTime() - 6 * 60 * 60 * 1000), priceMarket: 5 },
+      { cardId: "card_1", recordedAt: new Date(added.getTime() + 12 * 60 * 60 * 1000), priceMarket: 8 },
+      { cardId: "card_1", recordedAt: new Date(Date.now() - 2 * 60 * 60 * 1000), priceMarket: 11 },
     ]);
 
     const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
 
     const series = histories["all"];
-    expect(series.length).toBe(2); // addedAt anchor + now → < 3 → no area fill
-    // Flat: both points value the lot at the same carried-forward price (9×2).
-    expect(series.every((p) => p.value === 18)).toBe(true);
+    const numeric = series.filter((p) => typeof p.value === "number");
+    // (a) many points — NOT capped at 2 (the old flat branch is gone).
+    expect(series.length).toBeGreaterThan(3);
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    // (b) movement is visible: both an early and a late distinct real value.
+    const values = numeric.map((p) => p.value);
+    expect(values).toContain(8);
+    expect(values).toContain(11);
+    expect(new Set(values).size).toBeGreaterThan(1); // not flat
+    // (c) never a fabricated 0.
+    expect(values.some((v) => v === 0)).toBe(false);
   });
 
   it("an account with real multi-month history over ALL keeps its FULL dense series (no sparse-path regression)", async () => {
