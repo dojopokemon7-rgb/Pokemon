@@ -118,13 +118,17 @@ export function buildCollectionSeries(
     let filtered: PricePoint[];
     if (graded) {
       // Graded lot: only this company+grade's graded points, AND only ONE
-      // deterministic variant among them — the same default-variant rule
+      // deterministic variant among them — the SAME default-variant rule
       // pickGradedFromRows (the /graded route + statsFromLots/displayPrice) uses.
-      // Without this, two priced variants at the SAME recordedAt under one
-      // company+grade would let the last-sorted (DB tie order) row win, so the
-      // chart could disagree with the displayed value. pickDefaultVariant ranks
-      // by variant priority (order-independent), falling back to the first
-      // listed variant when nothing raw ranks.
+      // CRITICAL PARITY: the card default variant is derived from the card's
+      // FULL row set (`all`), NOT the graded-only slice. A raw row can establish
+      // a non-normal card default (e.g. a holofoil raw makes holofoil the card
+      // default); display/accounting then prices the PSA 9 holofoil row. Deriving
+      // the variant from gradeRows alone would ignore that raw signal and pick
+      // `normal` by variant priority, so the chart would disagree with the
+      // displayed value. We mirror pickGradedFromRows exactly:
+      // wantVariant = pickDefaultVariant(FULL rows), then take that variant's
+      // graded point, else the alphabetically-first graded variant.
       const company = graded.company.toUpperCase();
       const gradeRows = all.filter(
         (p) =>
@@ -133,7 +137,7 @@ export function buildCollectionSeries(
           (p.grade ?? "") === graded.grade
       );
       const wantVariant = pickDefaultVariant(
-        gradeRows.map((p) => ({
+        all.map((p) => ({
           type: p.type,
           company: p.company,
           grade: p.grade,
@@ -142,13 +146,23 @@ export function buildCollectionSeries(
           priceMarket: p.price,
         }))
       );
-      filtered =
+      const match =
         wantVariant == null
-          ? gradeRows
+          ? []
           : gradeRows.filter((p) => (p.variant ?? "normal") === wantVariant);
-      // Guard against a variant string that matched nothing (shouldn't happen —
-      // wantVariant is derived from gradeRows — but keep the series non-empty).
-      if (filtered.length === 0) filtered = gradeRows;
+      if (match.length > 0) {
+        filtered = match;
+      } else {
+        // wantVariant has no graded point for this company+grade: mirror
+        // pickGradedFromRows' fallback — the alphabetically-first graded variant.
+        const fallbackVariant = [...gradeRows]
+          .map((p) => p.variant ?? "normal")
+          .sort((a, b) => a.localeCompare(b))[0];
+        filtered =
+          fallbackVariant == null
+            ? gradeRows
+            : gradeRows.filter((p) => (p.variant ?? "normal") === fallbackVariant);
+      }
     } else {
       // Raw lot: raw points only, at the best available raw condition. The
       // shared helpers (pickBestRaw/pickDefaultVariant) read priceMarket, so

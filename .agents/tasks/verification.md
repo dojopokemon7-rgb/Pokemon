@@ -4,6 +4,78 @@ Worktree `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`, branch
 `fix-chart-data-bugs` (based on local `master` @ 459605b). Windows / PowerShell;
 the repo path contains a space — every path quoted.
 
+## Iteration 3 — review blocking finding resolved (graded default-variant parity)
+
+`review.json` (verdict `CHANGES_REQUESTED`) carried ONE blocking finding (Review B;
+Review A was APPROVED with no blocking findings):
+
+> **Graded default-variant parity (blocking)** — `collection-series.ts` derived
+> the graded variant from `gradeRows` ONLY, while `statsFromLots`/`displayPrice`
+> (via `pickGradedFromRows` in `raw-price.ts`) derive the card default from the
+> card's FULL row set. They disagree whenever a RAW row establishes a non-normal
+> card default (e.g. holofoil) AND the graded grade has both normal and holofoil
+> rows: display/accounting prices the PSA 9 holofoil while the chart picks normal
+> by variant priority. Align the chart's variant derivation + fallback with the
+> full-row `pickGradedFromRows` rule, then pin the divergent row shape.
+
+**Root cause**: `pickGradedFromRows` computes `wantVariant = variant ?? pickDefaultVariant(rows)`
+over the card's FULL rows, so a raw holofoil row makes `holofoil` the card default
+and the PSA 9 holofoil row is priced. The chart's graded branch instead ran
+`pickDefaultVariant(gradeRows)` over graded-only rows — those carry no raw
+condition, so `pickBestRaw` returned null and `pickDefaultVariant` fell to
+`listVariants(gradeRows)[0]` = `normal` by variant priority, ignoring the raw
+signal. Deterministic, but divergent from display for that row shape.
+
+**Fix applied** (`src/lib/utils/collection-series.ts`, graded branch): derive
+`wantVariant` from the card's FULL row set (`all`), exactly as `pickGradedFromRows`
+does, then take that variant's graded point(s). Fallback mirrors
+`pickGradedFromRows` too — when `wantVariant` has no graded point for this
+company+grade, fall to the alphabetically-first graded variant
+(`[...gradeRows].map(variant).sort(localeCompare)[0]`), and if that somehow
+matches nothing keep `gradeRows` non-empty. No fabrication: an empty company+grade
+match still yields an honest null gap (RULE 2). The raw branch and every other
+path are unchanged; the existing order-independence regression still passes
+(no raw row → default stays `normal`).
+
+**Regression added** (`tests/unit/collection-series.test.ts`, new case "a graded
+lot follows the card default variant set by a RAW row (chart↔display parity)"):
+one cardId with a RAW `holofoil` row (no raw normal → holofoil is the card
+default) plus PSA 9 `normal`=500 and PSA 9 `holofoil`=777. The PSA 9 lot must
+value at **777** (the holofoil variant the raw row made the card default) — the
+SAME price `pickGradedFromRows`/`displayPrice` returns — NOT 500 that a
+graded-only derivation would pick. This is the first test with a raw row that
+sets a non-normal card default, so it detects the divergence the prior
+order-independence case (graded-only, no raw) could not.
+
+Non-blocking finding (Review A+B agree): the control click → URL → card detail →
+Back flow has no browser-level verification because `build:standalone` + Playwright
+E2E stall on the busy remote DB in this environment. The URL round-trip logic is
+directly traceable in the diff and the pure parser is unit-tested; the browser
+Back-flow check is left for a DB-available production-verification run, as the
+reviewers noted. This is acknowledged, not resolvable in this environment.
+
+### Iteration-3 commands run (from the worktree root, paths quoted)
+
+| Command | Result |
+|---|---|
+| `npx vitest run tests/unit/collection-series.test.ts` | **PASS** — 16 tests, 0 failures (new parity case green). |
+| `npm run type-check` (`tsc --noEmit`) | **PASS** — exit 0. |
+| `npm run lint` (`eslint .`) | **PASS** — exit 0. |
+| `npm run test:unit` | **PASS** — **72 files, 547 tests, 0 failures** (546 + 1 new parity regression). |
+| `npm run test:integration` | **PASS** — **60 files, 425 tests, 0 failures**. |
+
+Known flake `tests/unit/add-invalidates-chart.test.tsx` did NOT fail — the full
+unit suite is green, so no isolation re-run was needed.
+
+Page-export guard re-checked: no `page.tsx` was touched this iteration (the only
+changed source file is `src/lib/utils/collection-series.ts`, a `src/lib` util).
+`git grep "^export "` on the three previously-touched pages still shows ONLY
+`export default` + the pre-existing erased `interface CollectionItem` type in
+portfolio (confirmed unchanged from `master`). Symptoms 4/7 and the Scrydex config
+remain untouched — the iteration-3 diff is `collection-series.ts` + its test only.
+
+---
+
 ## Iteration 2 — review blocking finding resolved
 
 `review.json` (verdict `CHANGES_REQUESTED`) carried ONE blocking finding:

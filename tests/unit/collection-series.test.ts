@@ -177,6 +177,29 @@ describe("BUG 1 & 8 — a lot is valued from the price series matching ITS OWN g
     expect(valueFor(makePrices("normal-first"))).toBe(500);
     expect(valueFor(makePrices("holo-first"))).toBe(500);
   });
+
+  // Review-blocking (iteration 3): display/accounting (pickGradedFromRows)
+  // derive the card default variant from the card's FULL row set, so a RAW row
+  // can make a non-normal variant (holofoil) the card default. The chart MUST
+  // mirror that rule — deriving the graded variant from graded-only rows would
+  // pick "normal" by variant priority and DISAGREE with the displayed value for
+  // every card with this shape. Here a raw HOLOFOIL row establishes holofoil as
+  // the card default, and PSA 9 has BOTH a normal (500) and a holofoil (777)
+  // row: display prices the PSA 9 holofoil (777), so the chart must too.
+  it("a graded lot follows the card default variant set by a RAW row (chart↔display parity)", () => {
+    const prices: PricePoint[] = [
+      // Raw holofoil present but no raw normal → holofoil is the card default.
+      { cardId: "c1", at: t0, price: 60, type: "raw", condition: "NM", variant: "holofoil" },
+      { cardId: "c1", at: t0, price: 500, type: "graded", company: "PSA", grade: "9", variant: "normal" },
+      { cardId: "c1", at: t0, price: 777, type: "graded", company: "PSA", grade: "9", variant: "holofoil" },
+    ];
+    const holdings: HoldingInterval[] = [
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9" },
+    ];
+    // Must be the PSA 9 HOLOFOIL price (777) — the variant the raw row made the
+    // card default — NOT "normal" (500) that a graded-only derivation would pick.
+    expect(buildCollectionSeries(holdings, prices, [t0])[0].points[0].value).toBe(777);
+  });
 });
 
 describe("isVirtualCollectionId", () => {
