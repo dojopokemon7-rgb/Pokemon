@@ -20,6 +20,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   userCollection: { findMany: vi.fn() },
   pricingHistory: { findMany: vi.fn() },
+  // CROSS-SNAPSHOT PARITY (review-blocking): the service now reads the latest
+  // CurrentPrice graded rows to decide each graded lot's variant (the SAME
+  // stable source display reads). Default to no current graded rows so the raw
+  // / legacy fixtures are unaffected — those tests never set a graded condition.
+  currentPrice: { findMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -33,6 +38,9 @@ const USER_ID = "user_123";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no current graded rows (raw/legacy fixtures). A graded test sets
+  // this explicitly to drive the cross-snapshot variant decision.
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
 });
 
 describe("buildCollectionHistories — shape parity with the GET route (a)", () => {
@@ -318,6 +326,11 @@ describe("BUG 1 & 8 — the grade is honored through the real service call path"
     prismaMock.userCollection.findMany.mockResolvedValue([
       { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: "PSA 9" },
     ]);
+    // Current snapshot carries the PSA 9 normal variant → the chart values the
+    // PSA 9 normal history series (same variant display would price).
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { cardId: "card_1", company: "PSA", grade: "9", variant: "normal", priceMarket: 500 },
+    ]);
     // Same recordedAt, four grades sharing the one cardId. Pre-fix carry-forward
     // kept whichever sorted last; the PSA 9 lot must take 500.
     const rec = new Date(Date.now() - 60 * DAY);
@@ -352,6 +365,63 @@ describe("BUG 1 & 8 — the grade is honored through the real service call path"
     const numeric = histories["all"].filter((p) => typeof p.value === "number");
     expect(numeric.length).toBeGreaterThanOrEqual(2);
     expect(numeric.every((p) => p.value === 50)).toBe(true);
+  });
+
+  // REVIEW B (blocking) — cross-snapshot graded VARIANT drift. The two price
+  // stores have DIFFERENT variant sets for the SAME company+grade:
+  //   - windowed PricingHistory: PSA 9 has BOTH normal (500) and holofoil (777)
+  //   - latest CurrentPrice:     PSA 9 has ONLY holofoil (777)
+  // The display path prices the lot at holofoil (the only current variant). The
+  // chart MUST value the PSA 9 holofoil history series (777), NOT the PSA 9
+  // normal series (500) it would pick if it derived the variant from history
+  // alone — even though normal outranks holofoil in VARIANT_PRIORITY. The
+  // service decides the variant from the CURRENT snapshot and threads it in.
+  it("values the lot at the variant the CURRENT snapshot has, even when history carries extra variants for that company+grade", async () => {
+    const addedAt = new Date(Date.now() - 90 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: "PSA 9" },
+    ]);
+    // CURRENT: PSA 9 holofoil only → display prices holofoil.
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { cardId: "card_1", company: "PSA", grade: "9", variant: "holofoil", priceMarket: 777 },
+    ]);
+    // HISTORY: PSA 9 has BOTH normal (500, higher variant priority) and holofoil
+    // (777). A history-only variant decision would wrongly pick normal (500).
+    const rec = new Date(Date.now() - 60 * DAY);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: rec, priceMarket: 500, type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null },
+      { cardId: "card_1", recordedAt: rec, priceMarket: 777, type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    // Chart agrees with display: PSA 9 HOLOFOIL (777), never the normal (500).
+    expect(numeric.every((p) => p.value === 777)).toBe(true);
+    expect(numeric.some((p) => p.value === 500)).toBe(false);
+  });
+
+  // Honest gap: the CURRENT snapshot can't price the graded lot (no matching
+  // graded row), so neither can the chart — it stays a null gap (RULE 2),
+  // rather than inventing a variant from history.
+  it("leaves an honest null gap when the current snapshot has no graded row for the lot's company+grade", async () => {
+    const addedAt = new Date(Date.now() - 90 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: "PSA 9" },
+    ]);
+    // CURRENT has NO PSA 9 graded row (e.g. only PSA 10) → display returns null.
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { cardId: "card_1", company: "PSA", grade: "10", variant: "normal", priceMarket: 1000 },
+    ]);
+    // HISTORY does carry a PSA 9 series, but with no current variant to anchor
+    // on the chart must NOT fall back onto it.
+    const rec = new Date(Date.now() - 60 * DAY);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: rec, priceMarket: 500, type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+    expect(histories["all"].every((p) => p.value === null)).toBe(true);
   });
 });
 

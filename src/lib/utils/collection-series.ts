@@ -17,11 +17,19 @@
  *     RAW lot ONLY from the best-available raw condition's points — the SAME
  *     selection statsFromLots/displayPrice use. No fabrication: a lot whose
  *     matching series is empty stays an honest null gap.
- *   - CHART↔DISPLAY PARITY: the graded variant is chosen by the ONE shared
- *     selector `pickGradedVariant` (raw-price.ts) over the card's FULL row set —
- *     the identical rule pickGradedFromRows / pickRealGradedPrice (displayPrice/
- *     statsFromLots) now use — so the chart and the tile/summary can never
- *     disagree on which variant a company+grade lot is priced at.
+ *   - CHART↔DISPLAY PARITY: a graded lot is priced at ONE variant decided over
+ *     the STABLE current-price snapshot (the SAME source displayPrice/
+ *     statsFromLots read) and threaded in as `HoldingInterval.gradedVariant`;
+ *     the chart filters its windowed history points to that exact variant. This
+ *     closes the cross-snapshot gap: the windowed PricingHistory and the latest
+ *     CurrentPrice can carry DIFFERENT variant sets for one company+grade, so
+ *     deriving the variant independently on each side (even raw-independently)
+ *     could still disagree. Deciding it once from the current snapshot makes the
+ *     chart and the tile/summary pick the same variant; when history has no
+ *     point for it the lot stays an honest null gap (RULE 2 — never re-pick onto
+ *     a different variant to manufacture a value). When no current snapshot is
+ *     threaded (legacy/tests) the variant falls back to the ONE shared selector
+ *     `pickGradedVariant` over the lot's own rows.
  */
 
 import {
@@ -44,6 +52,17 @@ export interface HoldingInterval {
   // (undefined) behaves exactly like a RAW lot — so legacy fixtures that never
   // set it keep their current raw valuation.
   condition?: string | null;
+  // CROSS-SNAPSHOT PARITY (review-blocking): the graded variant the DISPLAY path
+  // priced this lot at, decided over the STABLE current-price snapshot (the same
+  // source statsFromLots/displayPrice read). When set, the chart filters its
+  // history points to THIS exact company+grade+variant instead of re-deriving
+  // the variant from the windowed history rows — otherwise a company+grade whose
+  // VARIANT SET differs between the two snapshots (history: {normal,holofoil};
+  // current: {holofoil}) would let the chart pick `normal` while display picks
+  // `holofoil`. If history has no point for this variant the lot stays an honest
+  // null gap (RULE 2). Undefined → fall back to deriving the variant from the
+  // lot's own filtered series (the legacy/test path, unchanged).
+  gradedVariant?: string | null;
 }
 
 export interface PricePoint {
@@ -114,8 +133,12 @@ export function buildCollectionSeries(
   // an empty filtered series stays an honest null gap. Memoized per
   // (cardId, condition) so N lots of the same card+grade only filter once.
   const lotSeriesCache = new Map<string, PricePoint[]>();
-  function lotSeries(cardId: string, condition: string | null | undefined): PricePoint[] {
-    const key = `${cardId}\u0000${condition ?? ""}`;
+  function lotSeries(
+    cardId: string,
+    condition: string | null | undefined,
+    gradedVariant: string | null | undefined
+  ): PricePoint[] {
+    const key = `${cardId}\u0000${condition ?? ""}\u0000${gradedVariant ?? ""}`;
     const cached = lotSeriesCache.get(key);
     if (cached) return cached;
 
@@ -126,22 +149,38 @@ export function buildCollectionSeries(
       // Graded lot: only this company+grade's graded points, AND only ONE
       // deterministic variant among them. CRITICAL PARITY: the chart and the
       // display/accounting path (pickRealGradedPrice → displayPrice/
-      // statsFromLots) MUST pick the SAME variant, so BOTH route through the ONE
-      // shared selector `pickGradedVariant`. That selector now chooses the
-      // variant from the GRADED MATCHES THEMSELVES (not from the surrounding raw
-      // rows), so the chart (fed windowed PricingHistory) and display (fed the
-      // latest CurrentPrice) agree even though their raw rows differ. No
-      // fabrication: an empty company+grade match returns null → honest gap.
+      // statsFromLots) MUST pick the SAME variant.
+      //
+      // The variant is decided ONCE, over the STABLE current-price snapshot, and
+      // handed in as `gradedVariant` (see HoldingInterval). When present we honor
+      // it verbatim: filter the history points to that exact variant. This is the
+      // review-blocking cross-snapshot fix — a company+grade whose VARIANT SET
+      // differs between the windowed PricingHistory (history: {normal,holofoil})
+      // and the latest CurrentPrice (current: {holofoil}) must still value the
+      // chart at the SAME variant display chose. If history carries no point for
+      // that variant the filtered set is empty → an honest null gap (RULE 2),
+      // NOT a silent re-pick onto some other variant.
+      //
+      // Fallback (gradedVariant undefined — legacy/tests with no current snapshot
+      // threaded): derive the variant from the lot's own rows via the ONE shared
+      // selector `pickGradedVariant`, which picks from the GRADED MATCHES
+      // themselves (not the surrounding raw rows). No fabrication either way:
+      // an empty company+grade match returns [] → honest gap.
       const company = graded.company.toUpperCase();
-      const rowsLike: PriceRowLike[] = all.map((p) => ({
-        type: p.type,
-        company: p.company == null ? p.company : p.company.toUpperCase(),
-        grade: p.grade,
-        variant: p.variant,
-        condition: p.condition,
-        priceMarket: p.price,
-      }));
-      const wantVariant = pickGradedVariant(rowsLike, company, graded.grade);
+      let wantVariant: string | null;
+      if (gradedVariant !== undefined) {
+        wantVariant = gradedVariant;
+      } else {
+        const rowsLike: PriceRowLike[] = all.map((p) => ({
+          type: p.type,
+          company: p.company == null ? p.company : p.company.toUpperCase(),
+          grade: p.grade,
+          variant: p.variant,
+          condition: p.condition,
+          priceMarket: p.price,
+        }));
+        wantVariant = pickGradedVariant(rowsLike, company, graded.grade);
+      }
       const gradeRows = all.filter(
         (p) =>
           (p.type ?? "") === "graded" &&
@@ -200,8 +239,12 @@ export function buildCollectionSeries(
         // Ownership interval: contributes only within [addedAt, soldAt).
         if (t < lot.addedAt) continue;
         if (lot.soldAt != null && t >= lot.soldAt) continue;
-        // Value this lot from the price series matching ITS OWN grade.
-        const price = priceAtOrBefore(lotSeries(lot.cardId, lot.condition), t);
+        // Value this lot from the price series matching ITS OWN grade (and the
+        // variant the display path decided over the stable current snapshot).
+        const price = priceAtOrBefore(
+          lotSeries(lot.cardId, lot.condition, lot.gradedVariant),
+          t
+        );
         if (price == null) continue; // honest gap — no real data to value this lot yet
         total += price * lot.quantity;
         anyContribution = true;

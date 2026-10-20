@@ -26,6 +26,10 @@ const prismaMock = vi.hoisted(() => ({
   cardSet: { upsert: vi.fn() },
   card: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   pricingHistory: { createMany: vi.fn(), findMany: vi.fn() },
+  // buildCollectionHistories reads the latest CurrentPrice graded rows to decide
+  // each graded lot's variant (cross-snapshot parity). The POST add path also
+  // reads currentPrice for the graded add-snapshot. Default to none.
+  currentPrice: { findMany: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -59,6 +63,7 @@ beforeEach(() => {
   prismaMock.card.findFirst.mockResolvedValue(CARD);
   prismaMock.card.update.mockResolvedValue(CARD);
   prismaMock.pricingHistory.createMany.mockResolvedValue({});
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
 });
 
 describe("FEAT-002 B — add under chosen collection then dashboard draws it", () => {

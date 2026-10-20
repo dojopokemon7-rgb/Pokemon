@@ -25,6 +25,11 @@ import {
   type HoldingInterval,
   type PricePoint,
 } from "@/lib/utils/collection-series";
+import {
+  parseGradedCondition,
+  pickGradedVariant,
+  type PriceRowLike,
+} from "@/lib/utils/raw-price";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -122,6 +127,60 @@ export async function buildCollectionHistories(
       continue;
     }
 
+    const cardIds = Array.from(new Set(lots.map((l) => l.cardId)));
+
+    // CROSS-SNAPSHOT PARITY (review-blocking): decide each graded lot's VARIANT
+    // over the STABLE current-price snapshot — the SAME CurrentPrice rows the
+    // display/accounting path (pickRealGradedPrice → displayPrice/statsFromLots)
+    // reads — and thread it onto the holding so the chart filters its windowed
+    // history to that exact variant. Without this, the chart derives the variant
+    // from windowed PricingHistory while display derives it from the latest
+    // CurrentPrice; when a company+grade's VARIANT SET differs between those two
+    // snapshots (history: {normal,holofoil}; current: {holofoil}) the two paths
+    // pick different variants and disagree. Deciding it once here, from current,
+    // keeps them in lockstep. Prisma-only, ZERO credits. If history later lacks a
+    // point for the chosen variant the lot stays an honest null gap (RULE 2).
+    const currentGraded = await prisma.currentPrice.findMany({
+      where: { cardId: { in: cardIds }, type: "graded", priceMarket: { not: null } },
+      select: { cardId: true, company: true, grade: true, variant: true, priceMarket: true },
+    });
+    // Per-card current graded rows → the ONE shared selector picks the variant.
+    const currentGradedByCard = new Map<string, PriceRowLike[]>();
+    for (const r of currentGraded) {
+      const arr = currentGradedByCard.get(r.cardId) ?? [];
+      arr.push({
+        type: "graded",
+        company: r.company == null ? r.company : r.company.toUpperCase(),
+        grade: r.grade,
+        variant: r.variant,
+        priceMarket: r.priceMarket,
+      });
+      currentGradedByCard.set(r.cardId, arr);
+    }
+    // Memoize the variant decision per (cardId, company, grade) — the identical
+    // rule pickRealGradedPrice uses, so chart and display agree by construction.
+    const variantCache = new Map<string, string | null>();
+    function currentGradedVariant(
+      cardId: string,
+      condition: string | null | undefined
+    ): string | null | undefined {
+      const parsed = parseGradedCondition(condition);
+      if (!parsed) return undefined; // raw lot — no graded variant decision
+      const company = parsed.company.toUpperCase();
+      const key = `${cardId}\u0000${company}\u0000${parsed.grade}`;
+      if (variantCache.has(key)) return variantCache.get(key);
+      const rows = currentGradedByCard.get(cardId) ?? [];
+      // pickGradedVariant returns null when current has NO matching graded row.
+      // We keep that null so the chart (filtering to a null variant) yields an
+      // honest gap rather than falling back to a history-derived variant — the
+      // display path returns null here too (and then falls to the coarse
+      // multiplier), so a lot the current snapshot can't price graded does not
+      // get an invented history variant.
+      const v = pickGradedVariant(rows, company, parsed.grade);
+      variantCache.set(key, v);
+      return v;
+    }
+
     const holdings: HoldingInterval[] = lots.map((l) => ({
       collectionId: collId,
       cardId: l.cardId,
@@ -131,9 +190,10 @@ export async function buildCollectionHistories(
       soldAt: l.isSold && l.soldAt ? l.soldAt.getTime() : null,
       // BUG 1 & 8: value this lot from the price series matching its grade.
       condition: l.condition,
+      // Cross-snapshot parity: the variant display priced this lot at (current
+      // snapshot). undefined for a raw lot → chart uses the raw series.
+      gradedVariant: currentGradedVariant(l.cardId, l.condition),
     }));
-
-    const cardIds = Array.from(new Set(lots.map((l) => l.cardId)));
     const rows = await prisma.pricingHistory.findMany({
       where: { cardId: { in: cardIds }, recordedAt: { gte: startDate } },
       orderBy: { recordedAt: "asc" },
