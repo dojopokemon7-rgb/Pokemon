@@ -221,8 +221,10 @@ describe("buildCollectionHistories — QA #6b short-window sparse shaping (ALL/M
   it("a brand-new (~2-day-old) portfolio over ALL yields a SPARSE honest series (anchors + now), not a dense many-point grid", async () => {
     // All lots added ~2 days ago. The old dense 5-year daily grid survived only
     // the handful of grid instants inside that 2-day window — enough (>=3) for
-    // Catmull-Rom to bow into a fake swoosh. The sparse path must instead emit
-    // just the real valuation instants: the two distinct addedAts + now.
+    // Catmull-Rom to bow into a fake swoosh. QA #6b v2: anchoring at each lot's
+    // addedAt instead produced a misleading 0→value RAMP (lots switching on).
+    // The fix values the CURRENT holdings at two instants BOTH after the latest
+    // acquisition → a FLAT line at the current total (value hasn't moved).
     const addedA = new Date(Date.now() - 2 * DAY);
     const addedB = new Date(Date.now() - 1 * DAY);
     prismaMock.userCollection.findMany.mockResolvedValue([
@@ -238,17 +240,16 @@ describe("buildCollectionHistories — QA #6b short-window sparse shaping (ALL/M
     const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
 
     const series = histories["all"];
-    // Anchors: addedA, addedB, now → at most 3 points (a dense grid would be
-    // dozens+). The point is SPARSITY: far fewer than the daily-grid count.
-    expect(series.length).toBeLessThanOrEqual(3);
-    // Still honest real values — never fabricated.
+    // Anchors = [latestAdded (addedB), now] → exactly 2 flat points (a dense
+    // grid would be dozens+). Both value ALL current holdings → 5+7=12, FLAT.
+    expect(series.length).toBe(2);
     const values = series.map((p) => p.value);
-    expect(values.some((v) => v === 0)).toBe(false);
-    // card_1 valued at 5 from addedA on; both valued (5+7=12) by now.
-    expect(values).toContain(12);
+    expect(values.some((v) => v === 0)).toBe(false); // never fabricated 0
+    // Flat honest line: both points at the current total (no 0→value ramp).
+    expect(values.every((v) => v === 12)).toBe(true);
   });
 
-  it("a single-lot brand-new portfolio over ALL yields exactly 2 points (addedAt + now) — a flat honest line, no smoothed area", async () => {
+  it("a single-lot brand-new portfolio over ALL yields exactly 2 points (flat line at current value) — no smoothed area", async () => {
     const added = new Date(Date.now() - 2 * DAY);
     prismaMock.userCollection.findMany.mockResolvedValue([
       { cardId: "card_1", quantity: 2, addedAt: added, soldAt: null, isSold: false },

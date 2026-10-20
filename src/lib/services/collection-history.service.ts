@@ -155,14 +155,24 @@ export async function buildCollectionHistories(
       .filter((t) => Number.isFinite(t));
     const earliestAdded = addedTimes.length ? Math.min(...addedTimes) : nowMs;
     if (isAllRange && earliestAdded >= nowMs - SHORT_WINDOW_DAYS * DAY_MS) {
-      // Anchors = each lot's addedAt clamped into [startMs, nowMs], plus now.
-      // (startMs is 5y back, so the clamp is effectively addedAt here, but kept
-      // for safety against a future-dated/negative addedAt.) Dedup + sort below.
-      const anchors = addedTimes.map((t) => Math.min(Math.max(t, startMs), nowMs));
-      anchors.push(nowMs);
-      anchors.sort((a, b) => a - b);
-      const sparse = anchors.filter((t, i) => i === 0 || t !== anchors[i - 1]);
-      const [series] = buildCollectionSeries(holdings, prices, sparse);
+      // QA #6b (v2) — a portfolio whose lots were ALL added within the last few
+      // days has NO meaningful PRICE history: card prices are static snapshots,
+      // so the only thing that "changed" is cards being ADDED, not prices moving.
+      // Anchoring at each lot's addedAt produced a misleading 0→value RAMP (as
+      // successive lots switched on), reading as "the portfolio grew from zero".
+      // That conflates "added cards" with "price growth" — dishonest (RULE 2).
+      //
+      // Instead value the CURRENT holdings at two instants that are BOTH after
+      // the latest acquisition (so every held lot counts at both) → a FLAT line
+      // at the current total value: the honest truth that the value hasn't moved
+      // over this short window. No value is invented; both points are the real
+      // current valuation. (If a lot has no price at all it stays a null gap and
+      // the chart's >=2-real-points rule falls back to the empty state.)
+      const latestAdded = addedTimes.length ? Math.max(...addedTimes) : nowMs;
+      // Two flat anchors in [latestAdded, now]: the span start (clamped) and now.
+      const flatStart = Math.min(Math.max(latestAdded, startMs), nowMs);
+      const flat = flatStart === nowMs ? [nowMs] : [flatStart, nowMs];
+      const [series] = buildCollectionSeries(holdings, prices, flat);
       histories[collId] = (series?.points ?? []).map((p) => ({
         date: new Date(p.t).toISOString().slice(0, 10),
         value: p.value,
