@@ -215,6 +215,98 @@ describe("buildCollectionHistories — addedAt timeline anchor (A1)", () => {
   });
 });
 
+describe("buildCollectionHistories — QA #6b short-window sparse shaping (ALL/MAX)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("a brand-new (~2-day-old) portfolio over ALL yields a SPARSE honest series (anchors + now), not a dense many-point grid", async () => {
+    // All lots added ~2 days ago. The old dense 5-year daily grid survived only
+    // the handful of grid instants inside that 2-day window — enough (>=3) for
+    // Catmull-Rom to bow into a fake swoosh. The sparse path must instead emit
+    // just the real valuation instants: the two distinct addedAts + now.
+    const addedA = new Date(Date.now() - 2 * DAY);
+    const addedB = new Date(Date.now() - 1 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt: addedA, soldAt: null, isSold: false },
+      { cardId: "card_2", quantity: 1, addedAt: addedB, soldAt: null, isSold: false },
+    ]);
+    // Real prices recorded before each add so carry-forward values them.
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: new Date(addedA.getTime() - DAY), priceMarket: 5 },
+      { cardId: "card_2", recordedAt: new Date(addedB.getTime() - DAY), priceMarket: 7 },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+
+    const series = histories["all"];
+    // Anchors: addedA, addedB, now → at most 3 points (a dense grid would be
+    // dozens+). The point is SPARSITY: far fewer than the daily-grid count.
+    expect(series.length).toBeLessThanOrEqual(3);
+    // Still honest real values — never fabricated.
+    const values = series.map((p) => p.value);
+    expect(values.some((v) => v === 0)).toBe(false);
+    // card_1 valued at 5 from addedA on; both valued (5+7=12) by now.
+    expect(values).toContain(12);
+  });
+
+  it("a single-lot brand-new portfolio over ALL yields exactly 2 points (addedAt + now) — a flat honest line, no smoothed area", async () => {
+    const added = new Date(Date.now() - 2 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 2, addedAt: added, soldAt: null, isSold: false },
+    ]);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: new Date(added.getTime() - DAY), priceMarket: 9 },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+
+    const series = histories["all"];
+    expect(series.length).toBe(2); // addedAt anchor + now → < 3 → no area fill
+    // Flat: both points value the lot at the same carried-forward price (9×2).
+    expect(series.every((p) => p.value === 18)).toBe(true);
+  });
+
+  it("an account with real multi-month history over ALL keeps its FULL dense series (no sparse-path regression)", async () => {
+    // Earliest add is 4 months ago → well outside the 7-day short window → the
+    // dense daily grid (and the genuine multi-month trend) is preserved.
+    const added = new Date(Date.now() - 120 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt: added, soldAt: null, isSold: false },
+    ]);
+    // A couple of real price moves across the window so the series has shape.
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: new Date(added.getTime() + DAY), priceMarket: 10 },
+      { cardId: "card_1", recordedAt: new Date(Date.now() - 2 * DAY), priceMarket: 14 },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    // The dense daily grid over ~120 days yields far more than the 3-point
+    // sparse cap — proving the short-window path did NOT flatten real history.
+    expect(numeric.length).toBeGreaterThan(30);
+    // Honest real values present (no fabricated 0).
+    expect(numeric.some((p) => p.value === 0)).toBe(false);
+    expect(numeric.map((p) => p.value)).toContain(14);
+  });
+
+  it("a brand-new portfolio over a BOUNDED range (1M) is NOT sparse-shaped (gate is ALL/MAX only)", async () => {
+    const added = new Date(Date.now() - 2 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt: added, soldAt: null, isSold: false },
+    ]);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: new Date(added.getTime() - DAY), priceMarket: 6 },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "1M");
+
+    // 1M keeps the existing daily-grid + addedAt-anchor path (unchanged by the
+    // ALL-gated short-window shaping). It still renders >=2 drawable points.
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 // AC-21/AC-22 — the chart's ONLY data source is real stored PricingHistory.
 // Source-level pin: the extracted service must carry NO synthetic chart
 // generator (the removed mulberry32 / RANGE_SHAPES / generateMockChartData
