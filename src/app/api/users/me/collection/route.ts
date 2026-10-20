@@ -101,16 +101,18 @@ export async function GET(request: Request): Promise<NextResponse> {
             // D7: the REAL per-grade prices (populated by the Scrydex enrich).
             // Without them a graded lot's headline price fell back to the coarse
             // gradedPrice() multiplier (= RAW for most cards).
-            // CHART↔DISPLAY PARITY (review-blocking): select the card's FULL
-            // priced CurrentPrice set (raw + graded) WITH `type`/`variant`/
-            // `condition`, not graded-only. displayPrice/statsFromLots now route
-            // through the SAME shared selector (pickGradedFromRows → pickGradedVariant)
-            // the portfolio-value chart uses, and that selector derives the card
-            // DEFAULT variant from the raw rows too (a raw holofoil can make
-            // `holofoil` the graded default). Dropping raw rows or the variant
-            // column would make the tile/summary pick a different variant than the
-            // chart when a company+grade has multiple variants. Keyed by internal
-            // Card.id, bounded by priceMarket not-null + @@index([cardId]).
+            // CHART↔DISPLAY PARITY (review-blocking): select the priced
+            // CurrentPrice rows WITH `type`/`variant`/`grade`/`company` so
+            // displayPrice/statsFromLots route through the SAME shared selector
+            // (pickGradedFromRows → pickGradedVariant) the portfolio-value chart
+            // uses. That selector picks the variant from the GRADED MATCHES
+            // themselves (variant priority), INDEPENDENT of the surrounding raw
+            // rows — so the tile/summary and the chart can't disagree even though
+            // the chart is fed windowed PricingHistory and this is the latest
+            // CurrentPrice. We ship the full priced set (raw + graded); the raw
+            // rows no longer drive the graded variant but are harmless here.
+            // Keyed by internal Card.id, bounded by priceMarket not-null +
+            // @@index([cardId]).
             currentPrices: {
               where: { priceMarket: { not: null } },
               select: { type: true, company: true, grade: true, variant: true, condition: true, priceMarket: true },

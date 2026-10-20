@@ -196,16 +196,16 @@ export function displayPrice(item: DisplayPriceItem): number | null {
  * matched company+grade are exactly what the add flow persisted.
  *
  * CHART↔DISPLAY PARITY (review-blocking): this routes through the ONE shared
- * selector `pickGradedFromRows`, the SAME rule the portfolio-value chart
- * (collection-series.ts via pickGradedVariant) uses. When a company+grade has
+ * selector `pickGradedFromRows` → `pickGradedVariant`, the SAME rule the
+ * portfolio-value chart (collection-series.ts) uses. When a company+grade has
  * several variants (e.g. PSA 9 normal + holofoil), both the tile/summary here
- * and the chart pick the card DEFAULT variant deterministically — never the
- * first row Prisma happens to return — so the displayed value and the chart
- * can't disagree. This requires the caller to pass the card's FULL CurrentPrice
- * set (raw + graded, carrying `type`/`variant`); the collection API now selects
- * that. A graded-only legacy array still works, it just can't see raw-driven
- * defaults. Rows need `type:"graded"` to match (uppercased company compared via
- * a normalized copy so stored lower/upper casing doesn't miss).
+ * and the chart pick the SAME variant — chosen from the GRADED MATCHES
+ * THEMSELVES by variant priority, INDEPENDENT of the surrounding raw rows. That
+ * independence is what guarantees parity: the chart is fed windowed
+ * PricingHistory while this path is fed the latest CurrentPrice, and those two
+ * snapshots carry different raw rows; a raw-driven default would diverge, a
+ * graded-match-driven one cannot. Rows need `type:"graded"` to match (company
+ * uppercased via a normalized copy so stored casing doesn't miss).
  */
 export function pickRealGradedPrice(
   gradedPrices: GradedPriceRow[] | null | undefined,

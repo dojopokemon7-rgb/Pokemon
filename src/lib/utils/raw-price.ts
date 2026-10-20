@@ -132,19 +132,24 @@ export function parseGradedCondition(
  * The ONE graded-variant decision shared by every surface that prices a graded
  * lot from a card's rows: the chart series (collection-series.ts), the display /
  * accounting path (pickRealGradedPrice → displayPrice/statsFromLots), and the
- * add-snapshot (collection route). Given the card's FULL row set (raw + graded)
- * and a company+grade, it returns the variant to price at:
- *   - the card DEFAULT variant (pickDefaultVariant over the FULL rows — a raw
- *     holofoil can make `holofoil` the default even when a graded `normal` row
- *     exists), when that variant HAS a matching graded row;
- *   - else the alphabetically-first graded variant among the company+grade
- *     matches (deterministic — never DB/array order);
- *   - else null when no graded row matches the company+grade at all.
- * CRITICAL PARITY: because the default is derived from the FULL row set, the
- * chart and the displayed value can never disagree on which variant to price —
- * provided both pass the same full row set. Returning the VARIANT (not a price)
- * lets the chart filter its time-series points to it while display picks the
- * single matching price, from one rule.
+ * add-snapshot (collection route). Given a card's rows and a company+grade, it
+ * returns the variant to price at:
+ *   - the GRADED match with the highest-priority variant (VARIANT_PRIORITY via
+ *     `cmpVariant`, then alphabetical) among the company+grade matches;
+ *   - null when no graded row matches the company+grade at all.
+ *
+ * CHART↔DISPLAY PARITY (review-blocking, iteration 5): this selection is
+ * INDEPENDENT of the surrounding raw/other rows. Earlier it delegated to
+ * `pickDefaultVariant(rows)`, which reads the RAW rows to decide the default —
+ * but the chart feeds WINDOWED PricingHistory while display/accounting feed the
+ * latest CurrentPrice set, and those two snapshots carry DIFFERENT raw rows
+ * (PricingHistory accumulates; the Scrydex writer REPLACES CurrentPrice). So a
+ * raw-driven default could pick `holofoil` on the chart and `normal` on the
+ * tiles for the same PSA 9 lot — a real divergence that no single fixture can
+ * expose. Choosing the variant from the GRADED MATCHES THEMSELVES makes the two
+ * paths agree for any company+grade regardless of which raw rows accompany it.
+ * Returning the VARIANT (not a price) lets the chart filter its time-series
+ * points to it while display picks the single matching price, from one rule.
  */
 export function pickGradedVariant(
   rows: PriceRowLike[],
@@ -155,14 +160,12 @@ export function pickGradedVariant(
     (r) => r.type === "graded" && r.company === company && r.grade === grade && r.priceMarket != null
   );
   if (matches.length === 0) return null;
-  const wantVariant = pickDefaultVariant(rows);
-  const hasWant =
-    wantVariant != null && matches.some((r) => (r.variant ?? "normal") === wantVariant);
-  if (hasWant) return wantVariant as string;
-  // Fallback: the alphabetically-first graded variant present for this grade.
+  // Deterministic, raw-independent: the highest-priority variant AMONG the
+  // graded matches (same VARIANT_PRIORITY → alphabetical tie-break the rest of
+  // this module uses). Never DB/array order, never raw-row-driven.
   return [...matches]
     .map((r) => r.variant ?? "normal")
-    .sort((a, b) => a.localeCompare(b))[0];
+    .sort(cmpVariant)[0];
 }
 
 /**
@@ -186,6 +189,6 @@ export function pickGradedFromRows(
   const wantVariant = variant ?? pickGradedVariant(rows, company, grade);
   const chosen =
     matches.find((r) => (r.variant ?? "normal") === wantVariant) ??
-    [...matches].sort((a, b) => (a.variant ?? "normal").localeCompare(b.variant ?? "normal"))[0];
+    [...matches].sort((a, b) => cmpVariant(a.variant ?? "normal", b.variant ?? "normal"))[0];
   return rowPrice(chosen);
 }

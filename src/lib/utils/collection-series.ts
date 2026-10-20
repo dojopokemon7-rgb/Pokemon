@@ -127,13 +127,11 @@ export function buildCollectionSeries(
       // deterministic variant among them. CRITICAL PARITY: the chart and the
       // display/accounting path (pickRealGradedPrice → displayPrice/
       // statsFromLots) MUST pick the SAME variant, so BOTH route through the ONE
-      // shared selector `pickGradedVariant` over the card's FULL row set (`all`,
-      // adapted to PriceRowLike). A raw row can make a non-normal variant the
-      // card default (e.g. a holofoil raw → holofoil default), and the display
-      // side now prices that same PSA 9 holofoil row. Deriving the variant from
-      // graded-only rows (or taking the first match) would diverge from the
-      // tile/summary — the review-blocking parity bug. No fabrication: an empty
-      // company+grade match returns null → honest gap below.
+      // shared selector `pickGradedVariant`. That selector now chooses the
+      // variant from the GRADED MATCHES THEMSELVES (not from the surrounding raw
+      // rows), so the chart (fed windowed PricingHistory) and display (fed the
+      // latest CurrentPrice) agree even though their raw rows differ. No
+      // fabrication: an empty company+grade match returns null → honest gap.
       const company = graded.company.toUpperCase();
       const rowsLike: PriceRowLike[] = all.map((p) => ({
         type: p.type,
