@@ -90,6 +90,68 @@ describe("Sold-per-collection at the series layer (F-#8 FR-5.2)", () => {
   });
 });
 
+describe("BUG 1 & 8 — a lot is valued from the price series matching ITS OWN grade", () => {
+  // One cardId with raw + PSA 9 + PSA 10 + CGC 10 rows at the SAME instant.
+  // Before the fix, carry-forward kept whichever row sorted last, so every lot
+  // of this card took the same (wrong) price. Each lot must now resolve to its
+  // own grade's price, never the mixed/last-sorted value.
+  const prices: PricePoint[] = [
+    { cardId: "c1", at: t0, price: 50, type: "raw", condition: "NM", variant: "normal" },
+    { cardId: "c1", at: t0, price: 500, type: "graded", company: "PSA", grade: "9", variant: "normal" },
+    { cardId: "c1", at: t0, price: 1000, type: "graded", company: "PSA", grade: "10", variant: "normal" },
+    { cardId: "c1", at: t0, price: 900, type: "graded", company: "CGC", grade: "10", variant: "normal" },
+  ];
+
+  const valueAt = (condition: string | null) => {
+    const holdings: HoldingInterval[] = [
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition },
+    ];
+    const [series] = buildCollectionSeries(holdings, prices, [t0]);
+    return series.points[0].value;
+  };
+
+  it("values a PSA 9 lot at the PSA 9 price", () => {
+    expect(valueAt("PSA 9")).toBe(500);
+  });
+
+  it("values a PSA 10 lot at the PSA 10 price", () => {
+    expect(valueAt("PSA 10")).toBe(1000);
+  });
+
+  it("values a CGC 10 lot at the CGC 10 price (not PSA 10, not the last-sorted row)", () => {
+    expect(valueAt("CGC 10")).toBe(900);
+  });
+
+  it("values a raw lot (null condition) at the raw price", () => {
+    expect(valueAt(null)).toBe(50);
+  });
+
+  it("three lots of the one card each take their own grade in a single series total", () => {
+    const holdings: HoldingInterval[] = [
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9" },
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 10" },
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: null },
+    ];
+    const [series] = buildCollectionSeries(holdings, prices, [t0]);
+    // 500 (PSA 9) + 1000 (PSA 10) + 50 (raw) = 1550 — never 3× the same value.
+    expect(series.points[0].value).toBe(1550);
+  });
+
+  it("a graded lot with no matching graded row stays an honest null gap (no raw fallback)", () => {
+    // BGS 10 has no stored row → honest gap, not silently valued at raw/PSA.
+    expect(valueAt("BGS 10")).toBeNull();
+  });
+
+  it("legacy points without type/condition still behave as raw (no regression)", () => {
+    const legacy: PricePoint[] = [{ cardId: "c1", at: t0, price: 42 }];
+    const holdings: HoldingInterval[] = [
+      { collectionId: "A", cardId: "c1", quantity: 2, addedAt: t0, soldAt: null },
+    ];
+    const [series] = buildCollectionSeries(holdings, legacy, [t0]);
+    expect(series.points[0].value).toBe(84); // 42 × 2, raw as before
+  });
+});
+
 describe("isVirtualCollectionId", () => {
   it("recognises the reserved ALL view id", () => {
     expect(isVirtualCollectionId(ALL_VIEW_ID)).toBe(true);

@@ -109,6 +109,11 @@ export async function buildCollectionHistories(
         addedAt: true,
         soldAt: true,
         isSold: true,
+        // BUG 1 & 8: carry each lot's graded condition ("PSA 10", "CGC 9.5") or
+        // raw ("NM"/null) so the series values it from the matching grade's
+        // price points. UserCollection has NO per-lot variant column — per-lot
+        // uniqueness is isFoil+condition — so we thread condition only.
+        condition: true,
       },
     });
 
@@ -124,18 +129,41 @@ export async function buildCollectionHistories(
       addedAt: l.addedAt.getTime(),
       // A sold lot stops contributing at soldAt; an active lot never ends.
       soldAt: l.isSold && l.soldAt ? l.soldAt.getTime() : null,
+      // BUG 1 & 8: value this lot from the price series matching its grade.
+      condition: l.condition,
     }));
 
     const cardIds = Array.from(new Set(lots.map((l) => l.cardId)));
     const rows = await prisma.pricingHistory.findMany({
       where: { cardId: { in: cardIds }, recordedAt: { gte: startDate } },
       orderBy: { recordedAt: "asc" },
-      select: { cardId: true, recordedAt: true, priceMarket: true },
+      // BUG 1 & 8: carry the per-row grade identity (type/company/grade/variant)
+      // so buildCollectionSeries can value each lot from the matching series
+      // instead of whichever row sorts last.
+      select: {
+        cardId: true,
+        recordedAt: true,
+        priceMarket: true,
+        type: true,
+        company: true,
+        grade: true,
+        variant: true,
+        condition: true,
+      },
     });
 
     const prices: PricePoint[] = rows
       .filter((r) => r.priceMarket != null) // never a fabricated 0
-      .map((r) => ({ cardId: r.cardId, at: r.recordedAt.getTime(), price: r.priceMarket as number }));
+      .map((r) => ({
+        cardId: r.cardId,
+        at: r.recordedAt.getTime(),
+        price: r.priceMarket as number,
+        type: r.type,
+        company: r.company,
+        grade: r.grade,
+        variant: r.variant,
+        condition: r.condition,
+      }));
 
     // Daily timeline from the window start to now (inclusive).
     const startMs = startDate.getTime();

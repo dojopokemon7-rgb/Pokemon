@@ -308,6 +308,53 @@ describe("buildCollectionHistories — QA #6b short-window sparse shaping (ALL/M
   });
 });
 
+describe("BUG 1 & 8 — the grade is honored through the real service call path", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("a PSA 9 lot is valued from the PSA 9 rows, not the PSA 10 / CGC 10 / raw rows sharing the cardId", async () => {
+    // Lot added 90 days ago → dense ALL-grid path (NOT the short-window flat
+    // path), so carry-forward over the grade-filtered series is exercised.
+    const addedAt = new Date(Date.now() - 90 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: "PSA 9" },
+    ]);
+    // Same recordedAt, four grades sharing the one cardId. Pre-fix carry-forward
+    // kept whichever sorted last; the PSA 9 lot must take 500.
+    const rec = new Date(Date.now() - 60 * DAY);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: rec, priceMarket: 50, type: "raw", company: null, grade: null, variant: "normal", condition: "NM" },
+      { cardId: "card_1", recordedAt: rec, priceMarket: 500, type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null },
+      { cardId: "card_1", recordedAt: rec, priceMarket: 1000, type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null },
+      { cardId: "card_1", recordedAt: rec, priceMarket: 900, type: "graded", company: "CGC", grade: "10", variant: "normal", condition: null },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    // Every valued point is the PSA 9 price — never PSA 10 / CGC 10 / raw.
+    expect(numeric.every((p) => p.value === 500)).toBe(true);
+    expect(numeric.some((p) => p.value === 1000 || p.value === 900 || p.value === 50)).toBe(false);
+  });
+
+  it("a raw lot of the same card is valued from the raw rows", async () => {
+    const addedAt = new Date(Date.now() - 90 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: null },
+    ]);
+    const rec = new Date(Date.now() - 60 * DAY);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: rec, priceMarket: 50, type: "raw", company: null, grade: null, variant: "normal", condition: "NM" },
+      { cardId: "card_1", recordedAt: rec, priceMarket: 1000, type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    expect(numeric.every((p) => p.value === 50)).toBe(true);
+  });
+});
+
 // AC-21/AC-22 — the chart's ONLY data source is real stored PricingHistory.
 // Source-level pin: the extracted service must carry NO synthetic chart
 // generator (the removed mulberry32 / RANGE_SHAPES / generateMockChartData

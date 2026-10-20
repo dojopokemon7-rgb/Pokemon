@@ -9,7 +9,23 @@
  *     for the card (carry-forward of real data). If no real price exists at/
  *     before t, that card contributes nothing yet — an HONEST gap, never a
  *     fabricated or interpolated value.
+ *   - BUG 1 & 8: a lot is valued from the price series MATCHING ITS OWN GRADE.
+ *     Raw, PSA 9, PSA 10, CGC 10 rows share one cardId (often one recordedAt),
+ *     so carrying forward whichever row sorts last mis-values the lot. Each lot
+ *     carries its `condition`; a GRADED lot (parseGradedCondition matches a
+ *     company+grade) is valued ONLY from that company+grade's graded points, a
+ *     RAW lot ONLY from the best-available raw condition's points — the SAME
+ *     selection statsFromLots/displayPrice use. No fabrication: a lot whose
+ *     matching series is empty stays an honest null gap.
  */
+
+import {
+  parseGradedCondition,
+  isRawRow,
+  pickBestRaw,
+  pickDefaultVariant,
+  type PriceRowLike,
+} from "@/lib/utils/raw-price";
 
 export interface HoldingInterval {
   collectionId: string; // which collection this lot belongs to (the ALL view can pre-group)
@@ -17,12 +33,25 @@ export interface HoldingInterval {
   quantity: number;
   addedAt: number; // epoch ms — ownership start (inclusive)
   soldAt: number | null; // epoch ms — ownership end (exclusive); null = still held
+  // BUG 1 & 8: the lot's stored graded condition ("PSA 10", "CGC 9.5") or raw
+  // ("NM"/null). Drives which per-grade price series values this lot. Omitted
+  // (undefined) behaves exactly like a RAW lot — so legacy fixtures that never
+  // set it keep their current raw valuation.
+  condition?: string | null;
 }
 
 export interface PricePoint {
   cardId: string;
   at: number; // epoch ms
   price: number; // real stored market price (source-native; charts stay source-native)
+  // BUG 1 & 8: the price row's own identity, so a lot can filter to the series
+  // matching its grade. All optional — a point with no `type` is treated as raw
+  // (the established isRawRow semantics), so fixtures that omit these are raw.
+  type?: string | null;
+  company?: string | null;
+  grade?: string | null;
+  variant?: string | null;
+  condition?: string | null; // raw condition (NM/LP/…) for pickBestRaw ranking
 }
 
 export interface SeriesPoint {
@@ -61,14 +90,71 @@ export function buildCollectionSeries(
   prices: PricePoint[],
   timeline: number[]
 ): CollectionSeries[] {
-  // Index prices per card, sorted ascending by time (for carry-forward).
+  // Index prices per card (unsorted — the per-lot grade filter below sorts its
+  // own filtered slice ascending for carry-forward).
   const byCard = new Map<string, PricePoint[]>();
   for (const p of prices) {
     const arr = byCard.get(p.cardId) ?? [];
     arr.push(p);
     byCard.set(p.cardId, arr);
   }
-  for (const arr of byCard.values()) arr.sort((a, b) => a.at - b.at);
+
+  // BUG 1 & 8: build the ascending carry-forward series for ONE lot, filtered
+  // to the price points matching its grade. A GRADED lot keeps only that
+  // company+grade's graded points; a RAW lot keeps only raw points at the best
+  // available condition (NM→LP→MP→HP→DM, the pickBestRaw ranking). The filtered
+  // points are converted to PriceRowLike for the shared raw/graded helpers so
+  // selection is byte-identical to statsFromLots/displayPrice. No fabrication:
+  // an empty filtered series stays an honest null gap. Memoized per
+  // (cardId, condition) so N lots of the same card+grade only filter once.
+  const lotSeriesCache = new Map<string, PricePoint[]>();
+  function lotSeries(cardId: string, condition: string | null | undefined): PricePoint[] {
+    const key = `${cardId}\u0000${condition ?? ""}`;
+    const cached = lotSeriesCache.get(key);
+    if (cached) return cached;
+
+    const all = byCard.get(cardId) ?? [];
+    const graded = parseGradedCondition(condition);
+    let filtered: PricePoint[];
+    if (graded) {
+      // Graded lot: only this company+grade's graded points.
+      const company = graded.company.toUpperCase();
+      filtered = all.filter(
+        (p) =>
+          (p.type ?? "") === "graded" &&
+          (p.company ?? "").toUpperCase() === company &&
+          (p.grade ?? "") === graded.grade
+      );
+    } else {
+      // Raw lot: raw points only, at the best available raw condition. The
+      // shared helpers (pickBestRaw/pickDefaultVariant) read priceMarket, so
+      // adapt each point to a PriceRowLike carrying its grade identity + price.
+      const rawRows: PriceRowLike[] = all
+        .filter((p) => isRawRow(p))
+        .map((p) => ({
+          type: p.type,
+          company: p.company,
+          grade: p.grade,
+          variant: p.variant,
+          condition: p.condition,
+          priceMarket: p.price,
+        }));
+      const best = pickBestRaw(rawRows);
+      // Keep only the raw points matching the winning (condition, variant) so
+      // carry-forward is grade-pure; fall back to the default variant's raw
+      // points when no RAW_CONDITION_ORDER label matched.
+      const variant = best ? best.variant : pickDefaultVariant(rawRows);
+      filtered = all.filter((p) => {
+        if (!isRawRow(p)) return false;
+        if (best && (p.condition ?? "") !== best.condition) return false;
+        if (variant != null && (p.variant ?? "normal") !== variant) return false;
+        return true;
+      });
+    }
+    filtered = [...filtered].sort((a, b) => a.at - b.at);
+    lotSeriesCache.set(key, filtered);
+    return filtered;
+  }
 
   // Group holdings by collection.
   const byCollection = new Map<string, HoldingInterval[]>();
@@ -87,7 +173,8 @@ export function buildCollectionSeries(
         // Ownership interval: contributes only within [addedAt, soldAt).
         if (t < lot.addedAt) continue;
         if (lot.soldAt != null && t >= lot.soldAt) continue;
-        const price = priceAtOrBefore(byCard.get(lot.cardId) ?? [], t);
+        // Value this lot from the price series matching ITS OWN grade.
+        const price = priceAtOrBefore(lotSeries(lot.cardId, lot.condition), t);
         if (price == null) continue; // honest gap — no real data to value this lot yet
         total += price * lot.quantity;
         anyContribution = true;
