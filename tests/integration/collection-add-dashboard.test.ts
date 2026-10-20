@@ -128,3 +128,35 @@ describe("FEAT-003 — collection read exposes stored 7-day change", () => {
     expect(sel.weeklyChangePct).toBe(true);
   });
 });
+
+describe("D7 — collection read exposes REAL per-grade prices as card.gradedPrices", () => {
+  it("selects graded CurrentPrice rows (type:'graded', priceMarket not-null) keyed by internal cardId", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
+    await collectionGET(new Request("http://localhost/api/users/me/collection"));
+    const cp = prismaMock.userCollection.findMany.mock.calls[0][0].select.card.select.currentPrices;
+    expect(cp).toBeTruthy();
+    expect(cp.where).toEqual({ type: "graded", priceMarket: { not: null } });
+    expect(cp.select).toEqual({ company: true, grade: true, priceMarket: true });
+  });
+
+  it("returns the graded rows under card.gradedPrices (never leaking the Prisma relation name)", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([
+      {
+        id: "uc_1",
+        cardId: "card_1",
+        quantity: 1,
+        condition: "PSA 10",
+        card: {
+          id: "card_1",
+          externalId: "base1-4",
+          marketPrice: 100,
+          currentPrices: [{ company: "PSA", grade: "10", priceMarket: 777 }],
+        },
+      },
+    ]);
+    const res = await collectionGET(new Request("http://localhost/api/users/me/collection"));
+    const body = await res.json();
+    expect(body.items[0].card.gradedPrices).toEqual([{ company: "PSA", grade: "10", priceMarket: 777 }]);
+    expect(body.items[0].card.currentPrices).toBeUndefined();
+  });
+});

@@ -56,6 +56,10 @@ export interface CollectionItem {
      *  pull runs → the row's delta renders "—" (never fabricated). */
     weeklyChangePct?: number | null;
     set: { name: string } | null;
+    /** D7: REAL per-grade prices (server payload `card.gradedPrices`) so the
+     *  summary values a graded lot at its real stored graded price (same
+     *  resolution the portfolio page uses), not the coarse multiplier. */
+    gradedPrices?: { company: string | null; grade: string | null; priceMarket: number | null }[];
   };
 }
 
@@ -501,6 +505,7 @@ export default function DashboardClient({
           purchasePrice: i.purchasePrice,
           marketPrice: i.card.marketPrice,
           condition: i.condition,
+          gradedPrices: i.card.gradedPrices,
           isSold: i.isSold,
           soldPrice: i.soldPrice,
         }))
@@ -604,6 +609,7 @@ export default function DashboardClient({
         purchasePrice: i.purchasePrice,
         marketPrice: i.card.marketPrice,
         condition: i.condition,
+        gradedPrices: i.card.gradedPrices,
         isSold: i.isSold,
         soldPrice: i.soldPrice,
       }))

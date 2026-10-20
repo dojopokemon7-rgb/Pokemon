@@ -24,7 +24,7 @@ import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
 import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
 import { statsFromLots, isSellQtyValid } from "@/lib/utils/portfolio-accounting";
-import { gradedPrice, isGraded, parseGrade, displayPrice } from "@/lib/utils/graded-price";
+import { isGraded, displayPrice } from "@/lib/utils/graded-price";
 
 // ── Real collection item shape ──
 export interface CollectionItem {
@@ -49,6 +49,10 @@ export interface CollectionItem {
     imageUrl: string | null;
     marketPrice: number | null;
     set: { name: string } | null;
+    // D7: REAL per-grade prices (server payload `card.gradedPrices`). Used by
+    // displayPrice/GainLossTag/statsFromLots to value a graded lot at its real
+    // stored graded price instead of the coarse multiplier fallback.
+    gradedPrices?: { company: string | null; grade: string | null; priceMarket: number | null }[];
   };
 }
 
@@ -129,12 +133,12 @@ function GainLossTag({ item }: { item: CollectionItem }) {
       </span>
     );
   }
-  if (item.card.marketPrice == null) return null;
-  // BUG-1: graded holdings compare against their GRADED market price, not raw
-  // (same resolution as the portfolio summary via statsFromLots).
-  const marketPerCopy = isGraded(item.condition)
-    ? gradedPrice(item.card.marketPrice, parseGrade(item.condition as string))
-    : item.card.marketPrice;
+  // BUG-1 / D7: graded holdings compare against their GRADED market price (the
+  // REAL stored one when available, else the coarse multiplier) — the SAME
+  // resolution displayPrice + statsFromLots use, so tile, gain %, and summary
+  // never disagree. displayPrice returns the resolved per-copy market value.
+  const marketPerCopy = displayPrice(item);
+  if (marketPerCopy == null) return null;
   const diff = marketPerCopy - item.purchasePrice;
   const pct = item.purchasePrice > 0 ? (diff / item.purchasePrice) * 100 : 0;
   const up = diff >= 0;
@@ -145,15 +149,9 @@ function GainLossTag({ item }: { item: CollectionItem }) {
   );
 }
 
-/**
- * Headline price shown on a tile/row.
- *
- * BUG D7: the displayed per-copy price for an owned row is resolved by the
- * shared `displayPrice` helper in @/lib/utils/graded-price (moved there so it
- * is unit-testable AND not a forbidden non-default export from this Next.js
- * page module). A graded lot shows its GRADED market price, matching the gain
- * tag + summary; see that helper for the full contract.
- */
+// Headline tile/row price (QA D7) now lives in @/lib/utils/graded-price as the
+// pure, unit-tested `displayPrice` — a client-component page module can't be
+// cleanly imported into a plain unit test, so the resolver was lifted out.
 
 /** Sub-line like "Obsidian Flames · PSA 10" / "Base Set · Raw · Foil". */
 function subLine(item: CollectionItem): string {
@@ -868,6 +866,7 @@ export default function PortfolioPage() {
           purchasePrice: i.purchasePrice,
           marketPrice: i.card.marketPrice,
           condition: i.condition,
+          gradedPrices: i.card.gradedPrices,
           isSold: i.isSold,
           soldPrice: i.soldPrice,
         }))

@@ -180,6 +180,37 @@ describe("statsFromLots graded resolution (BUG-1)", () => {
     expect(s.unrealized).toBe(300); // (250 − 100) × 2
   });
 
+  it("D7: a graded lot with a MATCHING real graded price values at THAT price, not the multiplier", () => {
+    // Real stored PSA 10 price $777 — distinct from raw $100 and from the coarse
+    // fallback 100 × 2.5 = 250. The real stored row MUST win (RULE 2 honesty).
+    const s = statsFromLots([
+      {
+        quantity: 2,
+        purchasePrice: 100,
+        marketPrice: 100,
+        condition: "PSA 10",
+        isSold: false,
+        gradedPrices: [{ company: "PSA", grade: "10", priceMarket: 777 }],
+      },
+    ]);
+    expect(s.marketValue).toBe(1554); // 777 × 2, NOT 250 × 2 (multiplier) nor 100 × 2 (raw)
+    expect(s.unrealized).toBe(1354); // (777 − 100) × 2
+  });
+
+  it("D7: a graded lot whose real rows DON'T match the grade falls back to the multiplier", () => {
+    const s = statsFromLots([
+      {
+        quantity: 1,
+        purchasePrice: 100,
+        marketPrice: 100,
+        condition: "PSA 10",
+        isSold: false,
+        gradedPrices: [{ company: "PSA", grade: "9", priceMarket: 300 }], // wrong grade
+      },
+    ]);
+    expect(s.marketValue).toBe(250); // 100 × 2.5 fallback
+  });
+
   it("a raw (ungraded) lot is unchanged — no graded resolution applied", () => {
     const s = statsFromLots([
       { quantity: 2, purchasePrice: 10, marketPrice: 25, condition: "Near Mint", isSold: false },

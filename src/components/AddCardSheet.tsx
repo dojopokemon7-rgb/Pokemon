@@ -364,14 +364,60 @@ export function AddCardSheet({
           />
         </div>
 
-        {/* COLLECTION + QTY */}
-        <div style={{ display: "flex", gap: "12px", marginBottom: "18px" }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
-              <span style={label}>Collection</span>
-              {/* QA D6b — reveal an inline name input to create + file into a
-                  brand-new collection without leaving the add sheet. */}
-              {!creatingCollection && (
+        {/* COLLECTION + QTY
+            QA D6b: while creating a new collection the row is a SINGLE
+            full-width block (Qty hidden) so the name input gets the whole
+            sheet width minus the Create/Cancel buttons — previously it shared
+            the narrow collection column beside the Qty stepper and collapsed to
+            near-zero width (unusable on both the mobile sheet and desktop
+            modal). Not creating → the normal two-column COLLECTION + QTY row. */}
+        {creatingCollection ? (
+          <div style={{ marginBottom: "18px" }}>
+            <div style={{ ...label, marginBottom: "8px" }}>Collection</div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input
+                type="text"
+                autoFocus
+                maxLength={100}
+                placeholder="Collection name"
+                aria-label="New collection name"
+                value={newCollectionName}
+                onChange={(e) => setNewCollectionName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !creatingBusy) handleCreateCollection(); }}
+                className="dojo-input"
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              <button
+                type="button"
+                aria-label="Create collection"
+                onClick={handleCreateCollection}
+                disabled={creatingBusy}
+                className="dojo-btn dojo-btn-primary"
+                style={{ flex: "none", padding: "0 14px" }}
+              >
+                {creatingBusy ? "…" : "Create"}
+              </button>
+              <button
+                type="button"
+                aria-label="Cancel new collection"
+                onClick={() => { setCreatingCollection(false); setNewCollectionName(""); setCollectionErr(null); }}
+                disabled={creatingBusy}
+                style={{ flex: "none", background: "none", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-body)", cursor: "pointer", padding: "0 12px" }}
+              >
+                Cancel
+              </button>
+            </div>
+            {collectionErr && (
+              <p role="alert" className="dojo-error" style={{ margin: "8px 0 0", fontSize: "11px" }}>{collectionErr}</p>
+            )}
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: "12px", marginBottom: "18px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", marginBottom: "8px" }}>
+                <span style={label}>Collection</span>
+                {/* QA D6b — reveal an inline name input to create + file into a
+                    brand-new collection without leaving the add sheet. */}
                 <button
                   type="button"
                   onClick={() => { setCollectionErr(null); setCreatingCollection(true); }}
@@ -379,43 +425,7 @@ export function AddCardSheet({
                 >
                   + New
                 </button>
-              )}
-            </div>
-            {creatingCollection ? (
-              <div style={{ display: "flex", gap: "8px" }}>
-                <input
-                  type="text"
-                  autoFocus
-                  maxLength={100}
-                  placeholder="Collection name"
-                  aria-label="New collection name"
-                  value={newCollectionName}
-                  onChange={(e) => setNewCollectionName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !creatingBusy) handleCreateCollection(); }}
-                  className="dojo-input"
-                  style={{ flex: 1, minWidth: 0 }}
-                />
-                <button
-                  type="button"
-                  aria-label="Create collection"
-                  onClick={handleCreateCollection}
-                  disabled={creatingBusy}
-                  className="dojo-btn dojo-btn-primary"
-                  style={{ flex: "none", padding: "0 14px" }}
-                >
-                  {creatingBusy ? "…" : "Create"}
-                </button>
-                <button
-                  type="button"
-                  aria-label="Cancel new collection"
-                  onClick={() => { setCreatingCollection(false); setNewCollectionName(""); setCollectionErr(null); }}
-                  disabled={creatingBusy}
-                  style={{ flex: "none", background: "none", border: "1px solid var(--color-dojo-stroke)", color: "var(--color-dojo-body)", cursor: "pointer", padding: "0 12px" }}
-                >
-                  Cancel
-                </button>
               </div>
-            ) : (
               <DojoSelect
                 ariaLabel="Collection"
                 testId="collection-select"
@@ -431,22 +441,22 @@ export function AddCardSheet({
                 ]}
                 onChange={setCollectionId}
               />
-            )}
-            {collectionErr && (
-              <p role="alert" className="dojo-error" style={{ margin: "8px 0 0", fontSize: "11px" }}>{collectionErr}</p>
-            )}
-          </div>
-          <div style={{ flex: "none" }}>
-            <div style={{ ...label, marginBottom: "8px" }}>Qty</div>
-            <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--color-dojo-stroke)" }}>
-              <button type="button" aria-label="Decrease quantity" onClick={() => setQty((q) => Math.max(1, q - 1))}
-                style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>−</button>
-              <div style={{ width: "34px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "14px", color: "var(--color-dojo-ink)" }}>{qty}</div>
-              <button type="button" aria-label="Increase quantity" onClick={() => setQty((q) => Math.min(MAX_QTY, q + 1))}
-                style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>+</button>
+              {collectionErr && (
+                <p role="alert" className="dojo-error" style={{ margin: "8px 0 0", fontSize: "11px" }}>{collectionErr}</p>
+              )}
+            </div>
+            <div style={{ flex: "none" }}>
+              <div style={{ ...label, marginBottom: "8px" }}>Qty</div>
+              <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--color-dojo-stroke)" }}>
+                <button type="button" aria-label="Decrease quantity" onClick={() => setQty((q) => Math.max(1, q - 1))}
+                  style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>−</button>
+                <div style={{ width: "34px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "14px", color: "var(--color-dojo-ink)" }}>{qty}</div>
+                <button type="button" aria-label="Increase quantity" onClick={() => setQty((q) => Math.min(MAX_QTY, q + 1))}
+                  style={{ width: "34px", height: "38px", border: "none", background: "transparent", color: "var(--color-dojo-ink)", cursor: "pointer", fontSize: "16px" }}>+</button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* RECORD PAYMENT (optional) */}
         <div style={{ display: "flex", alignItems: "center", marginBottom: showPayment ? "8px" : "20px" }}>

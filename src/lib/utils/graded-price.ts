@@ -12,6 +12,8 @@
  * TODO: Replace fallback with live graded pricing API (e.g. PriceCharting).
  */
 
+import { parseGradedCondition } from "./raw-price";
+
 interface GradedEntry {
   name: string;
   set: string;
@@ -119,6 +121,86 @@ export function gradedPrice(rawMarketPrice: number, grade: string | number): num
 }
 
 // ---------------------------------------------------------------------------
+// Headline display price (QA D7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal shape needed to resolve a tile/row headline price. Structural so
+ * the portfolio's richer CollectionItem satisfies it without a cast, while the
+ * resolver stays a pure, unit-testable util (not trapped inside a client
+ * component module).
+ */
+export interface GradedPriceRow {
+  company: string | null;
+  grade: string | null;
+  priceMarket: number | null;
+}
+
+export interface DisplayPriceItem {
+  isSold?: boolean;
+  soldPrice?: number | null;
+  condition?: string | null;
+  card: {
+    marketPrice: number | null;
+    /** REAL per-grade prices for this card (type:'graded' CurrentPrice rows).
+     *  When a graded lot's company+grade matches one here, THAT real price is
+     *  used; absent, we fall back to the coarse gradedPrice() multiplier. */
+    gradedPrices?: GradedPriceRow[] | null;
+  };
+}
+
+/**
+ * Headline price shown on a tile/row.
+ *
+ * BUG D7: an ACTIVE graded lot must display its GRADED market price, not the
+ * raw `card.marketPrice`, so a PSA 10 copy and a Raw copy of the same card no
+ * longer render the same number. This applies the SAME graded resolution the
+ * gain tag and the summary (statsFromLots) already use, so the tile price, the
+ * gain %, and the summary can never disagree.
+ *   - sold row → soldPrice (actual recorded gross; UNCHANGED).
+ *   - active + graded → gradedPrice(raw, grade).
+ *   - active + raw → raw market price.
+ * Null marketPrice stays null → UI renders "—" (never a fabricated 0).
+ */
+export function displayPrice(item: DisplayPriceItem): number | null {
+  if (item.isSold) return item.soldPrice ?? null;
+  if (!isGraded(item.condition)) {
+    // Raw lot → raw market price (null stays null → "—").
+    return item.card.marketPrice;
+  }
+  // Graded lot: prefer a REAL stored graded price for this company+grade
+  // (never fabricated). Only when none matches do we fall back to the coarse
+  // gradedPrice() multiplier over the raw market price.
+  const real = pickRealGradedPrice(item.card.gradedPrices, item.condition);
+  if (real != null) return real;
+  if (item.card.marketPrice == null) return null;
+  return gradedPrice(item.card.marketPrice, parseGrade(item.condition as string));
+}
+
+/**
+ * The REAL stored graded price for a lot's condition ("PSA 10") from the card's
+ * graded CurrentPrice rows — company+grade must match and priceMarket be
+ * non-null. Returns null when no row matches (caller falls back). Reuses
+ * `parseGradedCondition` (same parser the collection/graded routes use) so the
+ * matched company+grade are exactly what the add flow persisted.
+ */
+export function pickRealGradedPrice(
+  gradedPrices: GradedPriceRow[] | null | undefined,
+  condition: string | null | undefined
+): number | null {
+  if (!gradedPrices || gradedPrices.length === 0) return null;
+  const parsed = parseGradedCondition(condition);
+  if (!parsed) return null;
+  const match = gradedPrices.find(
+    (r) =>
+      (r.company ?? "").toUpperCase() === parsed.company &&
+      r.grade === parsed.grade &&
+      r.priceMarket != null
+  );
+  return match?.priceMarket ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Resilient resolver (F-17 Step 9)
 // ---------------------------------------------------------------------------
 
@@ -180,35 +262,4 @@ export function resolveGradedPrice(input: ResolveGradedPriceInput): ResolvedGrad
   return { price: fallbackPrice, isStale, isFallback: true };
 }
 
-// ---------------------------------------------------------------------------
-// Portfolio display price (QA D7)
-// ---------------------------------------------------------------------------
 
-/** Minimal structural shape `displayPrice` needs — any CollectionItem-like
- *  row satisfies it, so this helper lives in utils (unit-testable, and NOT a
- *  forbidden export from a Next.js page module). */
-export interface DisplayPriceItem {
-  isSold?: boolean;
-  soldPrice?: number | null;
-  condition?: string | null;
-  card: { marketPrice: number | null };
-}
-
-/**
- * BUG D7: an ACTIVE graded lot must display its GRADED market price, not the
- * raw `card.marketPrice`, so a PSA 10 copy and a Raw copy of the same card no
- * longer render the same number. This applies the SAME graded resolution the
- * gain tag (GainLossTag) and the summary (statsFromLots) already use, so the
- * tile price, the gain %, and the summary can never disagree.
- *   - sold row → soldPrice (actual recorded gross; UNCHANGED).
- *   - active + graded → gradedPrice(raw, grade).
- *   - active + raw → raw market price.
- * Null marketPrice stays null → UI renders "—" (never a fabricated 0).
- */
-export function displayPrice(item: DisplayPriceItem): number | null {
-  if (item.isSold) return item.soldPrice ?? null;
-  if (item.card.marketPrice == null) return null;
-  return isGraded(item.condition)
-    ? gradedPrice(item.card.marketPrice, parseGrade(item.condition as string))
-    : item.card.marketPrice;
-}

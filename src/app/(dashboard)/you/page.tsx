@@ -38,7 +38,12 @@ interface CollectionItem {
   purchasePrice: number | null;
   isSold?: boolean;
   soldPrice?: number | null;
-  card: { marketPrice: number | null };
+  card: {
+    marketPrice: number | null;
+    /** D7: REAL per-grade prices so Paid/Value value graded lots at their real
+     *  stored graded price (same resolution as portfolio), not the multiplier. */
+    gradedPrices?: { company: string | null; grade: string | null; priceMarket: number | null }[];
+  };
 }
 
 // ── Icons ──────────────────────────────────────────────────────────
@@ -138,6 +143,7 @@ export default function YouAccountPage() {
         purchasePrice: r.purchasePrice,
         marketPrice: r.card.marketPrice,
         condition: r.condition,
+        gradedPrices: r.card.gradedPrices,
         isSold: r.isSold,
         soldPrice: r.soldPrice,
       }))

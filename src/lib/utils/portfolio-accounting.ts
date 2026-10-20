@@ -18,7 +18,7 @@
  * but that is a latent/out-of-scope concern, not a behavior of this engine.
  */
 
-import { gradedPrice, isGraded, parseGrade } from "./graded-price";
+import { gradedPrice, isGraded, parseGrade, pickRealGradedPrice, type GradedPriceRow } from "./graded-price";
 
 export type PnL =
   | { status: "resolved"; value: number }
@@ -163,6 +163,10 @@ export interface RawLot {
    *  value is resolved via the graded price (same helper the card-detail /
    *  add-sheet use) instead of the raw aggregate `marketPrice`. */
   condition?: string | null;
+  /** D7: REAL per-grade prices for this lot's card. When a graded lot's
+   *  company+grade matches a row here, that real stored price values the lot;
+   *  absent, we fall back to the coarse gradedPrice() multiplier below. */
+  gradedPrices?: GradedPriceRow[] | null;
 }
 
 /**
@@ -181,15 +185,21 @@ export function statsFromLots(lots: readonly RawLot[]): PortfolioStats {
       const grossPerCopy = lot.quantity > 0 ? (lot.soldPrice ?? 0) / lot.quantity : 0;
       sold.push({ qty: lot.quantity, grossPerCopy, basisPerCopy: lot.purchasePrice });
     } else {
-      // BUG-1 fix: graded holdings are worth their GRADED price, not the raw
-      // aggregate `marketPrice`. Resolve per-copy market with the SAME helper
-      // the card-detail / add-sheet use (curated lookup, else coarse per-grade
-      // multiplier). Raw lots (no condition / non-graded) keep `marketPrice`
-      // untouched, so existing behavior is unchanged.
-      const marketPerCopy =
-        lot.marketPrice != null && isGraded(lot.condition)
-          ? gradedPrice(lot.marketPrice, parseGrade(lot.condition as string))
-          : lot.marketPrice;
+      // BUG-1 / D7: graded holdings are worth their GRADED price, not the raw
+      // aggregate `marketPrice`. Prefer the REAL stored graded price (matching
+      // company+grade in `gradedPrices`); only when none matches fall back to
+      // the coarse gradedPrice() multiplier. Raw lots (no condition /
+      // non-graded) keep `marketPrice` untouched — existing behavior unchanged.
+      let marketPerCopy = lot.marketPrice;
+      if (isGraded(lot.condition)) {
+        const real = pickRealGradedPrice(lot.gradedPrices, lot.condition);
+        marketPerCopy =
+          real != null
+            ? real
+            : lot.marketPrice != null
+              ? gradedPrice(lot.marketPrice, parseGrade(lot.condition as string))
+              : null;
+      }
       active.push({
         qty: lot.quantity,
         marketPerCopy,

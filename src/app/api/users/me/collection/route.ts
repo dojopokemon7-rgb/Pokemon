@@ -98,15 +98,32 @@ export async function GET(request: Request): Promise<NextResponse> {
             // REAL 7-day $ change (same source); drives the portfolio 7-day sort.
             weeklyChangeAbs: true,
             set: { select: { id: true, name: true } },
+            // D7: the REAL per-grade prices (populated by the Scrydex enrich).
+            // Without them a graded lot's headline price fell back to the coarse
+            // gradedPrice() multiplier (= RAW for most cards). Mirrors the
+            // enrich/history select; keyed by internal Card.id, bounded by
+            // type:'graded' + priceMarket not-null + @@index([cardId]).
+            currentPrices: {
+              where: { type: "graded", priceMarket: { not: null } },
+              select: { company: true, grade: true, priceMarket: true },
+            },
           },
         },
       },
     });
 
-    // Best-effort cache fill on a miss (helper swallows Redis errors).
-    await cacheSetJson(cacheKey, { items }, CACHE_TTL.userCollection);
+    // Expose the graded rows under `card.gradedPrices` (the client payload
+    // shape) without leaking the Prisma relation name. A raw/ungraded card has
+    // an empty array → displayPrice falls back exactly as before.
+    const shaped = items.map((it) => {
+      const { currentPrices, ...card } = it.card;
+      return { ...it, card: { ...card, gradedPrices: currentPrices } };
+    });
 
-    return NextResponse.json({ items }, { status: 200 });
+    // Best-effort cache fill on a miss (helper swallows Redis errors).
+    await cacheSetJson(cacheKey, { items: shaped }, CACHE_TTL.userCollection);
+
+    return NextResponse.json({ items: shaped }, { status: 200 });
   } catch (error) {
     console.error("[api/users/me/collection] Error fetching collection:", error);
     return NextResponse.json(
