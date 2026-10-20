@@ -27,7 +27,7 @@ import {
 } from "@/lib/utils/collection-series";
 import {
   parseGradedCondition,
-  pickGradedVariant,
+  pickGradedRow,
   type PriceRowLike,
 } from "@/lib/utils/raw-price";
 
@@ -109,17 +109,96 @@ export async function buildCollectionHistories(
 
     const cardIds = Array.from(new Set(lots.map((l) => l.cardId)));
 
-    // CROSS-SNAPSHOT PARITY (review-blocking): decide each graded lot's VARIANT
-    // over the STABLE current-price snapshot — the SAME CurrentPrice rows the
-    // display/accounting path (pickRealGradedPrice → displayPrice/statsFromLots)
-    // reads — and thread it onto the holding so the chart filters its windowed
-    // history to that exact variant. Without this, the chart derives the variant
-    // from windowed PricingHistory while display derives it from the latest
-    // CurrentPrice; when a company+grade's VARIANT SET differs between those two
-    // snapshots (history: {normal,holofoil}; current: {holofoil}) the two paths
-    // pick different variants and disagree. Deciding it once here, from current,
-    // keeps them in lockstep. Prisma-only, ZERO credits. If history later lacks a
-    // point for the chosen variant the lot stays an honest null gap (RULE 2).
+    // ---- Price reads (Prisma-only, ZERO credits) -------------------------
+    // Field selection shared by the windowed read and the bounded-window seed.
+    const PRICE_SELECT = {
+      cardId: true,
+      recordedAt: true,
+      priceMarket: true,
+      type: true,
+      company: true,
+      grade: true,
+      variant: true,
+      condition: true,
+    } as const;
+
+    // (1) Windowed history inside [startDate, now] — the chart's real points.
+    // (2) BOUNDED-WINDOW SEED (C): the last real point AT-OR-BEFORE startDate
+    //     per lot-identity. The display path values a lot from the UNBOUNDED
+    //     latest CurrentPrice, but the chart is windowed — so a lot whose last
+    //     matching PricingHistory point predates the window would be an all-null
+    //     gap on the chart even though display can price it. Prepending the most
+    //     recent pre-window point per (cardId, type, company, grade, variant)
+    //     gives per-lot carry-forward a real anchor at the window start, so a
+    //     display-valued lot is drawable. No value invented — these are REAL
+    //     stored rows; we only widen the carry-forward anchor, not the range.
+    //     ponytail: if lot/card counts grow large, bound this read with a
+    //     per-card `take` — the dedup below already collapses to one row/identity.
+    const [windowRows, seedRowsRaw] = await Promise.all([
+      prisma.pricingHistory.findMany({
+        where: { cardId: { in: cardIds }, recordedAt: { gte: startDate } },
+        orderBy: { recordedAt: "asc" },
+        // BUG 1 & 8: carry the per-row grade identity so buildCollectionSeries
+        // values each lot from the matching series, not whichever row sorts last.
+        select: PRICE_SELECT,
+      }),
+      prisma.pricingHistory.findMany({
+        where: { cardId: { in: cardIds }, recordedAt: { lt: startDate } },
+        orderBy: { recordedAt: "desc" },
+        select: PRICE_SELECT,
+      }),
+    ]);
+
+    // Reduce the pre-window rows to the LATEST row per identity (desc order →
+    // first seen per key wins). These seed the carry-forward at the window edge.
+    const seenSeedKey = new Set<string>();
+    const seedRows = seedRowsRaw.filter((r) => {
+      const key = `${r.cardId}\u0000${r.type ?? ""}\u0000${r.company ?? ""}\u0000${r.grade ?? ""}\u0000${r.variant ?? ""}`;
+      if (seenSeedKey.has(key)) return false;
+      seenSeedKey.add(key);
+      return true;
+    });
+
+    const prices: PricePoint[] = [...seedRows, ...windowRows]
+      .filter((r) => r.priceMarket != null) // never a fabricated 0
+      .map((r) => ({
+        cardId: r.cardId,
+        at: r.recordedAt.getTime(),
+        price: r.priceMarket as number,
+        type: r.type,
+        company: r.company,
+        grade: r.grade,
+        variant: r.variant,
+        condition: r.condition,
+      }));
+
+    // Per-card graded history rows (windowed + seed) → the historical-fallback
+    // source for a lot whose company+grade the CURRENT snapshot can't price.
+    const historyGradedByCard = new Map<string, PriceRowLike[]>();
+    for (const p of prices) {
+      if ((p.type ?? "") !== "graded") continue;
+      const arr = historyGradedByCard.get(p.cardId) ?? [];
+      arr.push({
+        type: "graded",
+        company: p.company == null ? p.company : p.company.toUpperCase(),
+        grade: p.grade,
+        variant: p.variant,
+        condition: p.condition,
+        priceMarket: p.price,
+      });
+      historyGradedByCard.set(p.cardId, arr);
+    }
+
+    // SINGLE SOURCE OF TRUTH for per-lot (grade, variant) (C): decide each graded
+    // lot's identity over the STABLE current-price snapshot FIRST — the SAME
+    // CurrentPrice rows the display/accounting path (pickRealGradedPrice →
+    // displayPrice/statsFromLots) reads — so the chart and the tiles/summary pick
+    // the same variant even when the windowed PricingHistory and the latest
+    // CurrentPrice carry DIFFERENT variant sets for one company+grade. When the
+    // current snapshot has NO matching company+grade row (missing-current-grade),
+    // fall back to the most-recent REAL graded PricingHistory row for that
+    // company+grade and use ITS actual variant — never an invented `normal`/``
+    // (RULE 2). When BOTH are empty the variant stays null → honest null gap.
     const currentGraded = await prisma.currentPrice.findMany({
       where: { cardId: { in: cardIds }, type: "graded", priceMarket: { not: null } },
       select: { cardId: true, company: true, grade: true, variant: true, priceMarket: true },
@@ -140,7 +219,7 @@ export async function buildCollectionHistories(
     // Memoize the variant decision per (cardId, company, grade) — the identical
     // rule pickRealGradedPrice uses, so chart and display agree by construction.
     const variantCache = new Map<string, string | null>();
-    function currentGradedVariant(
+    function resolveGradedVariant(
       cardId: string,
       condition: string | null | undefined
     ): string | null | undefined {
@@ -149,14 +228,18 @@ export async function buildCollectionHistories(
       const company = parsed.company.toUpperCase();
       const key = `${cardId}\u0000${company}\u0000${parsed.grade}`;
       if (variantCache.has(key)) return variantCache.get(key);
-      const rows = currentGradedByCard.get(cardId) ?? [];
-      // pickGradedVariant returns null when current has NO matching graded row.
-      // We keep that null so the chart (filtering to a null variant) yields an
-      // honest gap rather than falling back to a history-derived variant — the
-      // display path returns null here too (and then falls to the coarse
-      // multiplier), so a lot the current snapshot can't price graded does not
-      // get an invented history variant.
-      const v = pickGradedVariant(rows, company, parsed.grade);
+      // Current snapshot first (keeps chart↔display parity by construction).
+      const currentPick = pickGradedRow(
+        currentGradedByCard.get(cardId) ?? [],
+        company,
+        parsed.grade
+      );
+      // Missing-current-grade fallback: the most-recent REAL graded history row
+      // for this company+grade, preserving ITS actual variant (never invented).
+      const pick =
+        currentPick ??
+        pickGradedRow(historyGradedByCard.get(cardId) ?? [], company, parsed.grade);
+      const v = pick?.variant ?? null;
       variantCache.set(key, v);
       return v;
     }
@@ -170,40 +253,11 @@ export async function buildCollectionHistories(
       soldAt: l.isSold && l.soldAt ? l.soldAt.getTime() : null,
       // BUG 1 & 8: value this lot from the price series matching its grade.
       condition: l.condition,
-      // Cross-snapshot parity: the variant display priced this lot at (current
-      // snapshot). undefined for a raw lot → chart uses the raw series.
-      gradedVariant: currentGradedVariant(l.cardId, l.condition),
+      // SINGLE SOURCE OF TRUTH (C): the variant display priced this lot at
+      // (current snapshot), else the historical-fallback row's real variant.
+      // undefined for a raw lot → chart uses the raw series.
+      gradedVariant: resolveGradedVariant(l.cardId, l.condition),
     }));
-    const rows = await prisma.pricingHistory.findMany({
-      where: { cardId: { in: cardIds }, recordedAt: { gte: startDate } },
-      orderBy: { recordedAt: "asc" },
-      // BUG 1 & 8: carry the per-row grade identity (type/company/grade/variant)
-      // so buildCollectionSeries can value each lot from the matching series
-      // instead of whichever row sorts last.
-      select: {
-        cardId: true,
-        recordedAt: true,
-        priceMarket: true,
-        type: true,
-        company: true,
-        grade: true,
-        variant: true,
-        condition: true,
-      },
-    });
-
-    const prices: PricePoint[] = rows
-      .filter((r) => r.priceMarket != null) // never a fabricated 0
-      .map((r) => ({
-        cardId: r.cardId,
-        at: r.recordedAt.getTime(),
-        price: r.priceMarket as number,
-        type: r.type,
-        company: r.company,
-        grade: r.grade,
-        variant: r.variant,
-        condition: r.condition,
-      }));
 
     // Daily timeline from the window start to now (inclusive).
     const startMs = startDate.getTime();

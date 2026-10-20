@@ -15,7 +15,7 @@ import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson, invalidateUserCaches } from "@/lib/utils/cache";
 import { getOrCreateMainCollection } from "@/lib/services/collection.service";
 import { deriveStoredCardNumber, isOnePieceCode } from "@/lib/utils/card-number";
-import { parseGradedCondition, pickGradedFromRows } from "@/lib/utils/raw-price";
+import { parseGradedCondition, pickGradedFromRows, pickGradedRow } from "@/lib/utils/raw-price";
 
 // RULE 4: the exact shape the GET caches (`{ items }`). Used ONLY to re-validate
 // the Redis blob on READ — a parse failure = stale shape = treat as a miss.
@@ -122,12 +122,93 @@ export async function GET(request: Request): Promise<NextResponse> {
       },
     });
 
+    // SINGLE SOURCE OF TRUTH / MISSING-CURRENT-GRADE FALLBACK (C): a graded lot
+    // whose company+grade has NO matching CurrentPrice row must still be valued
+    // from REAL data, so display and the portfolio-value chart agree. For those
+    // lots we append ONE gradedPrices entry derived from the most-recent matching
+    // graded PricingHistory row — carrying that row's ACTUAL variant + condition
+    // (never an invented `normal`/``) and `source: "history"` so provenance is
+    // explicit. No matching row anywhere → no entry (UI renders "—", RULE 2).
+    // Resolve the per-(company,grade) identity via the SAME shared selector
+    // (pickGradedRow) the chart service uses — one rule, no divergence.
+    // A current row counts as graded for this company+grade if (type defaulting
+    // to "graded" for legacy rows that omit it, matching pickRealGradedPrice)
+    // the company+grade match and priceMarket is present — the SAME shape the
+    // display path treats as a current match, so detection and valuation agree.
+    const currentHasGrade = (
+      rows: ReadonlyArray<{ type?: string | null; company?: string | null; grade?: string | null; priceMarket?: number | null }> | null | undefined,
+      company: string,
+      grade: string
+    ): boolean =>
+      (rows ?? []).some(
+        (r) =>
+          (r.type ?? "graded") === "graded" &&
+          (r.company ?? "").toUpperCase() === company &&
+          (r.grade ?? "") === grade &&
+          r.priceMarket != null
+      );
+
+    const needsFallback = items
+      .map((it) => {
+        const parsed = parseGradedCondition(it.condition);
+        if (!parsed) return null;
+        const company = parsed.company.toUpperCase();
+        if (currentHasGrade(it.card.currentPrices, company, parsed.grade)) return null;
+        return { cardId: it.cardId, company, grade: parsed.grade };
+      })
+      .filter((x): x is { cardId: string; company: string; grade: string } => x != null);
+
+    // One bounded read for the historical graded rows of only the cards that
+    // need a fallback (latest-first so pickGradedRow sees the most-recent row
+    // per identity). Prisma-only, ZERO credits; skipped entirely when none need it.
+    const fallbackByCard = new Map<string, Array<{ type: string | null; company: string | null; grade: string | null; variant: string | null; condition: string | null; priceMarket: number | null }>>();
+    if (needsFallback.length > 0) {
+      const fbCardIds = Array.from(new Set(needsFallback.map((f) => f.cardId)));
+      const histRows = await prisma.pricingHistory.findMany({
+        where: { cardId: { in: fbCardIds }, type: "graded", priceMarket: { not: null } },
+        orderBy: { recordedAt: "desc" },
+        select: { cardId: true, type: true, company: true, grade: true, variant: true, condition: true, priceMarket: true },
+      });
+      for (const r of histRows) {
+        const arr = fallbackByCard.get(r.cardId) ?? [];
+        arr.push({ ...r, company: r.company == null ? r.company : r.company.toUpperCase() });
+        fallbackByCard.set(r.cardId, arr);
+      }
+    }
+
     // Expose the graded rows under `card.gradedPrices` (the client payload
     // shape) without leaking the Prisma relation name. A raw/ungraded card has
     // an empty array → displayPrice falls back exactly as before.
     const shaped = items.map((it) => {
       const { currentPrices, ...card } = it.card;
-      return { ...it, card: { ...card, gradedPrices: currentPrices } };
+      // Resolve the historical fallback entry (if any) for a graded lot the
+      // current snapshot can't price — preserving the real row's variant +
+      // condition, with a `source: "history"` provenance marker.
+      let fallbackEntry: Record<string, unknown> | null = null;
+      const parsed = parseGradedCondition(it.condition);
+      if (parsed) {
+        const company = parsed.company.toUpperCase();
+        if (!currentHasGrade(currentPrices, company, parsed.grade)) {
+          const pick = pickGradedRow(fallbackByCard.get(it.cardId) ?? [], company, parsed.grade);
+          if (pick) {
+            fallbackEntry = {
+              type: "graded",
+              company,
+              grade: parsed.grade,
+              variant: pick.variant, // the REAL historical row's variant
+              condition: pick.condition, // the REAL historical row's condition
+              priceMarket: pick.price,
+              source: "history", // provenance marker (current rows have no source)
+            };
+          }
+        }
+      }
+      // Preserve the prior contract: when there are no current rows AND no
+      // fallback, `gradedPrices` stays whatever `currentPrices` was (undefined
+      // for cards the select didn't populate) so the payload shape is unchanged.
+      const gradedPrices =
+        fallbackEntry != null ? [...(currentPrices ?? []), fallbackEntry] : currentPrices;
+      return { ...it, card: { ...card, gradedPrices } };
     });
 
     // Best-effort cache fill on a miss (helper swallows Redis errors).

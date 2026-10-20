@@ -10,6 +10,7 @@ import {
   pickHeadlineRaw,
   parseGradedCondition,
   pickGradedFromRows,
+  pickGradedRow,
   type PriceRowLike,
 } from "@/lib/utils/raw-price";
 
@@ -152,6 +153,37 @@ describe("raw-price", () => {
     it("honors an explicit variant argument", () => {
       const rows = [graded("normal", "10", 300), graded("holofoil", "10", 999)];
       expect(pickGradedFromRows(rows, "PSA", "10", "holofoil")).toBe(999);
+    });
+  });
+
+  describe("pickGradedRow", () => {
+    it("returns the chosen row's REAL price, variant and condition", () => {
+      // The graded helper writes condition "NM" on legacy graded rows; the
+      // row's ACTUAL variant/condition must come back verbatim (RULE 2 — never
+      // invented). "normal" outranks "holofoil", so normal is chosen here.
+      const rows = [
+        raw("normal", "NM", 5),
+        graded("normal", "10", 300, "NM"),
+        graded("holofoil", "10", 999, "NM"),
+      ];
+      expect(pickGradedRow(rows, "PSA", "10")).toEqual({ price: 300, variant: "normal", condition: "NM" });
+    });
+    it("preserves a non-normal variant / null condition off the real matched row", () => {
+      const rows: PriceRowLike[] = [
+        { type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 777, priceLow: null },
+      ];
+      expect(pickGradedRow(rows, "PSA", "9")).toEqual({ price: 777, variant: "holofoil", condition: null });
+    });
+    it("returns null when no graded row matches (no fabrication)", () => {
+      expect(pickGradedRow([raw("normal", "NM", 10)], "PSA", "10")).toBeNull();
+      expect(pickGradedRow([graded("normal", "9", 100)], "PSA", "10")).toBeNull();
+    });
+    it("pickGradedFromRows price is the same row pickGradedRow chose (one rule)", () => {
+      const rows = [graded("normal", "10", 300), graded("holofoil", "10", 999)];
+      expect(pickGradedFromRows(rows, "PSA", "10")).toBe(pickGradedRow(rows, "PSA", "10")?.price);
+      expect(pickGradedFromRows(rows, "PSA", "10", "holofoil")).toBe(
+        pickGradedRow(rows, "PSA", "10", "holofoil")?.price
+      );
     });
   });
 });

@@ -108,6 +108,9 @@ describe("FEAT-002 B — add under chosen collection then dashboard draws it", (
     prismaMock.userCollection.findMany.mockResolvedValueOnce([
       { cardId: "card_1", quantity: 2, addedAt, soldAt: null, isSold: false },
     ]);
+    // Windowed read (recordedAt >= startDate) returns the real point; the
+    // bounded-window seed read (recordedAt < startDate) has nothing (default []).
+    prismaMock.pricingHistory.findMany.mockResolvedValue([]);
     prismaMock.pricingHistory.findMany.mockResolvedValueOnce([
       { cardId: "card_1", recordedAt: new Date(addedAt.getTime() - 30 * 1000), priceMarket: 10 },
     ]);
@@ -176,5 +179,71 @@ describe("D7 — collection read exposes REAL per-grade prices as card.gradedPri
     const body = await res.json();
     expect(body.items[0].card.gradedPrices).toEqual([{ company: "PSA", grade: "10", priceMarket: 777 }]);
     expect(body.items[0].card.currentPrices).toBeUndefined();
+  });
+
+  // C — MISSING-CURRENT-GRADE historical fallback in the API payload: a graded
+  // lot whose company+grade has NO matching CurrentPrice row gets ONE appended
+  // gradedPrices entry from the real most-recent matching graded PricingHistory
+  // row, carrying that row's ACTUAL variant + condition and `source:"history"`.
+  it("appends a source:'history' gradedPrices entry (real variant/condition) when current can't price the grade", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([
+      {
+        id: "uc_1",
+        cardId: "card_1",
+        quantity: 1,
+        condition: "PSA 9",
+        card: {
+          id: "card_1",
+          externalId: "base1-4",
+          marketPrice: 100,
+          // CURRENT has only PSA 10 → no PSA 9 match → fallback triggers.
+          currentPrices: [{ type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null, priceMarket: 1000 }],
+        },
+      },
+    ]);
+    // Real historical PSA 9 holofoil row (latest first) → the appended entry.
+    prismaMock.pricingHistory.findMany.mockResolvedValueOnce([
+      { cardId: "card_1", type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 650 },
+    ]);
+
+    const res = await collectionGET(new Request("http://localhost/api/users/me/collection"));
+    const body = await res.json();
+    const gp = body.items[0].card.gradedPrices;
+    // The current PSA 10 row is kept; the historical PSA 9 fallback is appended.
+    expect(gp).toContainEqual({ type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null, priceMarket: 1000 });
+    expect(gp).toContainEqual({
+      type: "graded",
+      company: "PSA",
+      grade: "9",
+      variant: "holofoil", // the REAL historical row's variant — never invented
+      condition: null, // the REAL historical row's condition
+      priceMarket: 650,
+      source: "history",
+    });
+  });
+
+  it("appends NO entry (payload unchanged) when neither current nor history prices the grade", async () => {
+    prismaMock.userCollection.findMany.mockResolvedValueOnce([
+      {
+        id: "uc_1",
+        cardId: "card_1",
+        quantity: 1,
+        condition: "PSA 9",
+        card: {
+          id: "card_1",
+          externalId: "base1-4",
+          marketPrice: 100,
+          currentPrices: [{ type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null, priceMarket: 1000 }],
+        },
+      },
+    ]);
+    // History has nothing for PSA 9 either → no fallback entry (RULE 2 → "—").
+    prismaMock.pricingHistory.findMany.mockResolvedValueOnce([]);
+
+    const res = await collectionGET(new Request("http://localhost/api/users/me/collection"));
+    const body = await res.json();
+    const gp = body.items[0].card.gradedPrices;
+    expect(gp).toEqual([{ type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null, priceMarket: 1000 }]);
+    expect(gp.some((r: { source?: string }) => r.source === "history")).toBe(false);
   });
 });

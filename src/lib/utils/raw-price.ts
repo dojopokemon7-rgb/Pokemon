@@ -176,20 +176,37 @@ export function pickGradedVariant(
     .sort(cmpVariant)[0];
 }
 
+/** The chosen real graded row's identity — price PLUS the variant/condition it
+ *  actually carries, so a caller never has to re-invent either. RULE 2: these
+ *  are REAL fields off a real matched row, never fabricated/defaulted away. */
+export interface GradedRowPick {
+  price: number;
+  variant: string;
+  condition: string | null;
+}
+
 /**
- * Pick the graded market price for a (company, grade) from a card's CurrentPrice
- * rows — the SAME selection the `/graded` route does inline: filter
- * `type==="graded" && company && grade && priceMarket != null`, prefer the given
- * `variant` (else the card's default variant via {@link pickGradedVariant}),
- * else the first variant in a deterministic order. Returns `rowPrice(match)` or
- * null when no graded row matches (caller falls back to raw — never fabricates).
+ * Pick the REAL graded row for a (company, grade) from a card's price rows and
+ * return its `{ price, variant, condition }` — the ONE selection rule shared by
+ * every graded surface. Filters `type==="graded" && company && grade &&
+ * priceMarket != null`, prefers the given `variant` (else the graded default via
+ * {@link pickGradedVariant}), else the first variant in the deterministic
+ * `cmpVariant` order. Returns null when no graded row matches (caller falls back
+ * — never fabricates).
+ *
+ * Returning the ROW (not just a price) is what lets the chart, the display path,
+ * and the API `gradedPrices` payload all consume the SAME real identity: each
+ * caller takes the field it needs (chart → variant to filter history; display →
+ * price; API fallback entry → variant + condition) from one decision, so a
+ * missing-current-grade historical fallback preserves the row's ACTUAL variant +
+ * condition instead of inventing `normal`/``.
  */
-export function pickGradedFromRows(
+export function pickGradedRow(
   rows: PriceRowLike[],
   company: string,
   grade: string,
   variant?: string | null
-): number | null {
+): GradedRowPick | null {
   const matches = rows.filter(
     (r) => r.type === "graded" && r.company === company && r.grade === grade && r.priceMarket != null
   );
@@ -198,5 +215,23 @@ export function pickGradedFromRows(
   const chosen =
     matches.find((r) => (r.variant ?? "normal") === wantVariant) ??
     [...matches].sort((a, b) => cmpVariant(a.variant ?? "normal", b.variant ?? "normal"))[0];
-  return rowPrice(chosen);
+  const price = rowPrice(chosen);
+  if (price == null) return null;
+  return { price, variant: chosen.variant ?? "normal", condition: chosen.condition ?? null };
+}
+
+/**
+ * Pick the graded market price for a (company, grade) from a card's CurrentPrice
+ * rows — the SAME selection the `/graded` route does inline. Expressed on top of
+ * {@link pickGradedRow} so there is exactly ONE graded-selection rule. Returns
+ * the matched row's price or null when no graded row matches (caller falls back
+ * to raw — never fabricates).
+ */
+export function pickGradedFromRows(
+  rows: PriceRowLike[],
+  company: string,
+  grade: string,
+  variant?: string | null
+): number | null {
+  return pickGradedRow(rows, company, grade, variant)?.price ?? null;
 }

@@ -7,6 +7,7 @@ import {
 import { isVirtualCollectionId, ALL_VIEW_ID } from "@/lib/utils/collections-virtual";
 import { displayPrice, type GradedPriceRow } from "@/lib/utils/graded-price";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
+import { pickGradedRow, type PriceRowLike } from "@/lib/utils/raw-price";
 
 const DAY = 24 * 60 * 60 * 1000;
 const t0 = 1_700_000_000_000; // arbitrary epoch base
@@ -334,6 +335,96 @@ describe("BUG 1 & 8 — chart↔display parity through ONE shared variant select
     )[0].points[0].value;
     expect(stats.marketValue).toBe(500);
     expect(stats.marketValue).toBe(chart);
+  });
+});
+
+describe("C — SINGLE SOURCE OF TRUTH: one resolved (grade, variant) feeds chart AND display", () => {
+  // Requirement C: each lot's authoritative (company, grade, variant) is resolved
+  // ONCE via the shared selector (pickGradedRow) over the CURRENT snapshot, and
+  // the SAME identity feeds BOTH the chart series valuation (threaded in as
+  // HoldingInterval.gradedVariant) AND the display path (displayPrice). This
+  // mirrors what collection-history.service.ts does at runtime.
+  //
+  // The chart and display are fed TWO DIFFERENT row-set arrays (NOT one reused
+  // fixture — reusing one array hides divergence per the Phase-1 review note):
+  //   - CURRENT snapshot (display source + variant decision): PSA 9 has ONLY
+  //     holofoil (777). So the resolved variant is holofoil.
+  //   - windowed HISTORY (chart point source): PSA 9 has BOTH normal (500) and
+  //     holofoil (777). A history-only decision would pick normal (higher
+  //     priority) and the two paths would DISAGREE.
+  // With the single-source resolution threaded in, BOTH value PSA 9 holofoil.
+  const currentRows: GradedPriceRow[] = [
+    { type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 777 },
+  ];
+  const historyRows: PriceRowLike[] = [
+    { type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null, priceMarket: 500 },
+    { type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 777 },
+  ];
+
+  it("resolves the variant once over the current snapshot and both paths agree (divergent arrays)", () => {
+    // Resolve the authoritative variant ONCE from the current snapshot — exactly
+    // as the service does (current-first).
+    const resolved = pickGradedRow(
+      currentRows.map((r) => ({ ...r, company: r.company?.toUpperCase() ?? null })),
+      "PSA",
+      "9"
+    );
+    expect(resolved?.variant).toBe("holofoil");
+
+    // Chart: windowed HISTORY points + the resolved variant threaded in.
+    const historyPoints: PricePoint[] = historyRows.map((r) => ({
+      cardId: "c1",
+      at: t0,
+      price: r.priceMarket as number,
+      type: r.type,
+      company: r.company,
+      grade: r.grade,
+      variant: r.variant,
+      condition: r.condition,
+    }));
+    const chart = buildCollectionSeries(
+      [{ collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9", gradedVariant: resolved?.variant ?? null }],
+      historyPoints,
+      [t0]
+    )[0].points[0].value;
+
+    // Display: the CURRENT snapshot array (a DIFFERENT array than the chart's).
+    const display = displayPrice({
+      isSold: false,
+      condition: "PSA 9",
+      card: { marketPrice: null, gradedPrices: currentRows },
+    });
+
+    expect(chart).toBe(777);
+    expect(display).toBe(777);
+    expect(chart).toBe(display); // single-source parity across divergent arrays
+  });
+
+  it("missing-current-grade: display and chart agree on the real historical row's variant", () => {
+    // CURRENT cannot price PSA 9 (has only PSA 10) → the service falls back to
+    // the most-recent real graded history row for PSA 9, preserving ITS variant.
+    const currentNoPsa9: GradedPriceRow[] = [
+      { type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null, priceMarket: 1000 },
+    ];
+    const historyPsa9: PriceRowLike[] = [
+      { type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 650 },
+    ];
+    // Service resolution: current-first (null for PSA 9) → history fallback.
+    const resolved =
+      pickGradedRow(currentNoPsa9.map((r) => ({ ...r, company: r.company?.toUpperCase() ?? null })), "PSA", "9") ??
+      pickGradedRow(historyPsa9, "PSA", "9");
+    expect(resolved?.variant).toBe("holofoil");
+
+    const chart = buildCollectionSeries(
+      [{ collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9", gradedVariant: resolved?.variant ?? null }],
+      historyPsa9.map((r) => ({ cardId: "c1", at: t0, price: r.priceMarket as number, type: r.type, company: r.company, grade: r.grade, variant: r.variant, condition: r.condition })),
+      [t0]
+    )[0].points[0].value;
+
+    // The display API's historical-fallback entry would carry this same real
+    // variant (holofoil) + price (650) — so display and chart agree.
+    expect(chart).toBe(650);
+    expect(resolved?.price).toBe(650);
   });
 });
 

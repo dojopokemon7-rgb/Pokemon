@@ -386,26 +386,82 @@ describe("BUG 1 & 8 — the grade is honored through the real service call path"
   });
 
   // Honest gap: the CURRENT snapshot can't price the graded lot (no matching
-  // graded row), so neither can the chart — it stays a null gap (RULE 2),
-  // rather than inventing a variant from history.
-  it("leaves an honest null gap when the current snapshot has no graded row for the lot's company+grade", async () => {
+  // C — MISSING-CURRENT-GRADE historical fallback: the CURRENT snapshot can't
+  // price the lot's company+grade (no matching graded row), but REAL graded
+  // PricingHistory for it exists → the chart values from that real historical
+  // row, PRESERVING its actual variant (never inventing one). RULE 2: the value
+  // is a real stored point, not a fabrication.
+  it("values a missing-current-grade lot from the real historical row, preserving its variant", async () => {
     const addedAt = new Date(Date.now() - 90 * DAY);
     prismaMock.userCollection.findMany.mockResolvedValue([
       { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: "PSA 9" },
     ]);
-    // CURRENT has NO PSA 9 graded row (e.g. only PSA 10) → display returns null.
+    // CURRENT has NO PSA 9 graded row (only PSA 10) → display falls back.
     prismaMock.currentPrice.findMany.mockResolvedValue([
       { cardId: "card_1", company: "PSA", grade: "10", variant: "normal", priceMarket: 1000 },
     ]);
-    // HISTORY does carry a PSA 9 series, but with no current variant to anchor
-    // on the chart must NOT fall back onto it.
+    // HISTORY carries a REAL PSA 9 holofoil series → the chart values from it
+    // at the historical row's actual variant (holofoil), never invented.
     const rec = new Date(Date.now() - 60 * DAY);
     prismaMock.pricingHistory.findMany.mockResolvedValue([
-      { cardId: "card_1", recordedAt: rec, priceMarket: 500, type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null },
+      { cardId: "card_1", recordedAt: rec, priceMarket: 650, type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null },
+    ]);
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    // The real PSA 9 holofoil price (650) — never the PSA 10 (1000) current row.
+    expect(numeric.every((p) => p.value === 650)).toBe(true);
+    expect(numeric.some((p) => p.value === 1000)).toBe(false);
+  });
+
+  // C — when NEITHER the current snapshot NOR history can price the lot's
+  // company+grade, it stays an honest null gap (RULE 2 — no invented variant).
+  it("stays a null gap when neither current nor history prices the lot's company+grade", async () => {
+    const addedAt = new Date(Date.now() - 90 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 1, addedAt, soldAt: null, isSold: false, condition: "PSA 9" },
+    ]);
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { cardId: "card_1", company: "PSA", grade: "10", variant: "normal", priceMarket: 1000 },
+    ]);
+    // History has ONLY a PSA 10 series — nothing for PSA 9.
+    const rec = new Date(Date.now() - 60 * DAY);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      { cardId: "card_1", recordedAt: rec, priceMarket: 1000, type: "graded", company: "PSA", grade: "10", variant: "normal", condition: null },
     ]);
 
     const histories = await buildCollectionHistories(USER_ID, ["all"], "ALL");
     expect(histories["all"].every((p) => p.value === null)).toBe(true);
+  });
+
+  // C — BOUNDED-WINDOW PARITY: the last real matching point PREDATES the
+  // requested window start. The windowed read returns nothing inside the window,
+  // but the bounded-window seed read supplies that pre-window real point, so the
+  // lot is DRAWABLE (not an all-null gap) and valued at the real carried-forward
+  // price — the same value the (unbounded) display path would show.
+  it("seeds the chart with the last real pre-window point so a display-valued lot is drawable", async () => {
+    // Lot added ~40 days ago; window is 1M (~30 days). The only real point is
+    // 45 days ago — BEFORE the window start.
+    const addedAt = new Date(Date.now() - 40 * DAY);
+    prismaMock.userCollection.findMany.mockResolvedValue([
+      { cardId: "card_1", quantity: 2, addedAt, soldAt: null, isSold: false, condition: null },
+    ]);
+    const preWindow = { cardId: "card_1", recordedAt: new Date(Date.now() - 45 * DAY), priceMarket: 30, type: "raw", company: null, grade: null, variant: "normal", condition: "NM" };
+    // The windowed read (recordedAt >= startDate) returns NOTHING; the seed read
+    // (recordedAt < startDate) returns the pre-window point. The mock routes by
+    // the `where.recordedAt` operator so the two reads differ (real behavior).
+    prismaMock.pricingHistory.findMany.mockImplementation(async (args: { where?: { recordedAt?: { gte?: Date; lt?: Date } } }) => {
+      const rc = args?.where?.recordedAt;
+      if (rc?.lt) return [preWindow]; // seed read
+      return []; // windowed read — empty inside the window
+    });
+
+    const histories = await buildCollectionHistories(USER_ID, ["all"], "1M");
+    const numeric = histories["all"].filter((p) => typeof p.value === "number");
+    // Drawable: >=2 points valued at the real carried-forward price (30 × 2).
+    expect(numeric.length).toBeGreaterThanOrEqual(2);
+    expect(numeric.every((p) => p.value === 60)).toBe(true);
   });
 });
 
