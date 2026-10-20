@@ -17,6 +17,18 @@
  *   works. On any miss (no card, no stored URL) we 404 and the client's
  *   CardImage falls through to its remaining candidates (graceful degradation).
  *
+ *   BUG 3 — case-insensitive, composite-safe externalId resolve. The id
+ *   arrives URL-encoded (a composite per-printing id like
+ *   `gym1-1::unlimitedHolofoil` is `gym1-1%3A%3AunlimitedHolofoil`) and may be
+ *   mis-cased (shared/typed link → `GYM1-1::unlimitedHolofoil`). We
+ *   decodeURIComponent it and match externalId case-INSENSITIVELY so a mis-cased
+ *   id still resolves the stored (lower-case) row. We do NOT strip the
+ *   `::printing` suffix — a composite externalId is its OWN distinct Card row
+ *   with its OWN image (AGENTS.md rule 3 per-printing model), so looking up the
+ *   whole composite id returns that printing's art, not the base card's. A miss
+ *   returns 404 WITHOUT a Cache-Control header (see below) so a later
+ *   correctly-cased lookup is never served a cached negative.
+ *
  * Security — DB-sourced is NOT trusted:
  *   Even though the URL comes from our own `Card.imageUrl`, we re-run the SAME
  *   allowlist/https/no-credential check the `?u=` route uses
@@ -43,21 +55,33 @@ export async function GET(
   const { id } = await params;
   if (!id) return bad("Missing card id.", 400);
 
+  // BUG 3: the route segment is URL-encoded (a composite id carries `%3A%3A`).
+  // Decode so the stored externalId (`gym1-1::unlimitedHolofoil`) is matched
+  // literally — suffix intact, never stripped.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(id);
+  } catch {
+    decoded = id; // malformed %-escape: fall back to the raw segment
+  }
+
   // `?hi=1` requests the hi-res variant (imageUrlHi), falling back to the
   // medium imageUrl when no hi-res is stored. Default = medium.
   const wantHi = request.nextUrl.searchParams.get("hi") === "1";
 
   let card: { imageUrl: string | null; imageUrlHi: string | null } | null = null;
   try {
-    // Resolve by catalog externalId first (AGENTS.md rule 3), then by the
-    // internal cuid as a fallback — the UI may hold either.
+    // Resolve by catalog externalId first (AGENTS.md rule 3), CASE-INSENSITIVELY
+    // so a mis-cased composite id resolves the stored lower-case row (BUG 3);
+    // the whole decoded id (suffix intact) is the lookup key. Fall back to the
+    // internal cuid — the UI may hold either.
     card =
-      (await prisma.card.findUnique({
-        where: { externalId: id },
+      (await prisma.card.findFirst({
+        where: { externalId: { equals: decoded, mode: "insensitive" } },
         select: { imageUrl: true, imageUrlHi: true },
       })) ??
       (await prisma.card.findUnique({
-        where: { id },
+        where: { id: decoded },
         select: { imageUrl: true, imageUrlHi: true },
       }));
   } catch (err) {

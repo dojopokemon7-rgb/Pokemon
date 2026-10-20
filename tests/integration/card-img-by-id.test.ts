@@ -16,10 +16,17 @@ import { NextRequest } from "next/server";
  *   - non-image upstream / fetch throw degrade gracefully.
  */
 
-// Prisma mock — the route calls findUnique twice (externalId, then id).
+// Prisma mock — the route now resolves externalId CASE-INSENSITIVELY via
+// findFirst (BUG 3), then falls back to the internal cuid via findUnique.
+const findFirst = vi.fn();
 const findUnique = vi.fn();
 vi.mock("@/lib/db", () => ({
-  prisma: { card: { findUnique: (args: unknown) => findUnique(args) } },
+  prisma: {
+    card: {
+      findFirst: (args: unknown) => findFirst(args),
+      findUnique: (args: unknown) => findUnique(args),
+    },
+  },
 }));
 
 import { GET } from "@/app/api/card-img/[id]/route";
@@ -41,7 +48,10 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   fetchMock = vi.fn(async () => imageResponse());
   vi.stubGlobal("fetch", fetchMock);
+  findFirst.mockReset();
   findUnique.mockReset();
+  // Default: cuid fallback misses unless a test opts in.
+  findUnique.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -51,7 +61,7 @@ afterEach(() => {
 
 describe("GET /api/card-img/<id> — happy path", () => {
   it("resolves a stored scrydex url and streams it (200 + cache header)", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com/pokemon/base1-4/medium",
       imageUrlHi: null,
     });
@@ -67,7 +77,7 @@ describe("GET /api/card-img/<id> — happy path", () => {
   });
 
   it("?hi=1 prefers imageUrlHi", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com/pokemon/base1-4/medium",
       imageUrlHi: "https://images.scrydex.com/pokemon/base1-4/large",
     });
@@ -78,7 +88,7 @@ describe("GET /api/card-img/<id> — happy path", () => {
   });
 
   it("?hi=1 falls back to imageUrl when no hi-res stored", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com/pokemon/base1-4/medium",
       imageUrlHi: null,
     });
@@ -89,35 +99,77 @@ describe("GET /api/card-img/<id> — happy path", () => {
   });
 
   it("falls back to lookup by internal id when externalId misses", async () => {
-    findUnique
-      .mockResolvedValueOnce(null) // externalId miss
-      .mockResolvedValueOnce({
-        imageUrl: "https://images.scrydex.com/pokemon/x/medium",
-        imageUrlHi: null,
-      });
+    findFirst.mockResolvedValueOnce(null); // externalId (case-insensitive) miss
+    findUnique.mockReset();
+    findUnique.mockResolvedValueOnce({
+      imageUrl: "https://images.scrydex.com/pokemon/x/medium",
+      imageUrlHi: null,
+    });
     const res = await call("ckcuid123");
     expect(res.status).toBe(200);
-    expect(findUnique).toHaveBeenCalledTimes(2);
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    // cuid fallback uses the decoded id as the primary key.
+    expect(findUnique.mock.calls[0][0]).toMatchObject({ where: { id: "ckcuid123" } });
+  });
+
+  // BUG 3 — a mis-cased composite id resolves the stored lower-case row.
+  it("resolves case-insensitively: GYM1-1::unlimitedHolofoil → stored gym1-1::unlimitedHolofoil", async () => {
+    findFirst.mockResolvedValueOnce({
+      imageUrl: "https://images.scrydex.com/pokemon/gym1-1-unlimited/medium",
+      imageUrlHi: null,
+    });
+    const res = await call("GYM1-1::unlimitedHolofoil");
+    expect(res.status).toBe(200);
+    // Matched case-insensitively on the WHOLE decoded composite id (suffix intact).
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(findFirst.mock.calls[0][0]).toMatchObject({
+      where: { externalId: { equals: "GYM1-1::unlimitedHolofoil", mode: "insensitive" } },
+    });
+  });
+
+  // BUG 3 — a composite :: id resolves to ITS OWN row (suffix NOT stripped,
+  // not the base card). The lookup key is the full decoded composite id.
+  it("a composite :: id looks up its own printing row (suffix not stripped)", async () => {
+    findFirst.mockResolvedValueOnce({
+      imageUrl: "https://images.scrydex.com/pokemon/op01-120-altart/medium",
+      imageUrlHi: null,
+    });
+    // %3A%3A is the URL-encoded "::" the client sends.
+    const res = await call("OP01-120%3A%3Aalt-art");
+    expect(res.status).toBe(200);
+    const lookupKey = findFirst.mock.calls[0][0].where.externalId.equals;
+    expect(lookupKey).toBe("OP01-120::alt-art"); // decoded, suffix intact
+    expect(lookupKey).not.toBe("OP01-120"); // NOT the base id
   });
 });
 
 describe("GET /api/card-img/<id> — misses & SSRF", () => {
   it("unknown id → 404 WITHOUT fetching", async () => {
+    findFirst.mockResolvedValue(null);
     findUnique.mockResolvedValue(null);
     const res = await call("nope-1");
     expect(res.status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("404 on miss carries NO Cache-Control (a negative is never cached for a later correct lookup)", async () => {
+    findFirst.mockResolvedValue(null);
+    findUnique.mockResolvedValue(null);
+    const res = await call("nope-1");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("Cache-Control")).toBeNull();
+  });
+
   it("card with no stored image → 404 WITHOUT fetching", async () => {
-    findUnique.mockResolvedValueOnce({ imageUrl: null, imageUrlHi: null });
+    findFirst.mockResolvedValueOnce({ imageUrl: null, imageUrlHi: null });
     const res = await call("base1-4");
     expect(res.status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("stored url on a disallowed host → 400 WITHOUT fetching (defense in depth)", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://attacker.com/x.png",
       imageUrlHi: null,
     });
@@ -127,7 +179,7 @@ describe("GET /api/card-img/<id> — misses & SSRF", () => {
   });
 
   it("stored lookalike-subdomain url → 400 WITHOUT fetching", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com.evil.com/x.png",
       imageUrlHi: null,
     });
@@ -137,7 +189,7 @@ describe("GET /api/card-img/<id> — misses & SSRF", () => {
   });
 
   it("stored http (non-https) url → 400 WITHOUT fetching", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "http://images.scrydex.com/x.png",
       imageUrlHi: null,
     });
@@ -149,7 +201,7 @@ describe("GET /api/card-img/<id> — misses & SSRF", () => {
 
 describe("GET /api/card-img/<id> — upstream content guard", () => {
   it("non-image upstream content-type → 404", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com/x",
       imageUrlHi: null,
     });
@@ -163,7 +215,7 @@ describe("GET /api/card-img/<id> — upstream content guard", () => {
   });
 
   it("upstream non-ok → 404", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com/x",
       imageUrlHi: null,
     });
@@ -172,7 +224,7 @@ describe("GET /api/card-img/<id> — upstream content guard", () => {
   });
 
   it("fetch throws → 502", async () => {
-    findUnique.mockResolvedValueOnce({
+    findFirst.mockResolvedValueOnce({
       imageUrl: "https://images.scrydex.com/x",
       imageUrlHi: null,
     });
