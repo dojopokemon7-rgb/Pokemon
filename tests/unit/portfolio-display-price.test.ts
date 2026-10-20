@@ -1,6 +1,5 @@
 import { it, expect } from "vitest";
-import { displayPrice, type CollectionItem } from "@/app/(dashboard)/portfolio/page";
-import { gradedPrice } from "@/lib/utils/graded-price";
+import { displayPrice, gradedPrice, type DisplayPriceItem } from "@/lib/utils/graded-price";
 
 /**
  * QA Desktop D7 — the DISPLAYED headline price of an owned row must apply the
@@ -10,26 +9,12 @@ import { gradedPrice } from "@/lib/utils/graded-price";
  */
 const RAW = 120; // curated (120|10) → 1500, so graded is clearly distinct from raw
 
-function lot(overrides: Partial<CollectionItem>): CollectionItem {
+function lot(overrides: Partial<DisplayPriceItem>): DisplayPriceItem {
   return {
-    id: "l1",
-    cardId: "c1",
-    quantity: 1,
-    isFoil: false,
     condition: null,
-    purchasePrice: null,
     isSold: false,
     soldPrice: null,
-    addedAt: "2024-01-01T00:00:00.000Z",
-    card: {
-      id: "c1",
-      name: "Pikachu",
-      number: "58",
-      rarity: null,
-      imageUrl: null,
-      marketPrice: RAW,
-      set: { name: "Base Set" },
-    },
+    card: { marketPrice: RAW },
     ...overrides,
   };
 }

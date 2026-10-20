@@ -179,3 +179,36 @@ export function resolveGradedPrice(input: ResolveGradedPriceInput): ResolvedGrad
 
   return { price: fallbackPrice, isStale, isFallback: true };
 }
+
+// ---------------------------------------------------------------------------
+// Portfolio display price (QA D7)
+// ---------------------------------------------------------------------------
+
+/** Minimal structural shape `displayPrice` needs — any CollectionItem-like
+ *  row satisfies it, so this helper lives in utils (unit-testable, and NOT a
+ *  forbidden export from a Next.js page module). */
+export interface DisplayPriceItem {
+  isSold?: boolean;
+  soldPrice?: number | null;
+  condition?: string | null;
+  card: { marketPrice: number | null };
+}
+
+/**
+ * BUG D7: an ACTIVE graded lot must display its GRADED market price, not the
+ * raw `card.marketPrice`, so a PSA 10 copy and a Raw copy of the same card no
+ * longer render the same number. This applies the SAME graded resolution the
+ * gain tag (GainLossTag) and the summary (statsFromLots) already use, so the
+ * tile price, the gain %, and the summary can never disagree.
+ *   - sold row → soldPrice (actual recorded gross; UNCHANGED).
+ *   - active + graded → gradedPrice(raw, grade).
+ *   - active + raw → raw market price.
+ * Null marketPrice stays null → UI renders "—" (never a fabricated 0).
+ */
+export function displayPrice(item: DisplayPriceItem): number | null {
+  if (item.isSold) return item.soldPrice ?? null;
+  if (item.card.marketPrice == null) return null;
+  return isGraded(item.condition)
+    ? gradedPrice(item.card.marketPrice, parseGrade(item.condition as string))
+    : item.card.marketPrice;
+}
