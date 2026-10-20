@@ -138,16 +138,24 @@ export function parseGradedCondition(
  *     `cmpVariant`, then alphabetical) among the company+grade matches;
  *   - null when no graded row matches the company+grade at all.
  *
- * CHART↔DISPLAY PARITY (review-blocking, iteration 5): this selection is
- * INDEPENDENT of the surrounding raw/other rows. Earlier it delegated to
+ * RAW-INDEPENDENT (review-blocking, iteration 5): this selection is INDEPENDENT
+ * of the surrounding raw/other rows. Earlier it delegated to
  * `pickDefaultVariant(rows)`, which reads the RAW rows to decide the default —
  * but the chart feeds WINDOWED PricingHistory while display/accounting feed the
  * latest CurrentPrice set, and those two snapshots carry DIFFERENT raw rows
  * (PricingHistory accumulates; the Scrydex writer REPLACES CurrentPrice). So a
  * raw-driven default could pick `holofoil` on the chart and `normal` on the
- * tiles for the same PSA 9 lot — a real divergence that no single fixture can
- * expose. Choosing the variant from the GRADED MATCHES THEMSELVES makes the two
- * paths agree for any company+grade regardless of which raw rows accompany it.
+ * tiles for the same PSA 9 lot. Choosing from the GRADED MATCHES THEMSELVES
+ * removes that raw-driven divergence.
+ *
+ * NOTE (iteration 6, cross-snapshot): raw-independence alone is NOT sufficient
+ * when the GRADED variant SET itself differs between the two snapshots (history
+ * has PSA 9 {normal,holofoil}; current has {holofoil}) — each side would still
+ * pick a different variant. The chart therefore decides the variant ONCE over
+ * the stable current `CurrentPrice` snapshot (collection-history.service.ts) and
+ * threads it into the history valuation, rather than calling this selector over
+ * its own windowed rows. This selector remains the shared rule for the display
+ * path and for the chart's fallback when no current snapshot is available.
  * Returning the VARIANT (not a price) lets the chart filter its time-series
  * points to it while display picks the single matching price, from one rule.
  */

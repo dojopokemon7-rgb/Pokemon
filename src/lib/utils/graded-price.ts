@@ -131,15 +131,15 @@ export function gradedPrice(rawMarketPrice: number, grade: string | number): num
  * component module).
  */
 /**
- * A card's CurrentPrice row as the display/accounting path consumes it. To keep
- * chart↔display parity (review-blocking), this is now the card's FULL row set
- * (raw + graded), not graded-only: the shared variant selector `pickGradedFromRows`
- * derives the card DEFAULT variant from raw rows too, so a raw holofoil can make
- * `holofoil` the graded default. `type`/`variant` are OPTIONAL so legacy callers
- * passing graded-only `{company,grade,priceMarket}` rows still type-check — but a
- * row missing `type:"graded"` will no longer match (that is the point: pass the
- * full set so the variant decision matches the chart). Structurally assignable
- * to PriceRowLike.
+ * A card's CurrentPrice row as the display/accounting path consumes it. The
+ * array may be the card's FULL priced set (raw + graded) or graded-only — the
+ * shared variant selector `pickGradedVariant` chooses the variant from the
+ * GRADED MATCHES THEMSELVES (variant priority), INDEPENDENT of the surrounding
+ * raw rows, so passing raw rows here changes nothing about which variant a
+ * company+grade lot prices at. `type`/`variant` are OPTIONAL so legacy callers
+ * passing graded-only `{company,grade,priceMarket}` rows still type-check (a
+ * missing `type` is defaulted to `"graded"` in `pickRealGradedPrice`).
+ * Structurally assignable to PriceRowLike.
  */
 export interface GradedPriceRow extends PriceRowLike {
   company: string | null;
@@ -197,15 +197,17 @@ export function displayPrice(item: DisplayPriceItem): number | null {
  *
  * CHART↔DISPLAY PARITY (review-blocking): this routes through the ONE shared
  * selector `pickGradedFromRows` → `pickGradedVariant`, the SAME rule the
- * portfolio-value chart (collection-series.ts) uses. When a company+grade has
- * several variants (e.g. PSA 9 normal + holofoil), both the tile/summary here
- * and the chart pick the SAME variant — chosen from the GRADED MATCHES
- * THEMSELVES by variant priority, INDEPENDENT of the surrounding raw rows. That
- * independence is what guarantees parity: the chart is fed windowed
- * PricingHistory while this path is fed the latest CurrentPrice, and those two
- * snapshots carry different raw rows; a raw-driven default would diverge, a
- * graded-match-driven one cannot. Rows need `type:"graded"` to match (company
- * uppercased via a normalized copy so stored casing doesn't miss).
+ * portfolio-value chart (collection-series.ts) uses. The variant is chosen from
+ * the GRADED MATCHES THEMSELVES by variant priority, INDEPENDENT of the
+ * surrounding raw rows, so passing the full raw+graded set here (or graded-only)
+ * yields the same pick. The chart achieves parity by deciding the variant over
+ * THIS same current `CurrentPrice` snapshot (threaded in as
+ * `HoldingInterval.gradedVariant`) rather than re-deriving it from its own
+ * windowed `PricingHistory` — the two snapshots can carry different variant sets
+ * for one company+grade, so deciding it once over the stable current source is
+ * what guarantees the chart and the tile/summary agree. Rows need `type:"graded"`
+ * to match (company uppercased via a normalized copy so stored casing doesn't
+ * miss).
  */
 export function pickRealGradedPrice(
   gradedPrices: GradedPriceRow[] | null | undefined,
