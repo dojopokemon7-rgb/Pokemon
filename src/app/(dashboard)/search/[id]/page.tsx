@@ -45,7 +45,8 @@ import {
   buildChartMatrix,
   sortByGradeDesc,
   rangeAvailability,
-  seriesSpanDays,
+  maxAvailableSpanDays,
+  largestEnabledRange,
   type CurrentPriceRow,
   type HistoryResponse,
 } from "./price-history-chart";
@@ -349,6 +350,10 @@ function CardDetailInner() {
   const starred = isWanted(id);
   const [activeSeries, setActiveSeries] = useState<Set<string>>(new Set(["raw"]));
   const [range, setRange] = useState<string>("1M");
+  // BUG 6: until the user explicitly picks a range tab, the default range
+  // follows the data (the largest ENABLED range once history loads). Once the
+  // user taps a tab, their choice sticks and the auto-default stops overriding.
+  const [rangeTouched, setRangeTouched] = useState(false);
   // Recent Sales is button-gated now (no auto fetch on mount) — this flips true
   // once the user clicks "Load recent sales", which fires the gated POST pull
   // and then mounts <RecentSales> (its own GET renders the stored rows).
@@ -527,24 +532,31 @@ function CardDetailInner() {
     [currentPrices]
   );
 
-  // Honest range tabs: span of the longest REAL stored series among the selected
-  // chips (flat markers have < 2 real points → span 0, ignored). A tab that would
-  // reveal no more data is disabled; if the picked range is disabled (variant /
-  // chip change) fall back to the largest enabled one. Nothing is synthesized.
-  const spanDays = useMemo(
-    () =>
-      Math.max(
-        0,
-        ...allChips
-          .filter((c) => activeSeries.has(c.id))
-          .map((c) => seriesSpanDays((c.company == null ? historyData?.raw : historyData?.graded?.[c.id]) ?? []))
-      ),
-    [allChips, activeSeries, historyData]
-  );
+  // BUG 5: honest range tabs reflect the data the CARD HAS, not just the chips
+  // the user happens to have selected. A sparse graded chip being selected must
+  // not collapse the span to 0 and lock every tab to 1M while the raw series
+  // spans months. maxAvailableSpanDays takes the longest REAL stored span across
+  // raw + every graded key the card actually has. A tab that would reveal no
+  // more data is still disabled; if the picked range is disabled fall back to
+  // the largest enabled one. Nothing is synthesized (availability = real spans).
+  const spanDays = useMemo(() => maxAvailableSpanDays(historyData), [historyData]);
   const rangeAvail = rangeAvailability(spanDays);
   const effRange = rangeAvail[range as keyof typeof rangeAvail]
     ? range
-    : (RANGE_TABS.map(([, k]) => k).filter((k) => rangeAvail[k]).pop() ?? "1M");
+    : largestEnabledRange(rangeAvail);
+
+  // BUG 6: open on the largest ENABLED range once history loads, so a card with
+  // months of history shows them instead of defaulting to 1M. Only until the
+  // user explicitly picks a tab (rangeTouched) — after that their choice wins.
+  // A sparse card stays on 1M (largestEnabledRange → "1M"), and the user can
+  // still pick 1M. Keyed on the resolved availability so it settles once.
+  useEffect(() => {
+    if (rangeTouched) return;
+    if (!historyData) return;
+    setRange(largestEnabledRange(rangeAvail));
+    // rangeAvail is derived from historyData; depend on the stable span value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyData, spanDays, rangeTouched]);
 
   // Multi-series chart matrix for the user's selected chips (each plots its OWN
   // real stored per-grade history, windowed by the active range tab).
@@ -862,7 +874,12 @@ function CardDetailInner() {
             return (
               <button
                 key={key}
-                onClick={() => setRange(key)}
+                onClick={() => {
+                  // BUG 6: an explicit pick sticks — stop the auto-default
+                  // from overriding the user's chosen range thereafter.
+                  setRangeTouched(true);
+                  setRange(key);
+                }}
                 disabled={!enabled}
                 aria-disabled={!enabled}
                 title={enabled ? undefined : "Not enough history yet"}

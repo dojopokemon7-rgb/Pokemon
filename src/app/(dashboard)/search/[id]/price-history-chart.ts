@@ -110,6 +110,24 @@ export function seriesSpanDays(points: HistoryPoint[]): number {
 }
 
 /**
+ * BUG 5 — the longest REAL stored span across ALL of a card's available series
+ * (raw + every graded key it actually has), independent of which chips are
+ * selected. Range-tab availability must reflect the data the CARD holds: a
+ * sparse graded chip being selected must NOT collapse the span to 0 and lock
+ * every tab to 1M while the raw series spans months. Always includes the raw
+ * series. Pure derivation from stored spans — never implies data not stored.
+ */
+export function maxAvailableSpanDays(history: HistoryResponse | undefined): number {
+  const raw = history?.raw ?? [];
+  const graded = history?.graded ?? {};
+  return Math.max(
+    0,
+    seriesSpanDays(raw),
+    ...Object.values(graded).map((s) => seriesSpanDays(s ?? []))
+  );
+}
+
+/**
  * Which range tabs would reveal MORE data than the previous one. 1M is always
  * enabled; each longer range only if the span exceeds the previous window
  * (ALL only past a year). Never implies data that is not stored.
@@ -120,6 +138,16 @@ export function rangeAvailability(spanDays: number): Record<RangeKey, boolean> {
     out[k] = i === 0 || spanDays > RANGE_WINDOW[RANGE_ORDER[i - 1]];
   });
   return out;
+}
+
+/**
+ * BUG 6 — the sensible DEFAULT range to open on: the LARGEST range the stored
+ * data actually enables (so a card with months of history opens showing them),
+ * falling back to "1M" when that is all the data supports. Pure function of the
+ * availability map — no fabrication (availability derives from real spans).
+ */
+export function largestEnabledRange(avail: Record<RangeKey, boolean>): RangeKey {
+  return RANGE_ORDER.filter((k) => avail[k]).pop() ?? "1M";
 }
 
 // Numeric price read for a current-price row (priceMarket ?? priceLow ?? null)

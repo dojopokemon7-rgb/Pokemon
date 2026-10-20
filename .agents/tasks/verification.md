@@ -1,101 +1,188 @@
-# Verification — One Piece ALTERNATE-ART variant-image fix (op-altart)
+# Verification — Five confirmed chart/price-data bugs (fix-chart-data-bugs)
 
-Worktree `d:\Pokemon\Pokemon\.worktrees\op-altart`, branch `op-altart`. Windows /
-PowerShell; the repo path contains a space — all paths quoted.
+Worktree `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`, branch
+`fix-chart-data-bugs` (based on local `master` @ 459605b). Windows / PowerShell;
+the repo path contains a space — every path quoted.
 
 ## Iteration note
 
-The `.agents/tasks/review.json` on disk at the start of this run was a STALE copy
-from an unrelated `perf-optimize` task (its only finding + `reviewDoc` point at a
-`perf-optimize` worktree and an e2e portfolio-chart spec, nothing alt-art). The
-alt-art `design.md`/`requirements.md` the step prompt references do NOT exist in
-this worktree (the on-disk `design.md`/`requirements.md` are the earlier
-"External API Integration" task). Per `.agents/tasks/plan.md`'s own "Context note",
-the alt-art **plan.md step prompt is the authoritative spec**, and this was treated
-as the FIRST implementation iteration of the 14-step alt-art plan (none of those
-steps had been implemented on the branch — the branch HEAD was desktop/admin work).
+This was the **FIRST implementation iteration** of the five bugs. The on-disk
+`.agents/tasks/review.json` + `verification.md` at the start of the run were
+STALE copies from unrelated tasks (the review.json's only finding + `reviewDoc`
+point at a `perf-optimize` worktree and an e2e portfolio-chart spec; the
+verification.md was the earlier `op-altart` One-Piece variant-image task). Neither
+referenced this worktree's bugs, and the branch HEAD (`459605b security: …`)
+contained none of the five fixes. Per the step instructions, absence of a
+matching review → implement all five from scratch per `plan.md`.
 
-## What was implemented (plan steps 1–13)
+## Pre-existing branch breakage repaired (NOT one of the five bugs)
 
-| Step | File(s) | Change |
-|---|---|---|
-| 1 Schema | `prisma/schema.prisma` | `variantImages Json?` on `Card` (next to image fields) + load-bearing comment; `npx prisma generate` OK. |
-| 2 Migration | `prisma/migrations/20250111000000_card_variant_images/{migration.sql,APPLY.md}` | Additive `ALTER TABLE "card" ADD COLUMN IF NOT EXISTS "variantImages" JSONB;` + APPLY.md (prefer `prisma migrate deploy`, Docker-psql fallback, verify query). Verified LOCALLY on throwaway `postgres:17-alpine` (see below). NOT applied to Mumbai. |
-| 3 Resolvers | `src/lib/utils/card-image.ts` | `VariantImagesReadSchema` (the ONE shared Zod schema), type `VariantImagesMap`, `parseVariantImages` (never-throws → `{}`), `onePieceVariantImageUrl` (select large→medium→small; null → fallback). |
-| 4 Scrydex schema | `src/lib/services/scrydex.service.ts` | `ScrydexImageSchema` (`.nullish()`); `images` added to `VariantSchema` + `ScrydexCardSchema` (resilient — no-images parses). |
-| 5 Mapper | `src/lib/services/scrydex.service.ts` | `pickVariantImages(card)` keyed by `variant.name`; RULE 2 (real URLs only, imageless omitted, may be `{}`). |
-| 6 Ingest | `src/lib/services/scrydex-pricing.service.ts` | After price write: write `Card.variantImages` ONLY when `game===ONE_PIECE` AND non-empty; best-effort/non-fatal; never Pokémon, never null/empty. |
-| 7 Cache schema | `src/app/api/cards/[id]/prices/route.ts` | `PricesCacheSchema.variantImages` = `VariantImagesReadSchema.nullable()` (REQUIRED-nullable → stale blob misses); `variantImages` added to both cached payloads + the catch payload. |
-| 8 Integration test | `tests/integration/scrydex-variant-images.test.ts` | REAL OP08-023 shape (foil/altArt/reprint/specialAltArt). Asserts schema parse, `pickVariantImages` captures altArt + omits imageless, write stores for One Piece / never Pokémon / never empty. Mocked Prisma + fetchers; no network/credits. |
-| 9 Unit test | `tests/unit/card-image.test.ts` | `parseVariantImages` round-trip + never-throw on garbage; `onePieceVariantImageUrl` select + fallback. |
-| 10 Display | `src/app/(dashboard)/search/[id]/page.tsx` | Hero resolves `onePieceVariantImageUrl(variantImages, variant)` for One Piece, falling back to `onePieceImageUrl(id) ?? PLACEHOLDER`; `variantImages` read from prices payload; `useEffect` resets `heroError` on src change. PRESERVED: hero `<img>` `maxWidth:"100%"`, single-hop `onError`, Pokémon `cardImgById` branch, VariantSelect/`listVariants`/`pickDefaultVariant`. |
-| 11 Selectability ceiling | `src/app/(dashboard)/search/[id]/page.tsx` | `ponytail:` comment at VariantSelect: priced-variant-only; upgrade = union `variantImages` keys into `listVariants`. Did NOT list unpriced variants. |
-| 12 Backfill | `scripts/backfill-onepiece-variant-images.ts` + `scripts/BACKFILL-onepiece-variant-images.md` | DRY-RUN default, One-Piece-scoped (`set.externalId` startsWith `"onepiece-"`), idempotent (canonical deep-equal, `{}`≡`null`), credit-GATED via `@/lib/services/scrydex-credit-gate` `assertScrydexCreditsApproved("standard", n)`, OWNER-RUN banner. NOT run; no live Scrydex calls in build/verify. |
-| 13 Docs | `docs/CODE_MAP.md`, `docs/ARCHITECTURE.md` | `Card.variantImages`, `pickVariantImages`, ingest write, `card-image.ts` resolvers + shared schema, prices-route payload/cache, detail hero flow, migration + backfill entries, accepted selectability ceiling. |
+`npm run type-check` failed on the UNTOUCHED `src/middleware.ts`:
+`Cannot find module '@/lib/utils/redirect'`. Commit `459605b` ("open-redirect fix
+M-3") added the `isValidCallbackUrl` import to `middleware.ts` but the companion
+`src/lib/utils/redirect.ts` was never committed (it existed only as an untracked
+file in the parent working tree). This is a pre-existing, unrelated breakage that
+blocked the required type-check/lint/test gate. I restored the genuine M-3
+companion file (verified it is exactly the open-redirect validator the committed
+middleware imports — same-origin, path-relative callbackUrl gate) so the branch
+compiles. It is committed SEPARATELY (`fix: restore missing M-3 redirect util`) so
+reviewers can see it is not part of the five-bug work. No product behavior for the
+five bugs is affected.
 
 ## Commands run and results (from the worktree root)
 
 | Command | Result |
 |---|---|
-| `npx prisma generate` | PASS — client regenerated with `variantImages`. |
-| `npm run type-check` (`tsc --noEmit`) | PASS — exit 0. |
-| `npm run lint` (`eslint .`) | PASS — exit 0, 0 errors. |
-| `npm run build` | PASS — exit 0, production build compiles clean (`/search/[id]` 7.79 kB / 143 kB First Load). |
-| `npm run test:unit` | PASS — **54 files, 407 tests** (includes the 6 new card-image alt-art cases). |
-| `npm run test:integration` | PASS — **52 files, 358 tests** (includes the 4 new `scrydex-variant-images` tests; `cache-revalidate-read` "valid blob" case updated to carry the new required-nullable `variantImages` key — a direct consequence of step 7, no behavior change). |
+| `npm run type-check` (`tsc --noEmit`) | **PASS** — exit 0, 0 errors (after the M-3 util restore above). |
+| `npm run lint` (`eslint .`) | **PASS** — exit 0, 0 errors/warnings. |
+| `npm run test:unit` | **PASS** — **72 files, 545 tests, 0 failures**. |
+| `npm run test:integration` | **PASS** — **60 files, 425 tests, 0 failures**. |
 
-No pre-existing unrelated unit/integration failures were observed in this run; all
-suites are fully green. (e2e was NOT run here — it needs a reachable remote
-`DATABASE_URL` + standalone build; the schema migration is authored-not-applied, so
-e2e against Mumbai is out of scope for this build/verify.)
+`build:standalone` and `test:e2e` were NOT run (remote DB busy — they stall, per
+the step instructions). The known flake `tests/unit/add-invalidates-chart.test.tsx`
+did NOT fail — the full unit suite is green, so no isolation re-run was needed.
 
-## Local migration verification (throwaway postgres:17-alpine — NOT Mumbai)
+Redis-down `[cache] … falling through` / `[rate-limit] … falling open` lines in
+the integration stderr are EXPECTED (AGENTS.md RULE 1, Redis optional) — not
+failures.
 
-Ran a disposable container (`docker run -e POSTGRES_PASSWORD=pw postgres:17-alpine`),
-created a minimal `card` table, piped
-`prisma/migrations/20250111000000_card_variant_images/migration.sql` through
-`psql -v ON_ERROR_STOP=1`, then ran the APPLY.md verify query. Results:
+## Per-bug summary
+
+### BUG 1 & 8 (HIGH) — portfolio value chart ignored each lot's grade/variant
+- **Root cause**: `collection-history.service.ts` selected only
+  `{cardId, recordedAt, priceMarket}` and `buildCollectionSeries`'
+  `priceAtOrBefore` carried forward whichever `priceMarket` sorted last, so raw /
+  PSA 9 / PSA 10 / CGC 10 rows sharing one `cardId` mis-valued a lot.
+- **Files changed**:
+  - `src/lib/utils/collection-series.ts` — `HoldingInterval` gains `condition?`;
+    `PricePoint` gains `type/company/grade/variant/condition?`; each lot now
+    builds a carry-forward series FILTERED to its own grade: a GRADED lot
+    (`parseGradedCondition` matches company+grade) keeps only that graded series;
+    a RAW lot keeps the best raw condition's points (via `pickBestRaw` /
+    `pickDefaultVariant` — the SAME selection `statsFromLots`/`displayPrice` use).
+    Empty match → honest null gap (RULE 2). Legacy points without `type` still
+    resolve as raw → existing fixtures unchanged.
+  - `src/lib/services/collection-history.service.ts` — adds `condition` to the
+    `userCollection` select + onto each `HoldingInterval`; adds
+    `type/company/grade/variant/condition` to the `pricingHistory` select + onto
+    each `PricePoint`. QA #6b short-window flat path and the ownership/anchor
+    logic are UNTOUCHED (verified: 10 QA #6b markers + ownership gate intact).
+- **Tests that pin it**:
+  - `tests/unit/collection-series.test.ts` → new describe "BUG 1 & 8": one cardId
+    with raw+PSA 9+PSA 10+CGC 10 at the same instant — PSA 9 lot→500, PSA 10→1000,
+    CGC 10→900, raw→50; three lots sum to their OWN grades (1550); a BGS 10 lot
+    with no row stays null; legacy no-type points still raw.
+  - `tests/unit/collection-history-service.test.ts` → new describe "BUG 1 & 8":
+    through the Prisma mock (dense ALL path, not the short-window path), a PSA 9
+    lot values at 500 across the series (never 1000/900/50); a raw lot values at 50.
+
+### BUG 3 (HIGH) — wrong image on composite Pokémon card-detail pages
+- **Root cause**: `src/app/api/card-img/[id]/route.ts` resolved via
+  case-SENSITIVE `findUnique({ where:{ externalId: id } })`; an upper-cased
+  composite id (`GYM1-1::unlimitedHolofoil`, URL `%3A%3A`) missed → 404 → wrong
+  cached image.
+- **File changed**: `src/app/api/card-img/[id]/route.ts` — `decodeURIComponent`
+  the param; externalId now resolved with
+  `findFirst({ where:{ externalId:{ equals: decoded, mode:"insensitive" } } })`,
+  keeping the cuid `findUnique` fallback. The `::printing` suffix is NOT stripped
+  (the whole composite externalId is its own row with its own image). SSRF
+  allowlist + `redirect:"manual"` + image/* guard intact; 404 still carries NO
+  `Cache-Control` (negative never cached for a later correct lookup).
+  Href-build grep: all app-internal detail links build from the stored
+  (lower-case) `externalId` via `encodeURIComponent` (portfolio `detailHref`,
+  search `goToCard`/tile hrefs, `DashboardClient.cardDetailHref`); none uppercase
+  the id, so the route fix is the robust backstop — no link change needed.
+- **Test that pins it**: `tests/integration/card-img-by-id.test.ts` — mock now
+  exposes `findFirst` + `findUnique`; added (a) `GYM1-1::unlimitedHolofoil`
+  resolves the stored row and asserts `mode:"insensitive"` + decoded id; (b) a
+  `%3A%3A` composite id looks up its OWN decoded `OP01-120::alt-art` row (suffix
+  intact, NOT the base `OP01-120`); (c) a 404 carries no `Cache-Control`. All
+  existing happy/SSRF/non-image/throw cases retargeted to the new resolver.
+
+### BUG 2 (MEDIUM) — list controls reset after opening a card and returning
+- **Root cause**: portfolio `cardType`/`selectedColl`/`view` and search `sort`
+  were component-only `useState`, lost on the Back remount (search FILTERS were
+  already URL-persisted; the search page is grid-only so it has no `view` toggle
+  — only `sort` is in-memory).
+- **Files changed**:
+  - `src/lib/utils/list-controls.ts` (new) — pure `paramOrDefault(value, allowed,
+    fallback)` validator (page-export-guard-safe, unit-testable).
+  - `src/app/(dashboard)/portfolio/page.tsx` — body renamed to
+    `PortfolioPageInner`, new default `PortfolioPage` wraps it in `<Suspense>`
+    (Next 15 requires it for `useSearchParams`). `cardType`/`selectedColl` init
+    from `?type=`/`?coll=` (validated); `view` restored from `?view=` post-mount
+    (responsive default only when absent). Each control's onClick mirrors to the
+    URL via a `setParam` helper using `router.replace` (drops key at default).
+  - `src/app/(dashboard)/search/page.tsx` — `sort` inits from `?sort=`
+    (validated); `applyFilters` now preserves `sort`; a `changeSort` helper
+    mirrors it to the URL via `router.replace`; both `setSort` call sites use it.
+  - Scroll restoration deferred with a `ponytail:` note (sessionStorage-by-path
+    proved fragile vs the skeleton/virtualized remount); control persistence —
+    the actual complaint — is met.
+- **Test that pins it**: `tests/unit/list-controls.test.ts` — `?type=sold`→`sold`,
+  unknown/absent→`active`; `?sort=market_desc`→`market_desc`, unknown→`trending`;
+  `?view=grid`→`grid`, absent→`list`.
+
+### BUG 5 (MEDIUM) + BUG 6 (LOW) — card-detail timeline tabs locked to 1M / default 1M
+- **Root cause**: `search/[id]/page.tsx` computed `spanDays` from ONLY the
+  selected chips, so a sparse selected graded chip → span 0 → only 1M enabled;
+  and `range` defaulted to a hard `"1M"`.
+- **Files changed**:
+  - `src/app/(dashboard)/search/[id]/price-history-chart.ts` (sibling pure module,
+    NOT a page export) — new `maxAvailableSpanDays(history)` (max real span across
+    raw + every graded key the card HAS) and `largestEnabledRange(avail)`.
+  - `src/app/(dashboard)/search/[id]/page.tsx` — `spanDays` now from
+    `maxAvailableSpanDays(historyData)` (selection-independent); a `rangeTouched`
+    flag + a history-keyed effect open the chart on `largestEnabledRange` until the
+    user picks a tab (then their pick sticks). Disabled tabs keep the existing
+    "Not enough history yet" title. No fabrication — availability still derives
+    from real stored spans.
+- **Test that pins it**: `tests/unit/card-detail-chips-matrix.test.ts` → new
+  describe "BUG 5 & 6": a 100-day raw series + a sparse graded series →
+  `maxAvailableSpanDays` 100 and 1M+3M+6M enabled regardless of selection; default
+  opens on 6M; a <31-day card enables only 1M (default 1M); the longest span may
+  come from a graded series the raw lacks (200→default 1Y).
+
+## Page-export guard (manual — tsc does NOT catch this)
+
+Checked every `page.tsx` I touched for new non-default exports:
+- `src/app/(dashboard)/portfolio/page.tsx` — exports: `interface CollectionItem`
+  (PRE-EXISTING, a type, not a runtime value — unchanged) + `default PortfolioPage`.
+  My change renamed the old default to a NON-exported `PortfolioPageInner` and
+  added the default wrapper. No new named export. ✓
+- `src/app/(dashboard)/search/page.tsx` — only `default SearchPage`. ✓
+- `src/app/(dashboard)/search/[id]/page.tsx` — only `default CardDetailPage`. New
+  helpers (`maxAvailableSpanDays`, `largestEnabledRange`) live in the sibling
+  `price-history-chart.ts`. ✓
+
+## Out-of-scope confirmation (left exactly as-is)
+
+- **Symptom 4** (short-window flat-line / QA #6b path): `collection-history.service.ts`
+  only gained the extra SELECT columns + the `condition` thread; `SHORT_WINDOW_DAYS`,
+  `isAllRange`, and the flat-anchor logic are byte-intact (10 QA #6b markers present).
+- **Symptom 7** (active-value-only series / sale doesn't move chart):
+  `collection-series.ts` ownership gate `[addedAt, soldAt)` untouched (2 markers
+  present) — only per-lot grade filtering was added.
+- **Scrydex enrich flag / credit gate / data coverage**: no such files touched
+  (`git status` shows only the chart/image/controls files + the M-3 util + tests).
+
+## Changed files (git status)
 
 ```
-CREATE TABLE
-ALTER TABLE
-=== VERIFY: column_name ===
-variantImages
-=== VERIFY: type/nullable ===
-jsonb|YES
-=== idempotency re-run ===
-NOTICE:  column "variantImages" of relation "card" already exists, skipping
-ALTER TABLE
+ M src/app/(dashboard)/portfolio/page.tsx
+ M src/app/(dashboard)/search/[id]/page.tsx
+ M src/app/(dashboard)/search/[id]/price-history-chart.ts
+ M src/app/(dashboard)/search/page.tsx
+ M src/app/api/card-img/[id]/route.ts
+ M src/lib/services/collection-history.service.ts
+ M src/lib/utils/collection-series.ts
+ M tests/integration/card-img-by-id.test.ts
+ M tests/unit/card-detail-chips-matrix.test.ts
+ M tests/unit/collection-history-service.test.ts
+ M tests/unit/collection-series.test.ts
+?? src/lib/utils/list-controls.ts
+?? src/lib/utils/redirect.ts   (pre-existing M-3 companion, restored)
+?? tests/unit/list-controls.test.ts
 ```
-
-Column exists as `jsonb`, nullable, and the migration is idempotent on re-run. The
-container was stopped + removed afterward. **The migration was NOT applied to Mumbai**
-— the orchestrator runs `npx prisma migrate deploy` per APPLY.md.
-
-## Backfill status
-
-`scripts/backfill-onepiece-variant-images.ts` is authored, DRY-RUN-default,
-credit-gated, and was **NOT run** (no live Scrydex/Vision calls were made anywhere in
-build/verify; the tests mock Scrydex + Prisma). Owner runs it per
-`scripts/BACKFILL-onepiece-variant-images.md`.
-
-## Accepted deviations (per step prompt)
-
-1. **scrydex-credit-gate path.** The backfill imports the credit gate from
-   `@/lib/services/scrydex-credit-gate` (it lives under `src/lib/services/`, NOT
-   `src/lib/utils/`) — the correct path used throughout the codebase.
-2. **Scanner candidate strip INTENTIONALLY NOT changed** — `src/app/api/cards/recognize/route.ts`
-   is untouched. Owner-approved descope: Scrydex Vision's `variant` cannot be reliably
-   mapped to a catalog variant name without a forbidden 5-credit probe, so the scan
-   candidate strip keeps showing the variant-blind base art. **FR-5 / AC-7 are NOT
-   blocking.** scan-allowance + credit-gate ordering untouched.
-
-## Load-bearing invariants preserved
-
-- Pokémon ingest/display byte-for-byte unchanged (every new write/read is One-Piece-gated).
-- RULE 2 (only real Scrydex URLs; absent stays absent — imageless variant omitted, empty map not written).
-- RULE 3 (`variantImages` is display data, not an id).
-- RULE 4 (Zod at every boundary incl. cache re-parse via the ONE shared `VariantImagesReadSchema`).
-- RULE 13 (images.scrydex.com flows through the existing proxy; no CSP/SSRF change).
-- e2e selectors/testids/text intact: `data-testid="variant-select"`, `ariaLabel="Price history chart"`,
-  want-to-buy-btn, hero `maxWidth:"100%"` + single-hop `onError`. No new dependency; square corners / `--color-dojo-*` tokens unchanged.
+(`.agents/tasks/plan.md` shows as modified — pre-existing working-tree state, not
+committed by this work.)

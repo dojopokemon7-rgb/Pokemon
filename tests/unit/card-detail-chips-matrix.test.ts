@@ -5,6 +5,8 @@ import {
   fmtChartDate,
   rangeAvailability,
   seriesSpanDays,
+  maxAvailableSpanDays,
+  largestEnabledRange,
   type Chip,
   type HistoryResponse,
 } from "@/app/(dashboard)/search/[id]/price-history-chart";
@@ -369,6 +371,65 @@ describe("rangeAvailability / seriesSpanDays (honest range tabs)", () => {
     // 100d > 93d so 6M reveals the few extra points; 1Y/ALL reveal nothing and are disabled.
     expect(avail["1Y"]).toBe(false);
     expect(avail.ALL).toBe(false);
+  });
+});
+
+describe("BUG 5 & 6 — availability/default follow the CARD's data, not the selected chip", () => {
+  // Helper: build a daily-ish series spanning `days` from a fixed base.
+  const span = (days: number, price = 10): HistoryResponse["raw"] => [
+    { date: new Date(Date.UTC(2026, 0, 1)).toISOString().slice(0, 10), price },
+    { date: new Date(Date.UTC(2026, 0, 1) + days * 86_400_000).toISOString().slice(0, 10), price: price + 1 },
+  ];
+
+  it("maxAvailableSpanDays ignores selection: a 100-day raw series + a sparse graded series → >= 100", () => {
+    const history: HistoryResponse = {
+      raw: span(100),
+      graded: { "PSA|10": [{ date: "2026-02-01", price: 1000 }] }, // 1 point → span 0
+    };
+    expect(maxAvailableSpanDays(history)).toBe(100);
+  });
+
+  it("a sparse graded chip being selected does NOT collapse availability: 1M AND 3M (and 6M) enabled", () => {
+    const history: HistoryResponse = {
+      raw: span(100),
+      graded: { "PSA|10": [{ date: "2026-02-01", price: 1000 }] },
+    };
+    // Availability derives from the CARD's max span, regardless of which chip
+    // (even the sparse graded one) is "selected".
+    const avail = rangeAvailability(maxAvailableSpanDays(history));
+    expect(avail["1M"]).toBe(true);
+    expect(avail["3M"]).toBe(true); // 100 > 31
+    expect(avail["6M"]).toBe(true); // 100 > 93
+    expect(avail["1Y"]).toBe(false); // 100 <= 183
+    expect(avail.ALL).toBe(false);
+  });
+
+  it("default range opens on the largest enabled range for a 100-day card (6M)", () => {
+    const history: HistoryResponse = { raw: span(100), graded: {} };
+    const avail = rangeAvailability(maxAvailableSpanDays(history));
+    expect(largestEnabledRange(avail)).toBe("6M");
+  });
+
+  it("a card with only a short (<31-day) series enables ONLY 1M; default stays 1M", () => {
+    const history: HistoryResponse = { raw: span(10), graded: {} };
+    const avail = rangeAvailability(maxAvailableSpanDays(history));
+    expect(avail).toEqual({ "1M": true, "3M": false, "6M": false, "1Y": false, ALL: false });
+    expect(largestEnabledRange(avail)).toBe("1M");
+  });
+
+  it("no history (undefined / empty) → span 0, only 1M, default 1M", () => {
+    expect(maxAvailableSpanDays(undefined)).toBe(0);
+    expect(maxAvailableSpanDays({ raw: [], graded: {} })).toBe(0);
+    expect(largestEnabledRange(rangeAvailability(0))).toBe("1M");
+  });
+
+  it("the longest span may come from a GRADED series the raw lacks", () => {
+    const history: HistoryResponse = {
+      raw: span(10),
+      graded: { "PSA|10": span(200, 1000) },
+    };
+    expect(maxAvailableSpanDays(history)).toBe(200);
+    expect(largestEnabledRange(rangeAvailability(200))).toBe("1Y"); // 200 > 183, <= 366
   });
 });
 
