@@ -100,12 +100,20 @@ export async function GET(request: Request): Promise<NextResponse> {
             set: { select: { id: true, name: true } },
             // D7: the REAL per-grade prices (populated by the Scrydex enrich).
             // Without them a graded lot's headline price fell back to the coarse
-            // gradedPrice() multiplier (= RAW for most cards). Mirrors the
-            // enrich/history select; keyed by internal Card.id, bounded by
-            // type:'graded' + priceMarket not-null + @@index([cardId]).
+            // gradedPrice() multiplier (= RAW for most cards).
+            // CHART↔DISPLAY PARITY (review-blocking): select the card's FULL
+            // priced CurrentPrice set (raw + graded) WITH `type`/`variant`/
+            // `condition`, not graded-only. displayPrice/statsFromLots now route
+            // through the SAME shared selector (pickGradedFromRows → pickGradedVariant)
+            // the portfolio-value chart uses, and that selector derives the card
+            // DEFAULT variant from the raw rows too (a raw holofoil can make
+            // `holofoil` the graded default). Dropping raw rows or the variant
+            // column would make the tile/summary pick a different variant than the
+            // chart when a company+grade has multiple variants. Keyed by internal
+            // Card.id, bounded by priceMarket not-null + @@index([cardId]).
             currentPrices: {
-              where: { type: "graded", priceMarket: { not: null } },
-              select: { company: true, grade: true, priceMarket: true },
+              where: { priceMarket: { not: null } },
+              select: { type: true, company: true, grade: true, variant: true, condition: true, priceMarket: true },
             },
           },
         },

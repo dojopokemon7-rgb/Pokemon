@@ -12,7 +12,7 @@
  * TODO: Replace fallback with live graded pricing API (e.g. PriceCharting).
  */
 
-import { parseGradedCondition } from "./raw-price";
+import { parseGradedCondition, pickGradedFromRows, type PriceRowLike } from "./raw-price";
 
 interface GradedEntry {
   name: string;
@@ -130,7 +130,18 @@ export function gradedPrice(rawMarketPrice: number, grade: string | number): num
  * resolver stays a pure, unit-testable util (not trapped inside a client
  * component module).
  */
-export interface GradedPriceRow {
+/**
+ * A card's CurrentPrice row as the display/accounting path consumes it. To keep
+ * chart↔display parity (review-blocking), this is now the card's FULL row set
+ * (raw + graded), not graded-only: the shared variant selector `pickGradedFromRows`
+ * derives the card DEFAULT variant from raw rows too, so a raw holofoil can make
+ * `holofoil` the graded default. `type`/`variant` are OPTIONAL so legacy callers
+ * passing graded-only `{company,grade,priceMarket}` rows still type-check — but a
+ * row missing `type:"graded"` will no longer match (that is the point: pass the
+ * full set so the variant decision matches the chart). Structurally assignable
+ * to PriceRowLike.
+ */
+export interface GradedPriceRow extends PriceRowLike {
   company: string | null;
   grade: string | null;
   priceMarket: number | null;
@@ -179,10 +190,22 @@ export function displayPrice(item: DisplayPriceItem): number | null {
 
 /**
  * The REAL stored graded price for a lot's condition ("PSA 10") from the card's
- * graded CurrentPrice rows — company+grade must match and priceMarket be
- * non-null. Returns null when no row matches (caller falls back). Reuses
+ * CurrentPrice rows — company+grade must match and priceMarket be non-null.
+ * Returns null when no row matches (caller falls back). Reuses
  * `parseGradedCondition` (same parser the collection/graded routes use) so the
  * matched company+grade are exactly what the add flow persisted.
+ *
+ * CHART↔DISPLAY PARITY (review-blocking): this routes through the ONE shared
+ * selector `pickGradedFromRows`, the SAME rule the portfolio-value chart
+ * (collection-series.ts via pickGradedVariant) uses. When a company+grade has
+ * several variants (e.g. PSA 9 normal + holofoil), both the tile/summary here
+ * and the chart pick the card DEFAULT variant deterministically — never the
+ * first row Prisma happens to return — so the displayed value and the chart
+ * can't disagree. This requires the caller to pass the card's FULL CurrentPrice
+ * set (raw + graded, carrying `type`/`variant`); the collection API now selects
+ * that. A graded-only legacy array still works, it just can't see raw-driven
+ * defaults. Rows need `type:"graded"` to match (uppercased company compared via
+ * a normalized copy so stored lower/upper casing doesn't miss).
  */
 export function pickRealGradedPrice(
   gradedPrices: GradedPriceRow[] | null | undefined,
@@ -191,13 +214,16 @@ export function pickRealGradedPrice(
   if (!gradedPrices || gradedPrices.length === 0) return null;
   const parsed = parseGradedCondition(condition);
   if (!parsed) return null;
-  const match = gradedPrices.find(
-    (r) =>
-      (r.company ?? "").toUpperCase() === parsed.company &&
-      r.grade === parsed.grade &&
-      r.priceMarket != null
-  );
-  return match?.priceMarket ?? null;
+  // Normalize each row's company to upper-case and default a missing `type` to
+  // "graded" so a legacy graded-only array (no `type`) still matches, while a
+  // full set's raw rows (type:"raw") are correctly excluded from the grade
+  // match yet still inform the default-variant decision.
+  const rows: PriceRowLike[] = gradedPrices.map((r) => ({
+    ...r,
+    company: r.company == null ? r.company : r.company.toUpperCase(),
+    type: r.type ?? "graded",
+  }));
+  return pickGradedFromRows(rows, parsed.company, parsed.grade);
 }
 
 // ---------------------------------------------------------------------------

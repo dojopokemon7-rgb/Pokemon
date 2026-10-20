@@ -17,6 +17,11 @@
  *     RAW lot ONLY from the best-available raw condition's points — the SAME
  *     selection statsFromLots/displayPrice use. No fabrication: a lot whose
  *     matching series is empty stays an honest null gap.
+ *   - CHART↔DISPLAY PARITY: the graded variant is chosen by the ONE shared
+ *     selector `pickGradedVariant` (raw-price.ts) over the card's FULL row set —
+ *     the identical rule pickGradedFromRows / pickRealGradedPrice (displayPrice/
+ *     statsFromLots) now use — so the chart and the tile/summary can never
+ *     disagree on which variant a company+grade lot is priced at.
  */
 
 import {
@@ -24,6 +29,7 @@ import {
   isRawRow,
   pickBestRaw,
   pickDefaultVariant,
+  pickGradedVariant,
   type PriceRowLike,
 } from "@/lib/utils/raw-price";
 
@@ -118,51 +124,36 @@ export function buildCollectionSeries(
     let filtered: PricePoint[];
     if (graded) {
       // Graded lot: only this company+grade's graded points, AND only ONE
-      // deterministic variant among them — the SAME default-variant rule
-      // pickGradedFromRows (the /graded route + statsFromLots/displayPrice) uses.
-      // CRITICAL PARITY: the card default variant is derived from the card's
-      // FULL row set (`all`), NOT the graded-only slice. A raw row can establish
-      // a non-normal card default (e.g. a holofoil raw makes holofoil the card
-      // default); display/accounting then prices the PSA 9 holofoil row. Deriving
-      // the variant from gradeRows alone would ignore that raw signal and pick
-      // `normal` by variant priority, so the chart would disagree with the
-      // displayed value. We mirror pickGradedFromRows exactly:
-      // wantVariant = pickDefaultVariant(FULL rows), then take that variant's
-      // graded point, else the alphabetically-first graded variant.
+      // deterministic variant among them. CRITICAL PARITY: the chart and the
+      // display/accounting path (pickRealGradedPrice → displayPrice/
+      // statsFromLots) MUST pick the SAME variant, so BOTH route through the ONE
+      // shared selector `pickGradedVariant` over the card's FULL row set (`all`,
+      // adapted to PriceRowLike). A raw row can make a non-normal variant the
+      // card default (e.g. a holofoil raw → holofoil default), and the display
+      // side now prices that same PSA 9 holofoil row. Deriving the variant from
+      // graded-only rows (or taking the first match) would diverge from the
+      // tile/summary — the review-blocking parity bug. No fabrication: an empty
+      // company+grade match returns null → honest gap below.
       const company = graded.company.toUpperCase();
+      const rowsLike: PriceRowLike[] = all.map((p) => ({
+        type: p.type,
+        company: p.company == null ? p.company : p.company.toUpperCase(),
+        grade: p.grade,
+        variant: p.variant,
+        condition: p.condition,
+        priceMarket: p.price,
+      }));
+      const wantVariant = pickGradedVariant(rowsLike, company, graded.grade);
       const gradeRows = all.filter(
         (p) =>
           (p.type ?? "") === "graded" &&
           (p.company ?? "").toUpperCase() === company &&
           (p.grade ?? "") === graded.grade
       );
-      const wantVariant = pickDefaultVariant(
-        all.map((p) => ({
-          type: p.type,
-          company: p.company,
-          grade: p.grade,
-          variant: p.variant,
-          condition: p.condition,
-          priceMarket: p.price,
-        }))
-      );
-      const match =
+      filtered =
         wantVariant == null
           ? []
           : gradeRows.filter((p) => (p.variant ?? "normal") === wantVariant);
-      if (match.length > 0) {
-        filtered = match;
-      } else {
-        // wantVariant has no graded point for this company+grade: mirror
-        // pickGradedFromRows' fallback — the alphabetically-first graded variant.
-        const fallbackVariant = [...gradeRows]
-          .map((p) => p.variant ?? "normal")
-          .sort((a, b) => a.localeCompare(b))[0];
-        filtered =
-          fallbackVariant == null
-            ? gradeRows
-            : gradeRows.filter((p) => (p.variant ?? "normal") === fallbackVariant);
-      }
     } else {
       // Raw lot: raw points only, at the best available raw condition. The
       // shared helpers (pickBestRaw/pickDefaultVariant) read priceMarket, so

@@ -5,6 +5,8 @@ import {
   type PricePoint,
 } from "@/lib/utils/collection-series";
 import { isVirtualCollectionId, ALL_VIEW_ID } from "@/lib/utils/collections-virtual";
+import { displayPrice, type GradedPriceRow } from "@/lib/utils/graded-price";
+import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 
 const DAY = 24 * 60 * 60 * 1000;
 const t0 = 1_700_000_000_000; // arbitrary epoch base
@@ -199,6 +201,104 @@ describe("BUG 1 & 8 — a lot is valued from the price series matching ITS OWN g
     // Must be the PSA 9 HOLOFOIL price (777) — the variant the raw row made the
     // card default — NOT "normal" (500) that a graded-only derivation would pick.
     expect(buildCollectionSeries(holdings, prices, [t0])[0].points[0].value).toBe(777);
+  });
+});
+
+describe("BUG 1 & 8 — chart↔display parity through ONE shared variant selector (multi-variant)", () => {
+  // Review-blocking (iteration 4): the chart (buildCollectionSeries) and the
+  // display/accounting path (displayPrice/statsFromLots → pickRealGradedPrice)
+  // MUST pick the SAME variant when one company+grade has several priced
+  // variants. Both now route through the shared pickGradedVariant/pickGradedFromRows
+  // rule over the card's FULL row set. This test drives BOTH helpers from the
+  // SAME row set (the collection API now ships the full set with `type`/`variant`)
+  // and asserts they agree — the old display path's `.find()`-first could pick a
+  // different variant than the chart's deterministic default.
+
+  // One card, PSA 9 with TWO priced variants: normal (500) + holofoil (777).
+  // A raw holofoil row makes `holofoil` the card DEFAULT variant, so BOTH the
+  // chart and display must price the PSA 9 HOLOFOIL (777), never normal (500),
+  // and never depend on row order.
+  const makeFullRows = (): GradedPriceRow[] => [
+    { type: "raw", company: null, grade: null, variant: "holofoil", condition: "NM", priceMarket: 60 },
+    { type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null, priceMarket: 500 },
+    { type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 777 },
+  ];
+
+  const rowsToPoints = (rows: GradedPriceRow[]): PricePoint[] =>
+    rows.map((r) => ({
+      cardId: "c1",
+      at: t0,
+      price: r.priceMarket as number,
+      type: r.type,
+      company: r.company,
+      grade: r.grade,
+      variant: r.variant,
+      condition: r.condition,
+    }));
+
+  it("the chart and displayPrice price the SAME PSA 9 variant (holofoil, 777) — order-independent", () => {
+    for (const rows of [makeFullRows(), [...makeFullRows()].reverse()]) {
+      // Chart value for one PSA 9 lot.
+      const chart = buildCollectionSeries(
+        [{ collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9" }],
+        rowsToPoints(rows),
+        [t0]
+      )[0].points[0].value;
+
+      // Display value for the same PSA 9 lot, fed the SAME full row set the
+      // collection API now returns under card.gradedPrices.
+      const display = displayPrice({
+        isSold: false,
+        condition: "PSA 9",
+        card: { marketPrice: 60, gradedPrices: rows },
+      });
+
+      expect(chart).toBe(777);
+      expect(display).toBe(777);
+      expect(chart).toBe(display); // the parity contract
+    }
+  });
+
+  it("statsFromLots values a PSA 9 lot at the SAME variant the chart does (holofoil, 777)", () => {
+    const rows = makeFullRows();
+    const stats = statsFromLots([
+      {
+        quantity: 1,
+        purchasePrice: null,
+        marketPrice: 60,
+        isSold: false,
+        condition: "PSA 9",
+        gradedPrices: rows,
+      },
+    ]);
+    const chart = buildCollectionSeries(
+      [{ collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9" }],
+      rowsToPoints(rows),
+      [t0]
+    )[0].points[0].value;
+    expect(stats.marketValue).toBe(777);
+    expect(stats.marketValue).toBe(chart);
+  });
+
+  it("with NO raw signal, both pick the default `normal` variant (500) deterministically", () => {
+    // Only graded rows: pickDefaultVariant has no raw → first-listed variant by
+    // priority (`normal` outranks `holofoil`), so both value PSA 9 at 500.
+    const rows: GradedPriceRow[] = [
+      { type: "graded", company: "PSA", grade: "9", variant: "holofoil", condition: null, priceMarket: 777 },
+      { type: "graded", company: "PSA", grade: "9", variant: "normal", condition: null, priceMarket: 500 },
+    ];
+    const chart = buildCollectionSeries(
+      [{ collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9" }],
+      rowsToPoints(rows),
+      [t0]
+    )[0].points[0].value;
+    const display = displayPrice({
+      isSold: false,
+      condition: "PSA 9",
+      card: { marketPrice: null, gradedPrices: rows },
+    });
+    expect(chart).toBe(500);
+    expect(display).toBe(500);
   });
 });
 

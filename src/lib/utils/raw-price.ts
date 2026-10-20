@@ -129,12 +129,49 @@ export function parseGradedCondition(
 }
 
 /**
+ * The ONE graded-variant decision shared by every surface that prices a graded
+ * lot from a card's rows: the chart series (collection-series.ts), the display /
+ * accounting path (pickRealGradedPrice → displayPrice/statsFromLots), and the
+ * add-snapshot (collection route). Given the card's FULL row set (raw + graded)
+ * and a company+grade, it returns the variant to price at:
+ *   - the card DEFAULT variant (pickDefaultVariant over the FULL rows — a raw
+ *     holofoil can make `holofoil` the default even when a graded `normal` row
+ *     exists), when that variant HAS a matching graded row;
+ *   - else the alphabetically-first graded variant among the company+grade
+ *     matches (deterministic — never DB/array order);
+ *   - else null when no graded row matches the company+grade at all.
+ * CRITICAL PARITY: because the default is derived from the FULL row set, the
+ * chart and the displayed value can never disagree on which variant to price —
+ * provided both pass the same full row set. Returning the VARIANT (not a price)
+ * lets the chart filter its time-series points to it while display picks the
+ * single matching price, from one rule.
+ */
+export function pickGradedVariant(
+  rows: PriceRowLike[],
+  company: string,
+  grade: string
+): string | null {
+  const matches = rows.filter(
+    (r) => r.type === "graded" && r.company === company && r.grade === grade && r.priceMarket != null
+  );
+  if (matches.length === 0) return null;
+  const wantVariant = pickDefaultVariant(rows);
+  const hasWant =
+    wantVariant != null && matches.some((r) => (r.variant ?? "normal") === wantVariant);
+  if (hasWant) return wantVariant as string;
+  // Fallback: the alphabetically-first graded variant present for this grade.
+  return [...matches]
+    .map((r) => r.variant ?? "normal")
+    .sort((a, b) => a.localeCompare(b))[0];
+}
+
+/**
  * Pick the graded market price for a (company, grade) from a card's CurrentPrice
  * rows — the SAME selection the `/graded` route does inline: filter
  * `type==="graded" && company && grade && priceMarket != null`, prefer the given
- * `variant` (else the card's default variant), else the first variant in a
- * deterministic order. Returns `rowPrice(match)` or null when no graded row
- * matches (caller falls back to raw — never fabricates).
+ * `variant` (else the card's default variant via {@link pickGradedVariant}),
+ * else the first variant in a deterministic order. Returns `rowPrice(match)` or
+ * null when no graded row matches (caller falls back to raw — never fabricates).
  */
 export function pickGradedFromRows(
   rows: PriceRowLike[],
@@ -146,7 +183,7 @@ export function pickGradedFromRows(
     (r) => r.type === "graded" && r.company === company && r.grade === grade && r.priceMarket != null
   );
   if (matches.length === 0) return null;
-  const wantVariant = variant ?? pickDefaultVariant(rows);
+  const wantVariant = variant ?? pickGradedVariant(rows, company, grade);
   const chosen =
     matches.find((r) => (r.variant ?? "normal") === wantVariant) ??
     [...matches].sort((a, b) => (a.variant ?? "normal").localeCompare(b.variant ?? "normal"))[0];

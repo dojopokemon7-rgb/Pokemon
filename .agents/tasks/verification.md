@@ -4,6 +4,94 @@ Worktree `d:\Pokemon\Pokemon\.worktrees\fix-chart-data-bugs`, branch
 `fix-chart-data-bugs` (based on local `master` @ 459605b). Windows / PowerShell;
 the repo path contains a space — every path quoted.
 
+## Iteration 4 — review blocking finding resolved (chart↔display graded-variant parity, BOTH sides)
+
+`review.json` (verdict `CHANGES_REQUESTED`) carried ONE **blocking** finding
+(Review B; Review A was APPROVED):
+
+> **Graded variant parity (blocking)** — the chart (`collection-series.ts:139`)
+> derived a deterministic variant from the full historical rows, but the
+> collection API selected only `{ company, grade, priceMarket }` for
+> `gradedPrices` (no variant, no ordering), and `statsFromLots`/`displayPrice`
+> routed through `pickRealGradedPrice`, whose `.find(...)` took the FIRST matching
+> company/grade. With e.g. PSA 9 normal + holofoil rows, the chart could pick
+> holofoil while the tile/summary picked whichever row Prisma returned first — the
+> per-lot chart↔display parity requirement was NOT met. Fix: route BOTH the chart
+> and the display/accounting paths through ONE shared company/grade/variant
+> selector, and add a cross-helper multi-variant regression that drives
+> `buildCollectionSeries` AND `displayPrice`/`statsFromLots` together (keep the
+> single-variant PSA 9 service regression). The existing "chart↔display parity"
+> test called only `buildCollectionSeries`.
+
+**Root cause**: iteration-3 aligned only the CHART's variant derivation. The
+DISPLAY side still (a) never received the variant column (collection API selected
+graded-only `{company,grade,priceMarket}`), and (b) `pickRealGradedPrice` took the
+first company+grade `.find()`. So for a multi-variant company+grade the two sides
+could price different variants.
+
+**Fix applied (ONE shared selector, both sides fed the SAME full row set):**
+- `src/lib/utils/raw-price.ts` — extracted `pickGradedVariant(rows, company, grade)`:
+  the single rule that returns the graded variant to price at — the card DEFAULT
+  variant (`pickDefaultVariant` over the FULL raw+graded rows, so a raw holofoil
+  can make `holofoil` the graded default) when it has a matching graded row, else
+  the alphabetically-first graded variant, else null. `pickGradedFromRows` now
+  delegates to it.
+- `src/lib/utils/collection-series.ts` — the chart's graded branch now calls that
+  SAME `pickGradedVariant` (over `all`, uppercased company) instead of its inline
+  duplicate — identical rule, one source of truth.
+- `src/lib/utils/graded-price.ts` — `GradedPriceRow` now `extends PriceRowLike`
+  (optional `type`/`variant`/`condition`/`priceLow`); `pickRealGradedPrice` routes
+  through `pickGradedFromRows` (normalizing company to upper-case and defaulting a
+  missing `type` to `"graded"` so a legacy graded-only array still matches). So
+  `displayPrice`/`statsFromLots` pick the SAME variant the chart does.
+- `src/app/api/users/me/collection/route.ts` — the `currentPrices` select now
+  ships the card's FULL priced set (dropped `type:"graded"` filter; kept
+  `priceMarket not-null`) WITH `type`/`variant`/`condition`, so the display path
+  can see raw-driven defaults exactly as the chart does.
+
+RULE 2 preserved — an empty company+grade match still yields null (honest gap /
+fallback); no fabricated points. No `page.tsx` touched this iteration.
+
+**Regressions added** (`tests/unit/collection-series.test.ts`, new describe
+"chart↔display parity through ONE shared variant selector (multi-variant)"):
+drives `buildCollectionSeries` AND `displayPrice`/`statsFromLots` from the SAME
+full row set — raw holofoil + PSA 9 normal(500) + PSA 9 holofoil(777):
+- chart == displayPrice == **777** (the holofoil variant the raw row made default),
+  order-independent (forward + reversed rows);
+- `statsFromLots` marketValue == chart == 777;
+- with NO raw signal, both pick `normal` (500) deterministically.
+The iteration-2/3 single-variant + raw-default regressions are kept.
+
+### Iteration-4 commands run (from the worktree root, paths quoted)
+
+| Command | Result |
+|---|---|
+| `npm run type-check` (`tsc --noEmit`) | **PASS** — exit 0. |
+| `npm run lint` (`eslint .`) | **PASS** — exit 0. |
+| `npm run test:unit` | **PASS** — **72 files, 550 tests, 0 failures** (547 + 3 new parity regressions). |
+| `npm run test:integration` | **PASS** — **60 files, 425 tests, 0 failures** (1 updated: the collection-select-shape assertion now expects the full-set select). |
+| `npx vitest run tests/unit/collection-series.test.ts` | **PASS** — 19 tests. |
+| `npx vitest run tests/integration/collection-add-dashboard.test.ts` | **PASS** — 6 tests. |
+
+Known flake `tests/unit/add-invalidates-chart.test.tsx` did NOT fail — the full
+unit suite is green, so no isolation re-run was needed. `build:standalone` +
+Playwright e2e + chart-accuracy NOT run (remote DB busy — they stall, per the step
+instructions); the non-blocking browser Back-flow coverage gap is unchanged and
+left for a DB-available production gate.
+
+**Page-export guard (iteration 4):** no `page.tsx` was touched — changed source
+files are `src/lib/utils/raw-price.ts`, `src/lib/utils/collection-series.ts`,
+`src/lib/utils/graded-price.ts` (all `src/lib` utils) and
+`src/app/api/users/me/collection/route.ts` (an API route, not a page). The three
+previously-touched pages are unchanged this iteration and still export only
+`default` (+ the pre-existing erased `interface CollectionItem` in portfolio,
+confirmed identical to `master`). **Symptoms 4/7 and the Scrydex config remain
+untouched** — the iteration-4 diff contains no `collection-history.service.ts`
+change (QA #6b flat path intact), no active-value series change, and no
+Scrydex/enrich/credit-gate file.
+
+---
+
 ## Iteration 3 — review blocking finding resolved (graded default-variant parity)
 
 `review.json` (verdict `CHANGES_REQUESTED`) carried ONE blocking finding (Review B;

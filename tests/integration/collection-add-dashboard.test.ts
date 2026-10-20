@@ -130,13 +130,26 @@ describe("FEAT-003 — collection read exposes stored 7-day change", () => {
 });
 
 describe("D7 — collection read exposes REAL per-grade prices as card.gradedPrices", () => {
-  it("selects graded CurrentPrice rows (type:'graded', priceMarket not-null) keyed by internal cardId", async () => {
+  it("selects the FULL priced CurrentPrice set (raw + graded) with type/variant/condition for chart↔display parity", async () => {
+    // Review-blocking (iteration 4): the display/accounting path now routes
+    // through the SAME shared variant selector (pickGradedFromRows) the chart
+    // uses, which derives the card DEFAULT variant from raw rows too. So the
+    // select must ship the whole priced set (not type:'graded' only) WITH
+    // `type`/`variant`/`condition`, otherwise the tile/summary could pick a
+    // different variant than the chart when a company+grade has several variants.
     prismaMock.userCollection.findMany.mockResolvedValueOnce([]);
     await collectionGET(new Request("http://localhost/api/users/me/collection"));
     const cp = prismaMock.userCollection.findMany.mock.calls[0][0].select.card.select.currentPrices;
     expect(cp).toBeTruthy();
-    expect(cp.where).toEqual({ type: "graded", priceMarket: { not: null } });
-    expect(cp.select).toEqual({ company: true, grade: true, priceMarket: true });
+    expect(cp.where).toEqual({ priceMarket: { not: null } });
+    expect(cp.select).toEqual({
+      type: true,
+      company: true,
+      grade: true,
+      variant: true,
+      condition: true,
+      priceMarket: true,
+    });
   });
 
   it("returns the graded rows under card.gradedPrices (never leaking the Prisma relation name)", async () => {
