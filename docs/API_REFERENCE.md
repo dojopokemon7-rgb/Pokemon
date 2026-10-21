@@ -65,6 +65,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 - `[id]` = **externalId** OR internal **cuid** (resolved to `Card.id` via `findFirst OR`). No query params read.
 - **PART D — pure Postgres read, NO credit gate:** reads the `SoldListing` table (`where { cardId } orderBy soldAt desc nulls-last take 8`) and maps each row to `{ itemId, source, title, price, currency, soldAt (ISO), grade, company, url }`. 200 `{ listings: SoldRecord[], source: "db"|"cache" }`.
 - These are **REAL SOLD records** (`soldAt`), persisted by the owner-approval-gated single writer `pullAndStoreSoldListings` — **never** active listings, never fabricated. Unknown card / no rows → `200 { listings: [] }`.
+- **Per-printing scope (RULE 3):** the writer **store-scopes** sold records to the card row's own `printing` variant (derived from its own card lookup, so both the enrich and button callers are scoped with no extra query) and persists `variant` on each row (never-store-zero fallback to all variants + `console.warn` when the printing is absent). Because storage is scoped, this read's plain `where { cardId }` is already printing-correct — no read-time filter.
 - **Cache:** short-TTL (120s) read-through on `RedisKeys.soldRows(cardId)` (fail-open; Postgres is source of truth). The legacy `ebay:sold:*` key is **retired** here (ages out on its own TTL). The old Redis-only + credit-gated live-fetch model is removed — reading never spends a credit.
 
 ### `GET /api/cards/[id]/history`

@@ -237,6 +237,84 @@ describe("pullAndStoreSoldListings (credit-gated single writer)", () => {
       })
     );
   });
+
+  // --- Per-printing scope (RULE 3) ------------------------------------------
+  // The /listings payload carries every sibling printing's sold records (shared
+  // scrydexId). The writer STORE-SCOPES to the card row's printing variant and
+  // persists `variant` on each row, with a never-store-zero fallback (RULE 2).
+  const PRINTING_CARD = {
+    id: "card_p",
+    scrydexId: "base1-2",
+    game: Game.POKEMON,
+    printing: "unlimitedShadowlessHolofoil",
+  };
+  const MIXED_SOLD = [
+    {
+      id: "ebay_want",
+      source: "ebay",
+      variant: "unlimitedShadowlessHolofoil",
+      price: 500,
+      currency: "USD",
+      sold_at: "2026-06-01",
+    },
+    {
+      id: "ebay_sibling_1",
+      source: "ebay",
+      variant: "unlimitedHolofoil",
+      price: 300,
+      currency: "USD",
+      sold_at: "2026-05-20",
+    },
+    {
+      id: "ebay_sibling_2",
+      source: "ebay",
+      variant: "firstEditionShadowlessHolofoil",
+      price: 900,
+      currency: "USD",
+      sold_at: "2026-05-10",
+    },
+  ];
+
+  it("stores ONLY the card row's printing variant and persists `variant` on each row", async () => {
+    gateMock.approved = true;
+    prismaMock.card.findFirst.mockResolvedValue(PRINTING_CARD);
+    scrydexMock.fetchScrydexSoldListings.mockResolvedValue(MIXED_SOLD);
+
+    const result = await pullAndStoreSoldListings("base1-2::unlimitedShadowlessHolofoil");
+
+    expect(result.stored).toBe(1);
+    expect(prismaMock.soldListing.upsert).toHaveBeenCalledTimes(1);
+    const call = prismaMock.soldListing.upsert.mock.calls[0][0];
+    // Only the printing's record stored, and `variant` persisted.
+    expect(call.create.variant).toBe("unlimitedShadowlessHolofoil");
+    expect(call.update.variant).toBe("unlimitedShadowlessHolofoil");
+    expect(call.where).toEqual({
+      cardId_itemId: { cardId: "card_p", itemId: "ebay_want" },
+    });
+    // No sibling-variant record ever reached the upsert.
+    for (const c of prismaMock.soldListing.upsert.mock.calls) {
+      expect(c[0].create.variant).toBe("unlimitedShadowlessHolofoil");
+    }
+  });
+
+  it("falls back to storing ALL variants with a console.warn when the printing is absent", async () => {
+    gateMock.approved = true;
+    prismaMock.card.findFirst.mockResolvedValue({
+      ...PRINTING_CARD,
+      printing: "variantNotInPayload",
+    });
+    scrydexMock.fetchScrydexSoldListings.mockResolvedValue(MIXED_SOLD);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await pullAndStoreSoldListings("base1-2::variantNotInPayload");
+
+    expect(result.stored).toBe(3); // never store zero when real records exist
+    expect(prismaMock.soldListing.upsert).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("sold-listings printing")
+    );
+    warn.mockRestore();
+  });
 });
 
 // --- D3: GET /api/cards/[id]/ebay-sold (pure Postgres read) ------------------

@@ -453,13 +453,24 @@ function parseHistoryDate(date: string): Date | null {
 }
 
 export async function pullAndStoreScrydexHistory(
-  card: { id: string; game: Game; scrydexId: string },
+  card: { id: string; game: Game; scrydexId: string; printing?: string | null },
   filters?: {
     days?: number;
     grades?: Array<{ company: string; grade: string }>;
     creditAuth?: "onview";
   }
 ): Promise<{ stored: number; credits: number }> {
+  // --- Per-printing scope (Bug — AGENTS.md RULE 3/14) ----------------------
+  // Mirrors the price-writer scope in pullAndStoreScrydexPrice: each printing is
+  // its OWN Card row (distinct card.id) but MANY rows share one scrydexId, so
+  // the /price_history fetch below returns EVERY sibling printing's variant
+  // points. Without scoping, an alt-art row ("OP01-120::alt-art", printing
+  // "alt art") would persist the `normal` variant's history series as its own —
+  // a wrong, hard-to-undo chart. We keep ONLY points whose `p.variant` matches
+  // THIS row's printing (defaulting "normal"). The never-store-zero fallback
+  // below (RULE 2) keeps the full set + warns when the printing is absent from
+  // the payload — we never store zero history when real points exist.
+  const wantVariant = card.printing ?? "normal";
   // DUAL credit gate ONCE at the top — refuses to spend credits unless EITHER
   // the on-view allowance (when the caller passes creditAuth:"onview") OR the
   // hard bulk gate authorizes. Estimate = the raw NM call (1) PLUS one call per
@@ -525,9 +536,10 @@ export async function pullAndStoreScrydexHistory(
     }
   }
 
-  if (rows.length > 0) {
-    await prisma.pricingHistory.createMany({ data: rows, skipDuplicates: true });
-  }
+  // NOTE (per-printing scope): the raw write is DEFERRED to after the graded
+  // fetch so the never-store-zero variant-scope decision below is made ONCE
+  // across raw + graded combined (mirrors the single fallback decision in the
+  // price writer, 229f16c). Do NOT re-add an early createMany here.
 
   // --- Per-grade GRADED history capture ------------------------------------
   // For each requested (company, grade), one extra credit-consuming call. The
@@ -596,13 +608,40 @@ export async function pullAndStoreScrydexHistory(
     })
   );
 
-  let gradedStored = 0;
-  for (const gradedRows of gradedRowsPerGrade) {
-    if (gradedRows.length > 0) {
-      await prisma.pricingHistory.createMany({ data: gradedRows, skipDuplicates: true });
-      gradedStored += gradedRows.length;
-    }
+  const gradedRowsAll = gradedRowsPerGrade.flat();
+
+  // --- Per-printing variant scope + never-store-zero fallback (RULE 2/3/14) --
+  // The /price_history payload carries EVERY sibling printing's variant points
+  // (shared scrydexId). Keep ONLY points whose variant matches THIS row's
+  // printing. Make ONE fallback decision across raw + graded combined, exactly
+  // like the price writer (229f16c): if the variant filter removes ALL points
+  // that otherwise carried real data, store the UNFILTERED set and warn —
+  // never persist zero history when real points exist. Base rows
+  // (printing "normal") keep their "normal"-variant points unchanged.
+  const matchesPrinting = (v: string) => (v || "normal") === wantVariant;
+  const scopedRaw = rows.filter((r) => matchesPrinting(r.variant));
+  const scopedGraded = gradedRowsAll.filter((r) => matchesPrinting(r.variant));
+  const hadData = rows.length + gradedRowsAll.length > 0;
+  const scopedHasData = scopedRaw.length + scopedGraded.length > 0;
+
+  let rawToStore = scopedRaw;
+  let gradedToStore = scopedGraded;
+  if (hadData && !scopedHasData) {
+    console.warn(
+      `[scrydex-pricing] history printing "${wantVariant}" not in payload for ${card.scrydexId} ` +
+        `— falling back to all variants`
+    );
+    rawToStore = rows;
+    gradedToStore = gradedRowsAll;
   }
+
+  if (rawToStore.length > 0) {
+    await prisma.pricingHistory.createMany({ data: rawToStore, skipDuplicates: true });
+  }
+  if (gradedToStore.length > 0) {
+    await prisma.pricingHistory.createMany({ data: gradedToStore, skipDuplicates: true });
+  }
+  const gradedStored = gradedToStore.length;
 
   // Meter ONE SyncLog covering the raw call + every graded call (3 credits each,
   // the documented price_history cost).
@@ -615,7 +654,7 @@ export async function pullAndStoreScrydexHistory(
     },
   });
 
-  return { stored: rows.length + gradedStored, credits: credits * (1 + grades.length) };
+  return { stored: rawToStore.length + gradedStored, credits: credits * (1 + grades.length) };
 }
 
 /**
@@ -806,6 +845,10 @@ export async function pullAndStoreSoldListings(
       scrydexId: true,
       name: true,
       number: true,
+      // Per-printing re-model (RULE 3): scope stored sold records to THIS row's
+      // printing. Read here (not via a caller param) so BOTH callers — the
+      // enrich route and the button-gated POST — are scoped with no extra query.
+      printing: true,
       set: { select: { name: true, externalId: true } },
     },
   });
@@ -874,17 +917,38 @@ export async function pullAndStoreSoldListings(
     return { stored: 0, credits };
   }
 
+  // --- Per-printing variant scope + never-store-zero fallback (RULE 2/3/14) --
+  // The /listings payload can carry EVERY sibling printing's sold records
+  // (shared scrydexId). STORE-SCOPE to THIS row's printing so a plain
+  // `where { cardId }` read (GET /api/cards/[id]/ebay-sold) is already
+  // printing-correct — no read-time filter needed. Mirror the price writer
+  // (229f16c): make ONE fallback decision — if the variant filter removes ALL
+  // sold_at-bearing records that otherwise had data, keep the full set and warn
+  // (never store zero sales when real records exist). `l.variant` is also
+  // persisted on each row for provenance / a future store-all-filter-on-read.
+  const wantVariant = found.printing ?? "normal";
+  const soldRecords = listings.filter((l) => l.sold_at);
+  const scopedRecords = soldRecords.filter((l) => (l.variant || "normal") === wantVariant);
+  let recordsToStore = scopedRecords;
+  if (soldRecords.length > 0 && scopedRecords.length === 0) {
+    console.warn(
+      `[scrydex-pricing] sold-listings printing "${wantVariant}" not in payload for ${scrydexId} ` +
+        `— falling back to all variants`
+    );
+    recordsToStore = soldRecords;
+  }
+
   // 4. Upsert each sold_at-bearing record on [cardId, itemId] (idempotent).
   let stored = 0;
-  for (const l of listings) {
-    if (!l.sold_at) continue; // never store a non-sold record (defensive — client filters too)
+  for (const l of recordsToStore) {
     const itemId = l.id ?? `${l.sold_at}-${l.price}`;
     const data = {
       source: l.source ?? null,
+      variant: l.variant ?? null,
       title: l.title ?? null,
       price: typeof l.price === "number" ? l.price : null,
       currency: l.currency ?? null,
-      soldAt: new Date(l.sold_at),
+      soldAt: l.sold_at ? new Date(l.sold_at) : null,
       grade: l.grade ?? null,
       company: l.company ?? null,
       url: l.url ?? null,

@@ -86,6 +86,7 @@ export async function POST(
       scrydexId: true,
       name: true,
       number: true,
+      printing: true,
       set: { select: { name: true } },
     },
   });
@@ -151,7 +152,7 @@ export async function POST(
     }
     try {
       const r = await pullAndStoreScrydexHistory(
-        { id: card.id, game: card.game, scrydexId: card.scrydexId },
+        { id: card.id, game: card.game, scrydexId: card.scrydexId, printing: card.printing },
         { days: 365, grades, creditAuth: "onview" }
       );
       historyStored = r.stored;

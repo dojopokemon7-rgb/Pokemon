@@ -500,6 +500,12 @@ model SoldListing {
   cardId    String
   source    String? // e.g. "ebay"
   itemId    String // Scrydex listing id, or a synthetic `${sold_at}-${price}` key
+  // Per-printing re-model (AGENTS.md RULE 3): the Scrydex `variant` this sold
+  // record belongs to. The writer STORE-SCOPES sold records to the card row's
+  // printing (store-scoped read: a plain `where { cardId }` is already
+  // printing-correct), so this column is kept for provenance/debuggability and
+  // to leave a store-all-filter-on-read upgrade path open without a migration.
+  variant   String?
   title     String?
   price     Float?
   currency  String?
