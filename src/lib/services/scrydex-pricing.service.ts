@@ -65,6 +65,12 @@ export interface ScrydexPullCard {
   scrydexId?: string | null;
   setName?: string | null;
   setCode?: string | null;
+  // Per-printing re-model (AGENTS.md RULE 3): this row's verbatim Scrydex
+  // variant name ("normal", "reverse holofoil", "alt art", …). The shared
+  // scrydexId returns EVERY sibling printing, so the writer scopes to this
+  // printing's variant before pricing — see the scope block below. Absent/null
+  // => base printing ("normal").
+  printing?: string | null;
 }
 
 /**
@@ -168,7 +174,35 @@ export async function pullAndStoreScrydexPrice(
     }
   }
 
-  const raw = pickRawPrice(scrydexCard);
+  // --- Per-printing scope (Bug D — AGENTS.md RULE 3/14) --------------------
+  // In the per-printing re-model each printing is its OWN Card row (distinct
+  // card.id) but MANY rows share one scrydexId, so the fetch above returns a
+  // ScrydexCard carrying EVERY sibling printing's variant. If we priced the
+  // whole payload, an alt-art row (externalId "OP01-120::alt-art", printing
+  // "alt art") would inherit the `normal` variant's headline price, cost-basis,
+  // weekly-change, history point AND sibling CurrentPrice rows — a persisted,
+  // hard-to-undo wrong value (audit 14 F-14-07 / 01 P-08 / 09 F15). Narrow to
+  // THIS row's printing before any pricing read/write. Variant names match the
+  // Scrydex `variants[].name` vocabulary (defaulting "normal").
+  const wantVariant = card.printing ?? "normal";
+  const scopedVariants = scrydexCard.variants.filter(
+    (v) => (v.name || "normal") === wantVariant
+  );
+  // Fallback: a printing not present in the payload (stale/renamed variant)
+  // would otherwise store ZERO prices. Keep the full set and WARN (honest — we
+  // never silently drop pricing). Base-only cards are unaffected (base="normal"
+  // is present). A base printing with no sibling variants also falls here
+  // harmlessly (its only variant matches).
+  const scopedCard: ScrydexCard =
+    scopedVariants.length > 0
+      ? { ...scrydexCard, variants: scopedVariants }
+      : (console.warn(
+          `[scrydex-pricing] printing "${wantVariant}" not in payload for ${card.externalId} ` +
+            `(scrydexId ${scrydexCard.id}) — falling back to all variants`
+        ),
+        scrydexCard);
+
+  const raw = pickRawPrice(scopedCard);
   const now = new Date();
 
   // --- Weekly price change (plan §4) -----------------------------------
@@ -295,7 +329,9 @@ export async function pullAndStoreScrydexPrice(
   // ponytail: a future enhancement could add a grade-label / is_perfect column
   // so both CGC 10 variants could be stored distinctly — out of scope here.
   const dedupeMap = new Map<string, PriceRow>();
-  for (const v of scrydexCard.variants) {
+  // scopedCard (not scrydexCard): only THIS row's printing (Bug D) — so the
+  // full CurrentPrice capture never bleeds sibling printings' rows onto this row.
+  for (const v of scopedCard.variants) {
     for (const p of v.prices) {
       const market = typeof p.market === "number" ? p.market : null;
       const low = typeof p.low === "number" ? p.low : null;

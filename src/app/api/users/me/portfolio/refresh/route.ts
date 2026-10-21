@@ -83,6 +83,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           number: true,
           game: true,
           scrydexId: true,
+          printing: true,
           set: { select: { name: true } },
         },
       },
@@ -100,6 +101,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       number: c.number,
       game: c.game,
       scrydexId: c.scrydexId,
+      printing: c.printing,
       setName: c.set?.name ?? null,
     });
   }

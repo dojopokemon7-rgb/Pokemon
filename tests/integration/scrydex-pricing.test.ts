@@ -431,6 +431,107 @@ describe("pullAndStoreScrydexPrice — C1 full current-price capture", () => {
   });
 });
 
+describe("pullAndStoreScrydexPrice — per-printing scope (Bug D)", () => {
+  // The shared scrydexId returns EVERY sibling printing. The writer must store
+  // ONLY the row's own printing (card.printing), or an alt-art/reverse row
+  // inherits a sibling's prices (audit 14 F-14-07 / 01 P-08 / 09 F15).
+  const TWO_PRINTING_CARD = {
+    id: "me55c-4",
+    name: "Charizard",
+    number: "4",
+    variants: [
+      {
+        name: "holofoil",
+        prices: [
+          { type: "raw", condition: "NM", company: null, grade: null, market: 100, low: 90, currency: "USD" },
+          { type: "graded", condition: null, company: "PSA", grade: "10", market: 3200, low: 3000, currency: "USD" },
+        ],
+      },
+      {
+        name: "reverse-holofoil",
+        prices: [
+          { type: "raw", condition: "NM", company: null, grade: null, market: 55, low: 50, currency: "USD" },
+          { type: "graded", condition: null, company: "PSA", grade: "10", market: 1200, low: 1100, currency: "USD" },
+        ],
+      },
+    ],
+  };
+
+  it("stores ONLY the row's own printing's CurrentPrice rows (no sibling bleed)", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: TWO_PRINTING_CARD });
+    // Real-ish pickRawPrice: echo the scoped card's first raw NM entry so the
+    // history point / cost-basis reflect the SCOPED variant, not holofoil.
+    scrydexMock.pickRawPrice.mockImplementation((c: { variants: Array<{ name: string; prices: Array<{ type: string; market: number; low: number; currency: string }> }> }) => {
+      const v = c.variants[0];
+      const p = v.prices.find((x) => x.type === "raw")!;
+      return { market: p.market, low: p.low, currency: p.currency, trends: null, variant: v.name, condition: "NM" };
+    });
+
+    await pullAndStoreScrydexPrice(
+      { ...CARD, printing: "reverse-holofoil" },
+      { force: true }
+    );
+
+    const rows = prismaMock.currentPrice.createMany.mock.calls[0][0].data;
+    // EVERY stored row is the reverse-holofoil printing — no holofoil bled in.
+    expect(rows.every((r: { variant: string }) => r.variant === "reverse-holofoil")).toBe(true);
+    expect(rows.some((r: { variant: string }) => r.variant === "holofoil")).toBe(false);
+
+    // The raw history point used the reverse-holofoil raw (55), not holofoil (100).
+    const histRow = prismaMock.pricingHistory.createMany.mock.calls[0][0].data[0];
+    expect(histRow).toMatchObject({ priceMarket: 55, variant: "reverse-holofoil" });
+
+    // Lazy cost-basis resolution used the scoped (reverse-holofoil) market.
+    expect(prismaMock.userCollection.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ purchasePrice: 55 }) })
+    );
+  });
+
+  it("falls back to ALL variants when the printing is absent from the payload (never stores zero)", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: TWO_PRINTING_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    await pullAndStoreScrydexPrice(
+      { ...CARD, printing: "does-not-exist" },
+      { force: true }
+    );
+
+    const rows = prismaMock.currentPrice.createMany.mock.calls[0][0].data;
+    // Both printings present (fallback) — a mismatched printing never zeroes prices.
+    const variants = [...new Set(rows.map((r: { variant: string }) => r.variant))].sort();
+    expect(variants).toEqual(["holofoil", "reverse-holofoil"]);
+  });
+
+  it("defaults to the base 'normal' printing when card.printing is null", async () => {
+    const BASE_CARD = {
+      id: "me55c-4",
+      name: "Charizard",
+      number: "4",
+      variants: [
+        {
+          name: "normal",
+          prices: [
+            { type: "raw", condition: "NM", company: null, grade: null, market: 40, low: 35, currency: "USD" },
+          ],
+        },
+        {
+          name: "reverse-holofoil",
+          prices: [
+            { type: "raw", condition: "NM", company: null, grade: null, market: 90, low: 80, currency: "USD" },
+          ],
+        },
+      ],
+    };
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: BASE_CARD });
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    await pullAndStoreScrydexPrice({ ...CARD, printing: null }, { force: true });
+
+    const rows = prismaMock.currentPrice.createMany.mock.calls[0][0].data;
+    expect(rows.every((r: { variant: string }) => r.variant === "normal")).toBe(true);
+  });
+});
+
 describe("pullAndStoreScrydexPrice — NO fabricated history (Req 7.2/7.3)", () => {
   // The scrydex-trend derivation is REMOVED. A pull writes EXACTLY ONE real
   // PricingHistory snapshot (source="scrydex") and never derives prior points

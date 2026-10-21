@@ -90,6 +90,7 @@ export async function getOwnedCardsForRefresh(): Promise<ScrydexPullCard[]> {
           number: true,
           game: true,
           scrydexId: true,
+          printing: true,
           set: { select: { name: true } },
         },
       },
@@ -107,6 +108,7 @@ export async function getOwnedCardsForRefresh(): Promise<ScrydexPullCard[]> {
       number: c.number,
       game: c.game,
       scrydexId: c.scrydexId,
+      printing: c.printing,
       setName: c.set?.name ?? null,
     });
   }
