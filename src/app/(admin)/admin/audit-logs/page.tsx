@@ -11,6 +11,7 @@
 
 import { prisma } from "@/lib/db";
 import { formatDateTime } from "@/lib/utils/format";
+import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 // Human-readable labels for the raw `action` string. Missing entries
 // fall through to the raw key so new actions are visible without a
@@ -25,6 +26,10 @@ const ACTION_LABELS: Record<string, string> = {
 const PAGE_LIMIT = 100;
 
 export default async function AdminAuditLogsPage() {
+  // Per-page admin backstop (audit 10 F1): refuse PII reads if the layout gate
+  // was bypassed by RSC segment caching / soft navigation.
+  await requireAdminPage();
+
   const logs = await prisma.auditLog.findMany({
     take: PAGE_LIMIT,
     orderBy: { createdAt: "desc" },

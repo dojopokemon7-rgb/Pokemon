@@ -15,6 +15,7 @@ import { prisma } from "@/lib/db";
 import { formatCurrency } from "@/lib/utils/format";
 import { CardSearchInput } from "./_components/CardSearchInput";
 import { EditCardButton } from "./_components/EditCardButton";
+import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 const RESULT_LIMIT = 50;
 
@@ -29,6 +30,10 @@ interface PageProps {
 }
 
 export default async function AdminCardsPage({ searchParams }: PageProps) {
+  // Per-page admin backstop (audit 10 F1): refuse PII reads if the layout gate
+  // was bypassed by RSC segment caching / soft navigation.
+  await requireAdminPage();
+
   const { q } = await searchParams;
   const query = q?.trim() ?? "";
 

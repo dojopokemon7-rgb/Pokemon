@@ -25,11 +25,16 @@ import {
   AnalyticsDetail,
   type AnalyticsPayload,
 } from "../_components/AnalyticsDetail";
+import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 // Live, per-request authed read — never statically cached (fresh SSR initialData).
 export const dynamic = "force-dynamic";
 
 export default async function AdminAnalyticsPage() {
+  // Per-page admin backstop (audit 10 F1): refuse PII reads if the layout gate
+  // was bypassed by RSC segment caching / soft navigation.
+  await requireAdminPage();
+
   const [
     scanUsage,
     portfolioTotals,

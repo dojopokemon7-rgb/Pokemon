@@ -23,12 +23,17 @@ import {
   TopCollectedCardsChart,
 } from "./_components/AnalyticsCharts";
 import { LiveOverviewStats } from "./_components/LiveOverviewStats";
+import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 // Live, per-request authed read — the stat cards auto-refresh client-side, but
 // the server render must stay dynamic so the SSR initialData is fresh too.
 export const dynamic = "force-dynamic";
 
 export default async function AdminOverviewPage() {
+  // Per-page admin backstop (audit 10 F1): refuse PII reads if the layout gate
+  // was bypassed by RSC segment caching / soft navigation.
+  await requireAdminPage();
+
   const [stats, activeUsers, activity, userGrowth, cardsAdded, topCollected] =
     await Promise.all([
       getPlatformStats(),

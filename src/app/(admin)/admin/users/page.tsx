@@ -10,8 +10,13 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { getPortfolioValuesByUser } from "@/lib/services/admin-metrics";
 import { formatCurrency, formatDate } from "@/lib/utils/format";
+import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 export default async function AdminUsersPage() {
+  // Per-page admin backstop (audit 10 F1): refuse PII reads if the layout gate
+  // was bypassed by RSC segment caching / soft navigation.
+  await requireAdminPage();
+
   const users = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
     select: {
