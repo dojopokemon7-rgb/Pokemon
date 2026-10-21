@@ -650,6 +650,10 @@ function PortfolioPageInner() {
   const [sellModalItem, setSellModalItem] = useState<CollectionItem | null>(null);
   const queryClient = useQueryClient();
 
+  // RULE 3: `cardId` here is the CATALOG externalId (e.g. "base1-4"), NEVER the
+  // internal Card.id cuid. The want-list read service joins WantListItem.cardId
+  // to Card.externalId, so a cuid never matches a catalog card (unreadable /
+  // duplicate SELL row). Call sites pass item.card.externalId.
   const wantToSell = useMutation({
     mutationFn: async (cardId: string) => {
       const res = await fetch("/api/want-list", {
@@ -1231,7 +1235,7 @@ function PortfolioPageInner() {
               selectMode={selectMode}
               selected={item.allIds ? item.allIds.some((id) => selectedIds.has(id)) : selectedIds.has(item.id)}
               onToggleSelect={toggleSelectId}
-              onWantToSell={(i) => wantToSell.mutate(i.cardId)}
+              onWantToSell={(i) => wantToSell.mutate(i.card.externalId ?? i.cardId)}
               onMarkAsSold={(i) => setSellModalItem(i)}
               onRevertSold={(id) => revertSold.mutate(id)}
               owned={canSelect}
@@ -1247,7 +1251,7 @@ function PortfolioPageInner() {
               selectMode={selectMode}
               selected={item.allIds ? item.allIds.some((id) => selectedIds.has(id)) : selectedIds.has(item.id)}
               onToggleSelect={toggleSelectId}
-              onWantToSell={(i) => wantToSell.mutate(i.cardId)}
+              onWantToSell={(i) => wantToSell.mutate(i.card.externalId ?? i.cardId)}
               onMarkAsSold={(i) => setSellModalItem(i)}
               onRevertSold={(id) => revertSold.mutate(id)}
               owned={canSelect}
