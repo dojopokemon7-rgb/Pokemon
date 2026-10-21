@@ -14,6 +14,7 @@ vi.mock("@/lib/redis", () => ({
 import {
   estimateCredits,
   assertScrydexCreditsApproved,
+  assertScrydexEnrichApproved,
   isScrydexLiveApproved,
   ScrydexCreditsNotApproved,
   SCRYDEX_CREDIT_COST,
@@ -21,6 +22,7 @@ import {
 
 afterEach(() => {
   delete process.env.SCRYDEX_LIVE_CREDITS_APPROVED;
+  delete process.env.SCRYDEX_ONVIEW_ENABLED;
 });
 
 describe("estimateCredits", () => {
@@ -47,5 +49,38 @@ describe("approval gate — DENY by default", () => {
     process.env.SCRYDEX_LIVE_CREDITS_APPROVED = "true";
     expect(await isScrydexLiveApproved()).toBe(true);
     await expect(assertScrydexCreditsApproved("visionIdentify", 1)).resolves.toBeUndefined();
+  });
+});
+
+describe("assertScrydexEnrichApproved — dual on-view/bulk gate (Bug A)", () => {
+  it("(1) both flags off → rejects ScrydexCreditsNotApproved regardless of creditAuth", async () => {
+    await expect(
+      assertScrydexEnrichApproved("priceHistory", 1, "onview")
+    ).rejects.toBeInstanceOf(ScrydexCreditsNotApproved);
+    await expect(
+      assertScrydexEnrichApproved("population", 1)
+    ).rejects.toBeInstanceOf(ScrydexCreditsNotApproved);
+  });
+
+  it("(2) SCRYDEX_ONVIEW_ENABLED alone authorizes ONLY the creditAuth:'onview' path", async () => {
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    // On-view auth present → authorized without opening the bulk gate.
+    await expect(
+      assertScrydexEnrichApproved("priceHistory", 1, "onview")
+    ).resolves.toBeUndefined();
+    // No on-view auth → falls back to the (still-denied) bulk gate → rejects.
+    await expect(
+      assertScrydexEnrichApproved("priceHistory", 1)
+    ).rejects.toBeInstanceOf(ScrydexCreditsNotApproved);
+  });
+
+  it("(3) SCRYDEX_LIVE_CREDITS_APPROVED authorizes with OR without creditAuth", async () => {
+    process.env.SCRYDEX_LIVE_CREDITS_APPROVED = "true";
+    await expect(
+      assertScrydexEnrichApproved("population", 1, "onview")
+    ).resolves.toBeUndefined();
+    await expect(
+      assertScrydexEnrichApproved("population", 1)
+    ).resolves.toBeUndefined();
   });
 });

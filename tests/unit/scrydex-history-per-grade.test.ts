@@ -39,7 +39,7 @@ vi.mock("@/lib/services/scrydex.service", () => scrydexMock);
 
 // Credit gate — toggled per test. Real ScrydexCreditsNotApproved is re-exported
 // so the thrown instance matches what callers catch.
-const gateMock = vi.hoisted(() => ({ approved: false }));
+const gateMock = vi.hoisted(() => ({ approved: false, onView: false }));
 vi.mock("@/lib/services/scrydex-credit-gate", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/services/scrydex-credit-gate")>();
   return {
@@ -48,7 +48,18 @@ vi.mock("@/lib/services/scrydex-credit-gate", async (importOriginal) => {
       if (gateMock.approved) return;
       throw new actual.ScrydexCreditsNotApproved(op, actual.estimateCredits(op, count));
     }),
+    // pullAndStoreScrydexHistory now gates via assertScrydexEnrichApproved
+    // (Bug A). These tests never pass creditAuth:"onview", so it behaves exactly
+    // like the bulk gate: throw unless approved.
+    assertScrydexEnrichApproved: vi.fn(
+      async (op: ScrydexOp, count: number, creditAuth?: "onview") => {
+        if (creditAuth === "onview" && gateMock.onView) return;
+        if (gateMock.approved) return;
+        throw new actual.ScrydexCreditsNotApproved(op, actual.estimateCredits(op, count));
+      }
+    ),
     isScrydexLiveApproved: vi.fn(async () => gateMock.approved),
+    isScrydexOnViewApproved: vi.fn(async () => gateMock.onView),
   };
 });
 
@@ -70,6 +81,7 @@ const CARD = { id: "card_1", scrydexId: "me55c-4", game: Game.POKEMON };
 beforeEach(() => {
   vi.clearAllMocks();
   gateMock.approved = false;
+  gateMock.onView = false;
 });
 
 describe("pullAndStoreScrydexHistory — per-grade capture (credit-gated)", () => {

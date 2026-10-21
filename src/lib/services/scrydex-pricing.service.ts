@@ -33,6 +33,7 @@ import {
 import { redis, RedisKeys } from "@/lib/redis";
 import {
   assertScrydexCreditsApproved,
+  assertScrydexEnrichApproved,
   isScrydexLiveApproved,
   SCRYDEX_CREDIT_COST,
 } from "./scrydex-credit-gate";
@@ -384,10 +385,14 @@ export async function pullAndStoreScrydexPrice(
  * (store-once, honest gaps). This is the replacement for the removed
  * `scrydex-trend` fabrication (Req 7.2).
  *
- * CREDIT-GATED: a history request costs 3 credits (docs/SCRYDEX_AUDIT.md), so
- * this REFUSES unless live-credit spend is owner-approved (see
- * scrydex-credit-gate). Throws `ScrydexCreditsNotApproved` when denied — callers
- * surface that as "pending approval", never silently spend.
+ * CREDIT-GATED (DUAL GATE — see assertScrydexEnrichApproved): a history request
+ * costs 3 credits (docs/SCRYDEX_AUDIT.md). The on-view enrich route passes
+ * `opts.creditAuth:"onview"` so the ON-VIEW allowance (SCRYDEX_ONVIEW_ENABLED)
+ * authorizes the spend WITHOUT opening the big-bulk gate; every other caller
+ * (cron/scripts/refresh) passes nothing and keeps the hard bulk gate
+ * (SCRYDEX_LIVE_CREDITS_APPROVED / admin Redis flag). Throws
+ * `ScrydexCreditsNotApproved` when neither gate authorizes — callers surface
+ * that as "pending approval" / fail-open, never silently spend.
  *
  * `scrydexId` MUST be the Scrydex-returned card id. We persist RAW NM points
  * (the RAW chart series) always, and — when `filters.grades` is supplied — one
@@ -413,13 +418,19 @@ function parseHistoryDate(date: string): Date | null {
 
 export async function pullAndStoreScrydexHistory(
   card: { id: string; game: Game; scrydexId: string },
-  filters?: { days?: number; grades?: Array<{ company: string; grade: string }> }
+  filters?: {
+    days?: number;
+    grades?: Array<{ company: string; grade: string }>;
+    creditAuth?: "onview";
+  }
 ): Promise<{ stored: number; credits: number }> {
-  // Hard gate ONCE at the top — refuses to spend credits without owner approval.
-  // Estimate = the raw NM call (1) PLUS one call per requested (company,grade),
-  // so a DENY throws ScrydexCreditsNotApproved BEFORE any HTTP happens.
+  // DUAL credit gate ONCE at the top — refuses to spend credits unless EITHER
+  // the on-view allowance (when the caller passes creditAuth:"onview") OR the
+  // hard bulk gate authorizes. Estimate = the raw NM call (1) PLUS one call per
+  // requested (company,grade), so a DENY throws ScrydexCreditsNotApproved BEFORE
+  // any HTTP happens. See assertScrydexEnrichApproved for the two-gate contract.
   const grades = filters?.grades ?? [];
-  await assertScrydexCreditsApproved("priceHistory", 1 + grades.length);
+  await assertScrydexEnrichApproved("priceHistory", 1 + grades.length, filters?.creditAuth);
 
   const days = await fetchScrydexPriceHistory(card.scrydexId, card.game, {
     condition: "NM",
@@ -575,14 +586,15 @@ export async function pullAndStoreScrydexHistory(
  * Pull a card's PSA-English population report and store it as the one CURRENT
  * PopulationReport row (upsert, store-once / overwrite-in-place).
  *
- * CREDIT-GATED-AT-TOP: a population request costs 1 credit (docs/SCRYDEX_AUDIT.md),
- * so this REFUSES unless live-credit spend is owner-approved — the gate runs
- * FIRST so a denied call performs NO HTTP at all. Throws
- * `ScrydexCreditsNotApproved` when denied; callers surface "pending approval".
+ * CREDIT-GATED-AT-TOP (DUAL GATE — see assertScrydexEnrichApproved): a
+ * population request costs 1 credit (docs/SCRYDEX_AUDIT.md). The on-view enrich
+ * route passes `opts.creditAuth:"onview"` so the ON-VIEW allowance authorizes
+ * the spend without opening the big-bulk gate; other callers pass nothing and
+ * keep the hard bulk gate. The gate runs FIRST so a denied call performs NO
+ * HTTP at all. Throws `ScrydexCreditsNotApproved` when neither gate authorizes;
+ * callers surface "pending approval" / fail-open.
  *
- * NOT invoked anywhere this phase: no route/sync/render imports it. It exists
- * and is tested only; a later owner-approved step adds the manual-refresh
- * trigger. WHY `scrydexId` (not `externalId`): the Scrydex id namespace differs
+ * WHY `scrydexId` (not `externalId`): the Scrydex id namespace differs
  * from the TCGdex/Bandai externalId, so we resolve + cache the native id.
  * WHY a null fetch stores nothing: we NEVER clobber a prior good report with a
  * transient null — the honest-gap rule.
@@ -592,17 +604,22 @@ export async function pullAndStoreScrydexHistory(
  * RedisKeys.cardPopulation(externalId) (best-effort, fail-open) so the fresh
  * report is served before the 24h TTL expires.
  */
-export async function pullAndStorePopulation(card: {
-  id: string;
-  game: Game;
-  scrydexId?: string | null;
-  name: string;
-  number: string;
-  setName?: string | null;
-  setCode?: string | null;
-}): Promise<{ stored: boolean; credits: number }> {
-  // 1. Credit gate FIRST — throws ScrydexCreditsNotApproved, no HTTP when denied.
-  await assertScrydexCreditsApproved("population", 1);
+export async function pullAndStorePopulation(
+  card: {
+    id: string;
+    game: Game;
+    scrydexId?: string | null;
+    name: string;
+    number: string;
+    setName?: string | null;
+    setCode?: string | null;
+  },
+  opts?: { creditAuth?: "onview" }
+): Promise<{ stored: boolean; credits: number }> {
+  // 1. DUAL credit gate FIRST — throws ScrydexCreditsNotApproved (no HTTP) unless
+  //    the on-view allowance (creditAuth:"onview") or the hard bulk gate
+  //    authorizes. See assertScrydexEnrichApproved for the two-gate contract.
+  await assertScrydexEnrichApproved("population", 1, opts?.creditAuth);
 
   const credits = SCRYDEX_CREDIT_COST.population;
 

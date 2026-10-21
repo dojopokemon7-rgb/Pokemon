@@ -12,8 +12,12 @@
  *     already has stored history AND a stored population — store-once, no spend.
  *   - Otherwise pulls only what's missing: history (365d, limited to the card's
  *     actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades) and/or
- *     population. Each pull is wrapped fail-open — a thrown
- *     ScrydexCreditsNotApproved (or any error) is swallowed, never a 5xx.
+ *     population. Both pulls are invoked with `creditAuth:"onview"` so the
+ *     ON-VIEW allowance (SCRYDEX_ONVIEW_ENABLED) ALONE authorizes the spend —
+ *     the big-bulk gate (SCRYDEX_LIVE_CREDITS_APPROVED) is NOT required and NOT
+ *     widened (see assertScrydexEnrichApproved). Each pull is still wrapped
+ *     fail-open — a thrown ScrydexCreditsNotApproved (when neither gate
+ *     authorizes) or any error is swallowed, never a 5xx.
  *
  * PUBLIC card route (AGENTS.md rule 7): ALWAYS returns HTTP 200 with a small
  * JSON body — never 4xx/5xx — so the client's one-shot fetch is a silent no-op
@@ -130,7 +134,7 @@ export async function POST(
     try {
       const r = await pullAndStoreScrydexHistory(
         { id: card.id, game: card.game, scrydexId: card.scrydexId },
-        { days: 365, grades }
+        { days: 365, grades, creditAuth: "onview" }
       );
       historyStored = r.stored;
     } catch {
@@ -140,14 +144,17 @@ export async function POST(
 
   {
     try {
-      const r = await pullAndStorePopulation({
-        id: card.id,
-        game: card.game,
-        scrydexId: card.scrydexId,
-        name: card.name,
-        number: card.number,
-        setName: card.set?.name ?? null,
-      });
+      const r = await pullAndStorePopulation(
+        {
+          id: card.id,
+          game: card.game,
+          scrydexId: card.scrydexId,
+          name: card.name,
+          number: card.number,
+          setName: card.set?.name ?? null,
+        },
+        { creditAuth: "onview" }
+      );
       populationStored = r.stored;
     } catch {
       // fail-open — never a 5xx. stored stays false.

@@ -104,3 +104,38 @@ export async function assertScrydexCreditsApproved(
   if (await isScrydexLiveApproved()) return;
   throw new ScrydexCreditsNotApproved(op, estimateCredits(op, count));
 }
+
+/**
+ * Enrich-path credit gate — the TWO-GATE relationship (AGENTS.md RULE 14).
+ *
+ * The on-view card-detail enrich route pulls history + population. Those two
+ * service functions historically gated ONLY on the big-bulk gate
+ * (`assertScrydexCreditsApproved` → `isScrydexLiveApproved`, env
+ * `SCRYDEX_LIVE_CREDITS_APPROVED` OR the admin Redis flag). That meant on-view
+ * enrichment could NEVER authorize a pull on the on-view flag alone: with
+ * `SCRYDEX_ONVIEW_ENABLED=true` but the bulk gate OFF, both pulls threw and the
+ * route swallowed them into a silent `{enriched:true, stored:0}` no-op (the
+ * D7/F5 bug). This helper reconciles the two gates at the single pull entry:
+ *
+ *   - When the caller explicitly carries on-view authorization
+ *     (`creditAuth === "onview"`) AND `isScrydexOnViewApproved()` is true, the
+ *     spend is authorized by the ON-VIEW allowance — the route the owner opted
+ *     into (per-card, pull-on-open, 24h-throttled). The bulk gate is NOT
+ *     consulted and is NOT widened.
+ *   - Otherwise (no on-view auth, or the on-view flag is off) it falls back to
+ *     the existing hard bulk gate `assertScrydexCreditsApproved`, which throws
+ *     `ScrydexCreditsNotApproved` unless bulk spend is owner-approved.
+ *
+ * So cron / scripts / portfolio-refresh (which pass NO `creditAuth`) keep the
+ * unchanged hard bulk gate, and dev/verification stays DENY-by-default: with
+ * both flags off, on-view is false → fall back to bulk → bulk denies → throw →
+ * the route's fail-open catch turns it into a no-op (no HTTP, no credits).
+ */
+export async function assertScrydexEnrichApproved(
+  op: ScrydexOp,
+  count: number,
+  creditAuth?: "onview"
+): Promise<void> {
+  if (creditAuth === "onview" && (await isScrydexOnViewApproved())) return;
+  await assertScrydexCreditsApproved(op, count);
+}
