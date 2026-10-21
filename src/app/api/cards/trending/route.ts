@@ -18,13 +18,14 @@
  * -------------------------------------------------------------------
  * "TRENDING" DEFINITION
  * -------------------------------------------------------------------
- * There is no real price-history/movers pipeline yet (PricingHistory
- * is currently empty — see schema.prisma). Until that exists, this
- * endpoint orders by `updatedAt desc` (most recently touched/seeded
- * cards first) as an honest, non-fabricated proxy for "trending" and
+ * There is no real "movers" ranking pipeline yet, so this endpoint
+ * orders by `updatedAt desc` (most recently touched/seeded cards
+ * first) as an honest, non-fabricated proxy for "trending" and
  * paginates through the full catalog rather than presenting a fixed
- * 5-card slice. Deltas are omitted (`null`) instead of invented —
- * the client renders "—" for cards with no real price/delta data.
+ * 5-card slice. The per-card `delta`/`up` fields carry the REAL stored
+ * 7-day change (`Card.weeklyChangePct`, from Scrydex trends.days_7) —
+ * `null` when a card has no recorded change, so the client renders no
+ * movement indicator. Never an invented delta (AGENTS.md rule 2).
  *
  * Query params:
  *   - `limit`  Optional. Page size, 1-50, default 10.
@@ -39,7 +40,7 @@
  * {
  *   "cards": [
  *     { "id": "...", "name": "...", "setImage": "...", "imageUrl": "...",
- *       "price": 12.5, "delta": null, "up": null }
+ *       "price": 12.5, "delta": "+5.2%" | null, "up": true | null }
  *   ],
  *   "nextCursor": "clxyz..." | null
  * }
@@ -54,6 +55,7 @@ import { redis } from "@/lib/redis";
 import { CardSortEnum, orderByForCardSort, type CardSortKey } from "@/lib/utils/card-sort";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import { pickHeadlineRaw } from "@/lib/utils/raw-price";
+import { fmtWeeklyDelta } from "@/lib/utils/weekly-delta";
 
 // Only the columns the response mapping actually reads. `include: { set }`
 // used to pull every Card + CardSet column (hi-res URLs, lastEbayPrice,
@@ -82,6 +84,11 @@ const TRENDING_SELECT = {
     select: { variant: true, type: true, condition: true, company: true, grade: true, priceMarket: true, priceLow: true },
   },
   rarity: true,
+  // REAL 7-day price change (Scrydex trends.days_7, written by
+  // scrydex-pricing.service.ts). Surfaced as the tile's delta/up — null when
+  // a card has no recorded change, NEVER a fabricated/hash-derived number
+  // (AGENTS.md rule 2).
+  weeklyChangePct: true,
   set: { select: { name: true } },
 } satisfies Prisma.CardSelect;
 
@@ -332,9 +339,19 @@ export async function GET(request: Request): Promise<NextResponse> {
       // Per-printing parity (FEAT-004): the variant label for this row
       // ("Alt Art" / "foil"); null when the row has no stored printing.
       printing: c.printing ?? null,
-      // No real historical pricing data yet — never fabricate a delta.
-      delta: null as string | null,
-      up: null as boolean | null,
+      // REAL 7-day change from the stored Card.weeklyChangePct (null when the
+      // card has no recorded change). `fmtWeeklyDelta` returns {delta:null}
+      // for a null pct, and we force `up:null` in that case so the response
+      // keeps its existing `delta:string|null / up:boolean|null` contract and
+      // the client renders NO movement indicator — never a fabricated delta
+      // (AGENTS.md rule 2).
+      ...(() => {
+        const { delta, up } = fmtWeeklyDelta(c.weeklyChangePct);
+        return {
+          delta: delta as string | null,
+          up: (delta != null ? up : null) as boolean | null,
+        };
+      })(),
     }));
 
     const body = JSON.stringify({

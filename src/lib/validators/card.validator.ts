@@ -68,6 +68,14 @@ export const NormalizedCardSchema = z.object({
   // validate as `null` — additive, never required. The tile shows it next to
   // the number when present and not "normal".
   printing: z.string().nullish(),
+  // REAL 7-day price change (Scrydex trends.days_7, stored as
+  // Card.weeklyChangePct). OPTIONAL + nullable (same precedent as `printing`)
+  // so OLD cached search blobs written before this field still validate as
+  // the cached-read re-parse (`z.array(NormalizedCardSchema)` in the search
+  // route) — additive, never required. The tile renders a movement indicator
+  // ONLY when this is a real non-null number; null → nothing (AGENTS.md
+  // rule 2, never a fabricated delta).
+  weeklyChangePct: z.number().nullish(),
 });
 
 /**

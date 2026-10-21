@@ -31,6 +31,7 @@ import { computeOverallChange, hasChartableHistory } from "@/lib/utils/overall-c
 import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 import { displayPrice } from "@/lib/utils/graded-price";
+import { fmtWeeklyDelta } from "@/lib/utils/weekly-delta";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -287,13 +288,6 @@ function DeltaTag({ delta, up }: { delta: string | null; up: boolean }) {
   );
 }
 
-// Format a REAL weekly % change into a delta label + direction. Null in → null
-// out (the "—" state). Never fabricates a value.
-function fmtDelta(pct: number | null | undefined): { delta: string | null; up: boolean } {
-  if (typeof pct !== "number") return { delta: null, up: true };
-  return { delta: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`, up: pct >= 0 };
-}
-
 // Build the full card-detail href for a dashboard row. Mirrors Explore's
 // goToCard/detailParams (src/app/(dashboard)/search/page.tsx): identity/price
 // ride as query params (there is NO get-by-id card API) and the route keys on
@@ -463,7 +457,7 @@ export default function DashboardClient({
         .filter((w) => w.intent === intent)
         .map((w) => {
           // REAL weekly change (null → "—"), never a fabricated delta.
-          const { delta, up } = fmtDelta(w.weeklyChangePct);
+          const { delta, up } = fmtWeeklyDelta(w.weeklyChangePct);
           return {
             name: w.name ?? w.cardId,
             sub: w.setName ?? "—",
@@ -631,7 +625,7 @@ export default function DashboardClient({
       .slice(0, 5)
       .map(({ item, value }) => {
         // REAL weekly change (null → "—"), never a fabricated delta.
-        const { delta, up } = fmtDelta(item.card.weeklyChangePct);
+        const { delta, up } = fmtWeeklyDelta(item.card.weeklyChangePct);
         const conditionStr = item.condition ? item.condition : "Raw";
         const setStr = item.card.set?.name ?? "";
         const foilStr = item.isFoil ? "Foil" : "";
@@ -671,7 +665,7 @@ export default function DashboardClient({
       (i) => typeof i.card.weeklyChangePct === "number"
     );
     const toRow = (item: CollectionItem) => {
-      const { delta, up } = fmtDelta(item.card.weeklyChangePct);
+      const { delta, up } = fmtWeeklyDelta(item.card.weeklyChangePct);
       const sub = `${item.condition || item.card.set?.name || "Raw"} · Qty ${item.quantity}`;
       return {
         name: item.card.name,

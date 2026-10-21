@@ -19,9 +19,16 @@ vi.mock("@/lib/services/card-search-index.service", () => indexMock);
 
 import { GET } from "@/app/api/cards/search/route";
 
-const row = (externalId: string, name: string, number = "1", setName = "Base", marketPrice: number | null = 1) => ({
+const row = (
+  externalId: string,
+  name: string,
+  number = "1",
+  setName = "Base",
+  marketPrice: number | null = 1,
+  weeklyChangePct: number | null = null,
+) => ({
   externalId, name, number, rarity: "Rare", types: [], tags: [], imageUrl: "u", imageUrlHi: null,
-  marketPrice, currentPrices: [], set: { name: setName },
+  marketPrice, weeklyChangePct, currentPrices: [], set: { name: setName },
 });
 
 const call = (qs: string) => GET(new Request(`http://localhost/api/cards/search?${qs}`));
@@ -41,6 +48,17 @@ describe("GET /api/cards/search", () => {
     const body = await ok.json();
     expect(body.source).toBe("local-db");
     expect(body.cards[0]).toMatchObject({ id: "base1-4", name: "Charizard", setImage: "Base", hp: null });
+  });
+
+  it("surfaces the REAL weeklyChangePct and never fabricates one", async () => {
+    // A row with a real 7-day change threads straight through...
+    prismaMock.card.findMany.mockResolvedValue([row("base1-4", "Charizard", "4/102", "Base", 10, 4.5)]);
+    const withDelta = await (await call("game=pokemon&query=charizard")).json();
+    expect(withDelta.cards[0].weeklyChangePct).toBe(4.5);
+    // ...and a row with no recorded change stays null (RULE 2 — no invented delta).
+    prismaMock.card.findMany.mockResolvedValue([row("base1-4", "Charizard", "4/102", "Base", 10, null)]);
+    const withoutDelta = await (await call("game=pokemon&query=charizard")).json();
+    expect(withoutDelta.cards[0].weeklyChangePct).toBeNull();
     expect((await call("game=pokemon")).status).toBe(400);
     expect((await call("game=pokemon&query=x&sort=bogus")).status).toBe(400);
     prismaMock.card.findMany.mockResolvedValue([]);

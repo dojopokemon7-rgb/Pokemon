@@ -368,6 +368,9 @@ export async function GET(request: Request): Promise<NextResponse> {
         imageUrl: true,
         imageUrlHi: true,
         marketPrice: true,
+        // REAL 7-day price change (Scrydex trends.days_7) — surfaced on the
+        // tile as its movement indicator, null when absent (never fabricated).
+        weeklyChangePct: true,
         // RAW CurrentPrice rows (type:"raw" ONLY — legacy graded rows also carry
         // condition "NM"), reduced by the SAME pickHeadlineRaw the card-detail
         // page uses so list and details never disagree. Many cards have a real
@@ -508,6 +511,10 @@ export async function GET(request: Request): Promise<NextResponse> {
     // printing result is distinguishable ("Alt Art" / "foil"). Null for
     // rows with no stored printing — the tile then shows nothing extra.
     printing: r.printing ?? null,
+    // REAL 7-day change — the tile renders a movement indicator ONLY when
+    // this is non-null; null → no indicator (AGENTS.md rule 2, never a
+    // fabricated delta derived from the card id).
+    weeklyChangePct: r.weeklyChangePct ?? null,
   }));
 
   // Best-effort cache fill. Only non-empty 200s reach here (zero rows returned

@@ -42,6 +42,7 @@ import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
 import { DojoSelect } from "@/components/DojoSelect";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { onePieceImageChain } from "@/lib/utils/card-image";
+import { fmtWeeklyDelta } from "@/lib/utils/weekly-delta";
 import { hasActiveFilter as anyFilterActive } from "@/lib/utils/search-query";
 import { paramOrDefault } from "@/lib/utils/list-controls";
 import { Toast } from "@/components/Toast";
@@ -129,6 +130,10 @@ interface CardResult {
   price?: number;
   rarity?: string;
   source?: string;
+  // REAL 7-day change (Scrydex trends.days_7), threaded straight through from
+  // the search API's NormalizedCard. Nullable — the tile shows a movement
+  // indicator ONLY when this is a real number, never a fabricated delta.
+  weeklyChangePct?: number | null;
 }
 
 interface SearchApiResponse {
@@ -137,9 +142,9 @@ interface SearchApiResponse {
 }
 
 // ── Trending card shape — matches /api/cards/trending's response.
-// `price`/`delta`/`up` are nullable: there is no real price-history
-// pipeline yet, so the API never fabricates a delta for seeded cards
-// that don't have one (see route.ts for the full rationale). ───────
+// `price`/`delta`/`up` are nullable: `delta`/`up` carry the REAL stored
+// 7-day change (Card.weeklyChangePct), null when a card has no recorded
+// change — the API NEVER fabricates one (see route.ts for the rationale). ─
 interface TrendingCard {
   id: string;
   externalId: string;
@@ -191,7 +196,10 @@ function fmtUSD(n: number): string {
 // ── Trend card tile — ported from trendCard() in app.js. Star toggles
 // "track this card" (top-right), plus toggles selection for the
 // CONTINUE/ADD TO COLLECTION flow (bottom-right of the price row). ──
-function TrendCardTile({
+// Exported (named) so the tile's delta rendering can be unit-tested directly
+// (tests/unit/search-tile-delta.test.tsx). This is a COMPONENT export, not a
+// helper — extracted helpers still live in src/lib (e.g. fmtWeeklyDelta).
+export function TrendCardTile({
   card,
   game,
   tracked,
@@ -313,37 +321,24 @@ function TrendCardTile({
           <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontVariantNumeric: "tabular-nums", fontSize: "15px", color: card.price != null ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)" }}>
             {card.price != null ? fmtUSD(card.price) : <NoPriceText fontSize="11px" />}
           </div>
-          {/* Client feedback: show value deviation on every tile. If the API
-              returned a real delta, use it. Otherwise fall back to a
-              deterministic mock derived from the card id (same card = same
-              delta on every render).
-              TODO Week 3: Replace mock with real PricingHistory calculations. */}
-          {card.price != null && (() => {
-            let deltaText: string;
-            let up: boolean;
-            if (card.delta != null && card.up != null) {
-              deltaText = card.delta;
-              up = card.up;
-            } else {
-              const seed = card.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-              const pct = ((seed % 190) - 90) / 10;
-              up = pct >= 0;
-              deltaText = `${up ? "+" : ""}${pct.toFixed(1)}%`;
-            }
-            return (
-              <div
-                style={{
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 400,
-                  fontVariantNumeric: "tabular-nums",
-                  fontSize: "11px",
-                  color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
-                }}
-              >
-                {up ? "▲" : "▼"} {deltaText}
-              </div>
-            );
-          })()}
+          {/* REAL value deviation (Scrydex 7-day change). The trending route
+              formats the stored Card.weeklyChangePct into `delta`/`up`; a card
+              with no recorded change sends `delta:null, up:null`. Render the
+              movement indicator ONLY when both are present — never a
+              fabricated delta (AGENTS.md rule 2). */}
+          {card.delta != null && card.up != null && (
+            <div
+              style={{
+                fontFamily: "var(--font-display)",
+                fontWeight: 400,
+                fontVariantNumeric: "tabular-nums",
+                fontSize: "11px",
+                color: card.up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
+              }}
+            >
+              {card.up ? "▲" : "▼"} {card.delta}
+            </div>
+          )}
         </div>
         {/* Plus — add to selection. preventDefault stops the enclosing
             <Link> navigating when the control is tapped. */}
@@ -495,7 +490,9 @@ function SkeletonCard() {
 // Fades/slides up on mount, staggered by grid position. The reference
 // prototype's grid never animates (searchResults() inserts static
 // markup) — this is a new addition, documented in ANIMATION_SPECS.md.
-function CardTile({
+// Exported (named) so the tile's delta rendering can be unit-tested directly
+// (tests/unit/search-tile-delta.test.tsx). COMPONENT export, not a helper.
+export function CardTile({
   card,
   index = 0,
   game,
@@ -684,14 +681,13 @@ function CardTile({
               ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(price)
               : <NoPriceText fontSize="12px" />}
           </span>
-          {/* Client feedback: display value deviation delta on each tile.
-              Deterministic mock derived from card.id so the same card always
-              shows the same delta (not jittery on re-render).
-              TODO Week 3: Replace with real PricingHistory calculations. */}
-          {price > 0 && (() => {
-            const seed = card.id.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-            const pct = ((seed % 190) - 90) / 10; // range: -9.0% .. +9.0%
-            const up = pct >= 0;
+          {/* REAL value deviation (Scrydex 7-day change) from the search
+              API's weeklyChangePct. Render the movement indicator ONLY when
+              it's a real non-null number — a card with no recorded change
+              shows nothing, never a fabricated delta (AGENTS.md rule 2). */}
+          {(() => {
+            const { delta, up } = fmtWeeklyDelta(card.weeklyChangePct);
+            if (delta == null) return null;
             return (
               <span
                 style={{
@@ -703,7 +699,7 @@ function CardTile({
                   color: up ? "var(--color-dojo-jade)" : "var(--color-dojo-vermilion)",
                 }}
               >
-                {up ? "▲" : "▼"} {up ? "+" : ""}{pct.toFixed(1)}%
+                {up ? "▲" : "▼"} {delta}
               </span>
             );
           })()}
