@@ -40,6 +40,7 @@ import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
 import { cardImgById, onePieceImageUrl, isOnePieceCode } from "@/lib/utils/card-image";
+import { printingVariantFromId } from "@/lib/utils/card-number";
 import {
   buildChips,
   buildChartMatrix,
@@ -262,7 +263,18 @@ function CardDetailInner() {
   // default equals the headline variant (pickDefaultVariant), so the headline
   // does not regress; the user's pick is scoped to this card id.
   const variants = useMemo(() => listVariants(allPrices), [allPrices]);
-  const defaultVariant = useMemo(() => pickDefaultVariant(allPrices), [allPrices]);
+  // Per-printing re-model (RULE 3): a composite route id ("base1-2::<variant>")
+  // IS its own printing's Card row, so the chart must default to THAT printing's
+  // variant — the `::` suffix equals the stored variant token (printingExternalId
+  // is its inverse). pickDefaultVariant over the mixed CurrentPrice rows could
+  // otherwise pick a sibling printing's variant. A BASE id (no `::`) has null
+  // here and falls back to pickDefaultVariant as before. The user can still
+  // switch via the variant SELECTOR (variantSel overrides below).
+  const printingVariant = useMemo(() => printingVariantFromId(id), [id]);
+  const defaultVariant = useMemo(
+    () => printingVariant ?? pickDefaultVariant(allPrices),
+    [printingVariant, allPrices]
+  );
   const [variantSel, setVariantSel] = useState<{ id: string; v: string } | null>(null);
   const variant: string | null =
     variantSel && variantSel.id === id && variants.includes(variantSel.v) ? variantSel.v : defaultVariant;

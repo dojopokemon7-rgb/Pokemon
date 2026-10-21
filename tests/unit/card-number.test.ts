@@ -4,6 +4,7 @@ import {
   deriveStoredCardNumber,
   baseVariantName,
   printingExternalId,
+  printingVariantFromId,
 } from "@/lib/utils/card-number";
 import { normalizeNumber } from "@/lib/services/card-recognition.service";
 
@@ -86,5 +87,29 @@ describe("printingExternalId", () => {
     expect(printingExternalId("base1-4", "reverse holofoil", "normal")).toBe(
       "base1-4::reverse holofoil",
     );
+  });
+});
+
+describe("printingVariantFromId", () => {
+  it("returns the `::`-suffix variant for a composite id", () => {
+    expect(printingVariantFromId("base1-2::unlimitedShadowlessHolofoil")).toBe(
+      "unlimitedShadowlessHolofoil",
+    );
+    expect(printingVariantFromId("OP01-120::alt-art")).toBe("alt-art");
+  });
+
+  it("returns null for a base id with no `::`", () => {
+    expect(printingVariantFromId("base1-2")).toBeNull();
+    expect(printingVariantFromId("base1-4")).toBeNull();
+    expect(printingVariantFromId("OP01-120")).toBeNull();
+  });
+
+  it("round-trips the inverse of printingExternalId for a non-base printing", () => {
+    const id = printingExternalId("base1-4", "reverse holofoil", "normal");
+    expect(printingVariantFromId(id)).toBe("reverse holofoil");
+  });
+
+  it("rejoins a variant that itself contains `::`", () => {
+    expect(printingVariantFromId("base1-2::weird::variant")).toBe("weird::variant");
   });
 });

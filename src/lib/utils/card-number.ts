@@ -63,3 +63,19 @@ export function baseVariantName(variantNames: string[]): string {
 export function printingExternalId(baseId: string, variantName: string, baseName: string): string {
   return variantName === baseName ? baseId : `${baseId}::${variantName}`;
 }
+
+/**
+ * The printing VARIANT name encoded in a per-printing composite externalId —
+ * the inverse of the non-base branch of `printingExternalId`. A composite id
+ * is `${baseId}::${variantName}` (e.g. "base1-2::unlimitedShadowlessHolofoil"
+ * → "unlimitedShadowlessHolofoil", "OP01-120::alt-art" → "alt-art"); a BASE id
+ * with no `::` returns null (its default variant is derived elsewhere — e.g.
+ * pickDefaultVariant over the stored prices). The suffix is the verbatim
+ * Scrydex `variants[].name`, so this is the SAME token the write-side
+ * `card.printing` scope uses — the read-side chart default and the write-side
+ * history/price scope stay in lock-step. Rejoins any further `::` so a variant
+ * that itself contains `::` round-trips unchanged.
+ */
+export function printingVariantFromId(externalId: string): string | null {
+  return externalId.split("::").slice(1).join("::") || null;
+}
