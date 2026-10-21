@@ -155,19 +155,72 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       }
     }
 
-    // Handle Unsold / Revert to active
+    // Handle Unsold / Revert to active.
+    //
+    // BUG 2 (audit 13 F-01 / 03 P-21): after a PARTIAL sale the original active
+    // lot still exists with the SAME variant key (userId, COALESCE(collectionId,''),
+    // cardId, isFoil, COALESCE(condition,'')). A plain flip to isSold=false then
+    // reactivates a SECOND active row for that key → partial unique index
+    // `uc_variant_coalesced` (WHERE isSold=false) P2002 → previously an uncaught
+    // 500. Correct undo: MERGE the reverted quantity back into the active sibling
+    // and delete the sold row (quantity conserved, one active lot). When no active
+    // sibling exists, flip the row as before.
     if (isSold === false && existing.isSold) {
-      const updated = await prisma.userCollection.update({
-        where: { id: existing.id },
-        data: {
-          isSold: false,
-          soldPrice: null,
-          soldAt: null,
-        },
-      });
-      // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
-      await invalidateUserCaches(userId, ["collection", "dashboard"]);
-      return NextResponse.json({ ok: true, item: updated }, { status: 200 });
+      try {
+        // Same normalization the add route uses so the app-side variant key
+        // matches the DB index's COALESCE(condition,'').
+        const norm = (c: string | null | undefined) => (c ?? "").trim().toUpperCase();
+        const sibling = await prisma.userCollection.findFirst({
+          where: {
+            userId,
+            cardId: existing.cardId,
+            isFoil: existing.isFoil,
+            collectionId: existing.collectionId,
+            isSold: false,
+          },
+        });
+        const activeSibling =
+          sibling && norm(sibling.condition) === norm(existing.condition) ? sibling : null;
+
+        if (activeSibling) {
+          // Merge-back in one transaction: bump the sibling, drop the sold row.
+          const [merged] = await prisma.$transaction([
+            prisma.userCollection.update({
+              where: { id: activeSibling.id },
+              data: { quantity: activeSibling.quantity + existing.quantity },
+            }),
+            prisma.userCollection.delete({ where: { id: existing.id } }),
+          ]);
+          await invalidateUserCaches(userId, ["collection", "dashboard"]);
+          return NextResponse.json({ ok: true, item: merged }, { status: 200 });
+        }
+
+        const updated = await prisma.userCollection.update({
+          where: { id: existing.id },
+          data: {
+            isSold: false,
+            soldPrice: null,
+            soldAt: null,
+          },
+        });
+        // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
+        await invalidateUserCaches(userId, ["collection", "dashboard"]);
+        return NextResponse.json({ ok: true, item: updated }, { status: 200 });
+      } catch (e) {
+        // A concurrent add/revert raced an active sibling past our findFirst →
+        // the flip trips `uc_variant_coalesced`. Map to 409 (never a bare 500).
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === "P2002" &&
+          String((e.meta as { target?: unknown })?.target ?? "").includes("uc_variant_coalesced")
+        ) {
+          return NextResponse.json(
+            { error: "Conflict", message: "An active copy of this variant already exists" },
+            { status: 409 }
+          );
+        }
+        throw e; // any other error → the existing generic 500 catch
+      }
     }
 
     // General update (this is a RE-FILE path when collectionId changes).
