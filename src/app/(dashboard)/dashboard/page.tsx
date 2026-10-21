@@ -25,6 +25,13 @@ import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { buildCollectionHistories } from "@/lib/services/collection-history.service";
 import { UNCAT_ID, toHistoryToken, defaultSelectorIds } from "@/lib/utils/collection-ids";
+import {
+  COLLECTION_CARD_PRICE_SELECT,
+  collectFallbackNeeds,
+  indexFallbackRows,
+  shapeGradedPrices,
+  type HistoryGradedRow,
+} from "@/lib/utils/collection-shape";
 import DashboardClient, {
   type CollectionItem,
 } from "./_components/DashboardClient";
@@ -66,8 +73,8 @@ export default async function DashboardPage() {
   // fields the dashboard never reads (notes, condition, addedAt,
   // etc.). Kept narrow so we ship the smallest payload possible
   // during SSR.
-  const [rows, collections] = cached
-    ? [cached.rows, cached.collections]
+  const [freshRows, freshCollections] = cached
+    ? [null, null]
     : await Promise.all([
     prisma.userCollection.findMany({
       where: { userId: session.user.id },
@@ -94,7 +101,16 @@ export default async function DashboardPage() {
             name: true,
             imageUrl: true,
             marketPrice: true,
+            // G1: the REAL stored 7-day % change drives the Gainers/Losers
+            // filter — without it that filter is empty on first (SSR) paint.
+            weeklyChangePct: true,
             set: { select: { name: true } },
+            // G1: the priced CurrentPrice rows, selected IDENTICALLY to GET
+            // /api/users/me/collection (shared COLLECTION_CARD_PRICE_SELECT), so
+            // the SSR initialItems carry `gradedPrices` and graded lots resolve
+            // to their real per-grade price on first paint — not the coarse
+            // multiplier fallback — matching the client refetch payload.
+            currentPrices: COLLECTION_CARD_PRICE_SELECT,
           },
         },
       },
@@ -106,6 +122,31 @@ export default async function DashboardPage() {
       select: { id: true, name: true },
     }),
   ]);
+
+  // G1: shape the fresh rows IDENTICALLY to GET /api/users/me/collection — the
+  // priced `currentPrices` become `card.gradedPrices`, PLUS the history-fallback
+  // entry for a graded company+grade with no current row — via the SHARED helper
+  // both surfaces call, so the SSR initialItems match the client refetch payload
+  // (full parity, incl. the fallback). Prisma-only, ZERO Scrydex credits. A
+  // cache hit already holds the shaped `rows`, so shaping runs only on a miss.
+  const collections = cached ? cached.collections : freshCollections!;
+  let rows: CollectionItem[];
+  if (cached) {
+    rows = cached.rows;
+  } else {
+    const needsFallback = collectFallbackNeeds(freshRows!);
+    let fallbackByCard = new Map<string, HistoryGradedRow[]>();
+    if (needsFallback.length > 0) {
+      const fbCardIds = Array.from(new Set(needsFallback.map((f) => f.cardId)));
+      const histRows = await prisma.pricingHistory.findMany({
+        where: { cardId: { in: fbCardIds }, type: "graded", priceMarket: { not: null } },
+        orderBy: { recordedAt: "desc" },
+        select: { cardId: true, type: true, company: true, grade: true, variant: true, condition: true, priceMarket: true },
+      });
+      fallbackByCard = indexFallbackRows(histRows);
+    }
+    rows = shapeGradedPrices(freshRows!, fallbackByCard) as unknown as CollectionItem[];
+  }
 
   // The client's first-render chart query uses the DEFAULT selection (empty
   // `selectedIds` → "all options") expanded to the collOptions id list, which
