@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldUseTls } from "@/lib/utils/redis-tls";
+import { shouldUseTls, redactRedisUrl } from "@/lib/utils/redis-tls";
 
 /**
  * Guards the TLS decision for the Redis connection URL. Vercel's Upstash
@@ -27,5 +27,31 @@ describe("shouldUseTls", () => {
 
   it("does NOT enable TLS for the Docker service name", () => {
     expect(shouldUseTls("redis://redis:6379")).toBe(false);
+  });
+});
+
+/**
+ * Guards the credential redaction used in the Redis connect log (audit 12 F4).
+ * The password must NEVER appear in the redacted form, on any input.
+ */
+describe("redactRedisUrl", () => {
+  it("strips the password from an Upstash rediss:// URL", () => {
+    const out = redactRedisUrl("rediss://default:s3cr3t-pw@abc.upstash.io:6379");
+    expect(out).toBe("rediss://abc.upstash.io:6379");
+    expect(out).not.toContain("s3cr3t-pw");
+  });
+
+  it("strips the password from a Docker requirepass redis:// URL", () => {
+    const out = redactRedisUrl("redis://default:d409947a@redis:6379");
+    expect(out).not.toContain("d409947a");
+    expect(out).toContain("redis:6379");
+  });
+
+  it("leaves a credential-less local URL readable", () => {
+    expect(redactRedisUrl("redis://localhost:6379")).toBe("redis://localhost:6379");
+  });
+
+  it("returns a constant placeholder (never the raw input) for an unparseable string", () => {
+    expect(redactRedisUrl("not a url:with:colons")).toBe("<redis-url>");
   });
 });

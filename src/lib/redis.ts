@@ -24,7 +24,7 @@
  */
 
 import Redis from "ioredis";
-import { shouldUseTls } from "@/lib/utils/redis-tls";
+import { shouldUseTls, redactRedisUrl } from "@/lib/utils/redis-tls";
 
 // Extend global to hold the singleton across Next.js hot reloads
 const globalForRedis = globalThis as unknown as {
@@ -71,7 +71,10 @@ function createRedisClient(): Redis {
   });
 
   client.on("connect", () => {
-    console.log("[Redis] Connected to Redis at:", redisUrl);
+    // SECURITY (audit 12 F4): never log the raw URL — the Upstash/Docker form is
+    // `rediss://default:<password>@host`, so the password would reach stdout and
+    // every log drain on each (re)connect. Log a redacted host-only form instead.
+    console.log("[Redis] Connected to Redis at:", redactRedisUrl(redisUrl));
   });
 
   client.on("error", (err: Error) => {
