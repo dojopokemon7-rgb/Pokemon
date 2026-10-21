@@ -354,10 +354,6 @@ function CardDetailInner() {
   // follows the data (the largest ENABLED range once history loads). Once the
   // user taps a tab, their choice sticks and the auto-default stops overriding.
   const [rangeTouched, setRangeTouched] = useState(false);
-  // Recent Sales is button-gated now (no auto fetch on mount) — this flips true
-  // once the user clicks "Load recent sales", which fires the gated POST pull
-  // and then mounts <RecentSales> (its own GET renders the stored rows).
-  const [salesRequested, setSalesRequested] = useState(false);
   const queryClient = useQueryClient();
   // ADD TO COLLECTION opens the shared AddCardSheet (same flow as Explore).
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -454,8 +450,9 @@ function CardDetailInner() {
   // stale/gc + no retry dedupes the POST across remounts via the query cache
   // (TanStack-first convention). The route is a no-op {enriched:false} unless
   // SCRYDEX_ONVIEW_ENABLED is on, so this costs nothing in dev. When it reports
-  // enriched:true we invalidate the two read queries so the fresh stored data
-  // repaints; a failed / {enriched:false} response is a silent no-op.
+  // enriched:true we invalidate the three read queries (history, population,
+  // recent sales) so the fresh stored data repaints; a failed / {enriched:false}
+  // response is a silent no-op.
   useQuery({
     queryKey: ["enrich", id],
     queryFn: async () => {
@@ -471,6 +468,10 @@ function CardDetailInner() {
       // panels repaint from the DB. Cheap DB reads (Redis-cached server-side).
       queryClient.invalidateQueries({ queryKey: ["card-history", id] });
       queryClient.invalidateQueries({ queryKey: ["population", id] });
+      // The enrich POST now also stores recent eBay SOLD rows (the third pull),
+      // so re-read them too — RecentSales auto-fetches the GET on mount and this
+      // repaints it with the freshly-stored sales once enrich settles.
+      queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });
       return body;
     },
     staleTime: Infinity,
@@ -937,32 +938,16 @@ function CardDetailInner() {
             threading it here would be wrong; graded sold-record labelling is
             unresolved (Audit L2). RecentSales keeps optional grade?/variant?
             params for a future single-grade filter, left unused for now. */}
-        {/* Button-gated: no sold-record fetch happens until the user clicks.
-            The POST runs the on-view-allowance-gated pull (a no-op when the
-            flag is off), then invalidates ["ebay-sold", id] so RecentSales'
-            GET re-reads the stored rows. Once requested, RecentSales mounts and
-            renders exactly as before ("No recent sales found" when empty). */}
-        {salesRequested ? (
-          <RecentSales id={id} setName={setName} rarity={rarity} />
-        ) : (
-          <button
-            className="dojo-btn dojo-btn-outline"
-            style={{ width: "100%", marginTop: "22px", height: "44px" }}
-            onClick={() => {
-              setSalesRequested(true);
-              fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold`, {
-                method: "POST",
-                credentials: "include",
-              })
-                .catch(() => {})
-                .finally(() => {
-                  queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });
-                });
-            }}
-          >
-            Load recent sales
-          </button>
-        )}
+        {/* Auto-displayed: the on-mount enrich POST now stores recent SOLD rows
+            (the third pull, same 24h cadence as history/population), so the
+            section shows the stored sales on first render WITHOUT a button
+            press. RecentSales auto-fetches the pure-Postgres GET on mount and
+            the enrich query invalidates ["ebay-sold", id] once it settles so
+            freshly-stored rows repaint. We NEVER fire a credit-spending POST
+            from the client — the enrich POST is the only pull. A card Scrydex
+            has no sold records for keeps the honest "No recent sales found"
+            empty state (RULE 2). */}
+        <RecentSales id={id} setName={setName} rarity={rarity} />
 
         {/* Accessories block REMOVED — it was dummy/hardcoded data (plan §4). */}
       </div>

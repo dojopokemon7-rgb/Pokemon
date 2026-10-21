@@ -757,15 +757,19 @@ export async function pullAndStorePopulation(
  * Pull a card's REAL eBay SOLD records and PERSIST them (Part D). This is the
  * SINGLE WRITER of the SoldListing table — mirrors pullAndStorePopulation.
  *
- * CREDIT-GATED-AT-TOP: a listings request costs 1 credit (docs/SCRYDEX_AUDIT.md),
- * so this REFUSES unless live-credit spend is owner-approved — the gate runs
- * FIRST so a denied call performs NO HTTP at all. Throws
- * `ScrydexCreditsNotApproved` when denied; callers surface "pending approval".
+ * CREDIT-GATED-AT-TOP (DUAL GATE — see assertScrydexEnrichApproved): a listings
+ * request costs 1 credit (docs/SCRYDEX_AUDIT.md). The on-view enrich route
+ * passes `opts.creditAuth:"onview"` so the ON-VIEW allowance
+ * (SCRYDEX_ONVIEW_ENABLED) authorizes the spend WITHOUT opening the big-bulk
+ * gate; every other caller (cron/scripts/refresh) passes nothing and keeps the
+ * hard bulk gate (SCRYDEX_LIVE_CREDITS_APPROVED / admin Redis flag). The gate
+ * runs FIRST so a denied call performs NO HTTP at all. Throws
+ * `ScrydexCreditsNotApproved` when neither gate authorizes; callers surface
+ * "pending approval" / fail-open.
  *
- * NOT invoked anywhere this phase: no route/sync/render imports it (the gate
- * stays DENY). It exists and is tested only; a later owner-approved step adds
- * the manual-refresh trigger. The read route (/api/cards/[id]/ebay-sold) is a
- * pure Postgres read — it NEVER calls this.
+ * Driven ON-VIEW by the card-detail enrich route (the third pull alongside
+ * history + population, same 24h attempt-marker cadence). The read route
+ * (/api/cards/[id]/ebay-sold) is a pure Postgres read — it NEVER calls this.
  *
  * `externalId` is the catalog id (RULE 3). We resolve it to Card.id + the
  * Scrydex-native scrydexId (the /listings endpoint keys on scrydexId). An
@@ -782,10 +786,13 @@ export async function pullAndStorePopulation(
  * the write).
  */
 export async function pullAndStoreSoldListings(
-  externalId: string
+  externalId: string,
+  opts?: { creditAuth?: "onview" }
 ): Promise<{ stored: number; credits: number }> {
-  // 1. Credit gate FIRST — throws ScrydexCreditsNotApproved, no HTTP when denied.
-  await assertScrydexCreditsApproved("listings", 1);
+  // 1. DUAL credit gate FIRST — throws ScrydexCreditsNotApproved (no HTTP) unless
+  //    the on-view allowance (creditAuth:"onview") or the hard bulk gate
+  //    authorizes. See assertScrydexEnrichApproved for the two-gate contract.
+  await assertScrydexEnrichApproved("listings", 1, opts?.creditAuth);
 
   const credits = SCRYDEX_CREDIT_COST.listings;
 

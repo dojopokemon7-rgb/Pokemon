@@ -52,6 +52,15 @@ vi.mock("@/lib/services/scrydex-credit-gate", async (importOriginal) => {
       if (gateMock.approved) return;
       throw new actual.ScrydexCreditsNotApproved(op, actual.estimateCredits(op, count));
     }),
+    // The writer now gates via the DUAL-gate entry assertScrydexEnrichApproved
+    // (creditAuth-aware). With no on-view auth (the writer's default call),
+    // it must behave exactly like the bulk gate: approve/deny by gateMock.
+    assertScrydexEnrichApproved: vi.fn(
+      async (op: ScrydexOp, count = 1, creditAuth?: "onview") => {
+        if (gateMock.approved || creditAuth === "onview") return;
+        throw new actual.ScrydexCreditsNotApproved(op, actual.estimateCredits(op, count));
+      }
+    ),
     isScrydexLiveApproved: vi.fn(async () => gateMock.approved),
   };
 });

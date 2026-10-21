@@ -45,6 +45,10 @@ vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 const pricingMock = vi.hoisted(() => ({
   pullAndStoreScrydexHistory: vi.fn(),
   pullAndStorePopulation: vi.fn(),
+  // The enrich route now also pulls recent eBay SOLD listings (the third pull,
+  // same on-view auth + 24h marker cadence). Mock it so the test observes the
+  // call and the sales.stored passthrough — ZERO network, ZERO credits.
+  pullAndStoreSoldListings: vi.fn(),
 }));
 vi.mock("@/lib/services/scrydex-pricing.service", () => pricingMock);
 
@@ -86,6 +90,10 @@ beforeEach(() => {
   prismaMock.syncLog.findFirst.mockResolvedValue(null);
   prismaMock.syncLog.create.mockResolvedValue({});
   prismaMock.currentPrice.findMany.mockResolvedValue([]);
+  // Default pull results so the route's `r.stored` reads are well-defined.
+  pricingMock.pullAndStoreScrydexHistory.mockResolvedValue({ stored: 0, credits: 0 });
+  pricingMock.pullAndStorePopulation.mockResolvedValue({ stored: false, credits: 0 });
+  pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 0, credits: 0 });
   // Clear the Scrydex flags BEFORE each test so the suite is deterministic
   // regardless of ambient env. The project's .env now sets
   // SCRYDEX_ONVIEW_ENABLED=true (prod on-view enrichment), which would leak into
@@ -113,6 +121,9 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.enriched).toBe(false);
     expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
+    // TASK 1 (b): BOTH gate flags off ⇒ the sold-listings pull is NOT called
+    // either — no credits spent on any of the three pulls.
+    expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
     // Short-circuit happens before any freshness query (the SyncLog marker read).
     expect(prismaMock.syncLog.findFirst).not.toHaveBeenCalled();
   });
@@ -242,5 +253,81 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.reason).toBe("unknown");
     expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
+    expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
+  });
+
+  // ── TASK 1: recent eBay SOLD listings ride the same on-view enrich pull ──
+
+  it("(TASK 1a) allowance ON, stale → pulls sold listings with creditAuth:onview, returns sales.stored>0", async () => {
+    // With the on-view allowance ON and the card stale (no marker), the third
+    // pull runs alongside history + population, authorized BY the on-view flag
+    // (creditAuth:"onview"). The externalId ([id]) is passed straight through
+    // (RULE 3). A stored count surfaces in the 200 body as sales.stored.
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
+    prismaMock.syncLog.findFirst.mockResolvedValue(null); // never enriched → stale
+    pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 3, credits: 1 });
+
+    const [req, ctx] = enrichRequest("base1-4");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.enriched).toBe(true);
+    expect(body.sales).toEqual({ stored: 3 });
+    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledTimes(1);
+    // [id] (externalId) passed directly, authorized by the on-view allowance.
+    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledWith("base1-4", {
+      creditAuth: "onview",
+    });
+    // The single 24h marker still covers all three pulls (one enrich attempt).
+    expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ job: "scrydex_onview_enrich", cardId: "card_1" }),
+      })
+    );
+  });
+
+  it("(TASK 1c) card with NO Scrydex sold records stores nothing → sales.stored:0 (no fabrication)", async () => {
+    // A card Scrydex has no sold records for: the writer honestly returns
+    // stored:0 (empty/null fetch). The route surfaces sales.stored:0 — never a
+    // fabricated row — and the read route (pure Postgres) then renders the
+    // "No recent sales found" empty state (RULE 2).
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
+    prismaMock.syncLog.findFirst.mockResolvedValue(null);
+    pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 0, credits: 1 });
+
+    const [req, ctx] = enrichRequest("base1-4");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.enriched).toBe(true);
+    expect(body.sales).toEqual({ stored: 0 });
+    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledTimes(1);
+  });
+
+  it("(TASK 1 fail-open) a thrown sold-listings pull does NOT 5xx; sales.stored:0, marker still written", async () => {
+    // RULE 7: a ScrydexCreditsNotApproved / transient throw from any pull must
+    // be swallowed — the route always returns 200. The 24h marker is still
+    // written so the attempt throttles the card for 24h regardless.
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
+    prismaMock.syncLog.findFirst.mockResolvedValue(null);
+    pricingMock.pullAndStoreSoldListings.mockRejectedValue(new Error("boom"));
+
+    const [req, ctx] = enrichRequest("base1-4");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.enriched).toBe(true);
+    expect(body.sales).toEqual({ stored: 0 });
+    expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ job: "scrydex_onview_enrich", cardId: "card_1" }),
+      })
+    );
   });
 });

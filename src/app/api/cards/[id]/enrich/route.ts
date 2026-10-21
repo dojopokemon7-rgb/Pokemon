@@ -1,6 +1,7 @@
 /**
  * POST /api/cards/[id]/enrich — ON-VIEW, store-once enrichment of a card's
- * price history + PSA population, called ONCE by the card-detail page on mount.
+ * price history + PSA population + recent eBay SOLD listings, called ONCE by
+ * the card-detail page on mount.
  *
  * `[id]` is the EXTERNAL card id (same convention as the sibling prices/history
  * routes). The route is deliberately CHEAP and idempotent:
@@ -10,14 +11,15 @@
  *     called at all, so dev/verification never spends a credit.
  *   - Short-circuits to `{ enriched:false, reason:"fresh" }` when the card
  *     already has stored history AND a stored population — store-once, no spend.
- *   - Otherwise pulls only what's missing: history (365d, limited to the card's
- *     actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades) and/or
- *     population. Both pulls are invoked with `creditAuth:"onview"` so the
- *     ON-VIEW allowance (SCRYDEX_ONVIEW_ENABLED) ALONE authorizes the spend —
- *     the big-bulk gate (SCRYDEX_LIVE_CREDITS_APPROVED) is NOT required and NOT
- *     widened (see assertScrydexEnrichApproved). Each pull is still wrapped
- *     fail-open — a thrown ScrydexCreditsNotApproved (when neither gate
- *     authorizes) or any error is swallowed, never a 5xx.
+ *   - Otherwise pulls all three together: history (365d, limited to the card's
+ *     actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades), population, and
+ *     recent eBay SOLD listings. All three pulls are invoked with
+ *     `creditAuth:"onview"` so the ON-VIEW allowance (SCRYDEX_ONVIEW_ENABLED)
+ *     ALONE authorizes the spend — the big-bulk gate
+ *     (SCRYDEX_LIVE_CREDITS_APPROVED) is NOT required and NOT widened (see
+ *     assertScrydexEnrichApproved). Each pull is still wrapped fail-open — a
+ *     thrown ScrydexCreditsNotApproved (when neither gate authorizes) or any
+ *     error is swallowed, never a 5xx.
  *
  * PUBLIC card route (AGENTS.md rule 7): ALWAYS returns HTTP 200 with a small
  * JSON body — never 4xx/5xx — so the client's one-shot fetch is a silent no-op
@@ -33,6 +35,7 @@ import { isScrydexOnViewApproved } from "@/lib/services/scrydex-credit-gate";
 import {
   pullAndStoreScrydexHistory,
   pullAndStorePopulation,
+  pullAndStoreSoldListings,
 } from "@/lib/services/scrydex-pricing.service";
 
 // On-view enrich makes several SEQUENTIAL Scrydex round-trips (raw + graded
@@ -129,6 +132,7 @@ export async function POST(
   // instead of being masked by a bare `enriched:true` (fail-open contract kept).
   let historyStored = 0;
   let populationStored = false;
+  let salesStored = 0;
   if (card.scrydexId) {
     // Only the card's actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades.
     const gradedRows = await prisma.currentPrice.findMany({
@@ -175,11 +179,26 @@ export async function POST(
     }
   }
 
+  // Third pull: recent eBay SOLD listings. The enrich route's [id] IS the
+  // externalId (RULE 3) — pass it directly to the single writer. Same on-view
+  // authorization + fail-open contract as the two pulls above; a thrown
+  // ScrydexCreditsNotApproved (neither gate authorizes) or any error must NOT
+  // 5xx (RULE 7). stored stays 0 on a swallowed/empty write (RULE 2 — a card
+  // Scrydex has no sold records for honestly stores nothing).
+  {
+    try {
+      const r = await pullAndStoreSoldListings(id, { creditAuth: "onview" });
+      salesStored = r.stored;
+    } catch {
+      // fail-open — never a 5xx. stored stays 0.
+    }
+  }
+
   // Write the per-card freshness marker (the 24h clock) — ALWAYS when we reach
-  // the pull branch, even if both pulls stored 0 or threw. The whole point is
+  // the pull branch, even if all three pulls stored 0 or threw. The whole point is
   // to throttle pop-less / history-less cards: the credit spend already happened
   // (or was denied) on this attempt, so the 24h window starts now. credits:0 —
-  // the marker is NOT itself a Scrydex call (history/population meter their own
+  // the marker is NOT itself a Scrydex call (history/population/listings meter their own
   // SyncLog rows with the real credit cost). Fail-open (try/catch) so a marker-
   // write fault never 5xx (RULE 7).
   try {
@@ -199,7 +218,12 @@ export async function POST(
   }
 
   return NextResponse.json(
-    { enriched: true, history: { stored: historyStored }, population: { stored: populationStored } },
+    {
+      enriched: true,
+      history: { stored: historyStored },
+      population: { stored: populationStored },
+      sales: { stored: salesStored },
+    },
     { status: 200 }
   );
 }
