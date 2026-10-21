@@ -9,9 +9,10 @@ import { Game } from "@prisma/client";
  *   (a) with SCRYDEX_ONVIEW_ENABLED UNSET (allowance off) AND the big-bulk
  *       credit gate DENY, the route returns {enriched:false} and calls NEITHER
  *       pullAndStoreScrydexHistory NOR pullAndStorePopulation (no Scrydex HTTP).
- *   (b) when the card already has stored history AND population, the route is a
- *       no-op {enriched:false,reason:"fresh"} without calling the services —
- *       even if the allowance were on.
+ *   (b) when the card already has stored history AND a population refreshed
+ *       within the 24h window, the route is a no-op
+ *       {enriched:false,reason:"fresh"} without calling the services — even if
+ *       the allowance were on (owner spec: pull-on-open only after 24h).
  *
  * Mocked Prisma + Scrydex service + population reader + Redis — ZERO network,
  * ZERO credits, no live DB. The allowance is env-only; we never set the flag.
@@ -106,16 +107,17 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(prismaMock.pricingHistory.count).not.toHaveBeenCalled();
   });
 
-  it("(b) fresh within 7 days (has history + recent population) → {enriched:false}, NO service call", async () => {
-    // Even with the allowance ON, a card refreshed within the 7-day window must
-    // not spend — this is the once-per-week credit guard. refreshedAt = now.
+  it("(b) fresh within 24h (has history + recent population) → {enriched:false}, NO service call", async () => {
+    // Owner spec: a card enriched <24h ago is served from the store on open —
+    // no pull, no credit. Even with the allowance ON, a card refreshed 23h ago
+    // (inside the 24h window) must not spend.
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
     prismaMock.pricingHistory.count.mockResolvedValue(5);
     populationMock.getStoredPopulationReport.mockResolvedValue({
       source: "scrydex",
       companies: [],
-      refreshedAt: new Date().toISOString(), // refreshed just now → fresh
+      refreshedAt: new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(), // 23h ago → still fresh
     });
 
     const [req, ctx] = enrichRequest("base1-4");
@@ -129,9 +131,10 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
   });
 
-  it("(c) stale > 7 days → refreshes once (calls both services) when allowance ON", async () => {
-    // A card last refreshed 8 days ago is re-enriched on this view (the weekly
-    // refresh, triggered by the user opening the card).
+  it("(c) stale > 24h → re-pulls once (calls both services) on open when allowance ON", async () => {
+    // Owner spec: the first open AFTER 24h re-pulls once. A card last refreshed
+    // 25h ago is re-enriched on this view (triggered by the user opening the
+    // card — never a background job).
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
     prismaMock.pricingHistory.count.mockResolvedValue(5);
@@ -139,7 +142,7 @@ describe("POST /api/cards/[id]/enrich", () => {
     populationMock.getStoredPopulationReport.mockResolvedValue({
       source: "scrydex",
       companies: [],
-      refreshedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(), // 8 days old
+      refreshedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), // 25h old → stale
     });
 
     const [req, ctx] = enrichRequest("base1-4");

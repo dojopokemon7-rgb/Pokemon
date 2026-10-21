@@ -1,9 +1,4 @@
 {
   "framework": "nextjs",
-  "crons": [
-    {
-      "path": "/api/cron/refresh-owned-prices",
-      "schedule": "0 3 * * *"
-    }
-  ]
+  "crons": []
 }

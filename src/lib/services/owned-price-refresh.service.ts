@@ -1,17 +1,19 @@
 /**
- * Daily OWNED-cards current-price refresh (ALL users).
+ * OWNED-cards current-price refresh (ALL users) — MANUAL/operator-invocable.
  *
- * WHY this exists: current price must stay DAILY-fresh for cards users actually
- * hold, WITHOUT re-pricing the whole ~40-50k catalog. History / population /
- * deeper Scrydex data stay on their existing on-view 7-day cadence — this job
- * does NOT touch that. It only keeps the OWNED set's current price fresh in
- * between via the SINGLE current-price writer (pullAndStoreScrydexPrice).
+ * NOT auto-scheduled (owner spec: "not auto pull"). This used to run on a daily
+ * Vercel cron; that schedule has been REMOVED from vercel.json so nothing fires
+ * it automatically. It remains callable by an operator via the CRON_SECRET-
+ * guarded route for a deliberate, manual refresh. History / population / deeper
+ * Scrydex data stay on the on-view 24h cadence — this job does NOT touch that.
+ * It only re-prices the OWNED set's current price via the SINGLE current-price
+ * writer (pullAndStoreScrydexPrice) when an operator explicitly runs it.
  *
  * This is the ALL-USERS distinct owned set: the owned-cards query is NOT
  * user-scoped (no `userId` filter) — it is the union of every active holding
  * across every user, deduped by card. Compare with
  * POST /api/users/me/portfolio/refresh, which does the SAME per-card work for
- * ONE user; this is that logic widened to everyone and scheduled daily.
+ * ONE user; this is that logic widened to everyone, invoked manually.
  *
  * TWO-ID RULE (AGENTS.md RULE 3): Scrydex resolves on externalId / scrydexId;
  * CurrentPrice + SyncLog key on the internal Card.id (cuid). The query selects
@@ -22,8 +24,8 @@
  *      whole run is a safe no-op — no DB read, no HTTP, zero credits.
  *   2. Per-card 24h gate inside pullAndStoreScrydexPrice: a card priced within
  *      the last 24h is skipped (no HTTP, no credit). We pass NO `force`, so a
- *      card not reached today (capped out) is still stale tomorrow and gets
- *      picked up on the next daily run — resumable without a cursor table.
+ *      card not reached in one run (capped out) stays stale and gets picked up
+ *      on the next manual run — resumable without a cursor table.
  */
 import { prisma } from "@/lib/db";
 import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
@@ -112,7 +114,8 @@ export async function getOwnedCardsForRefresh(): Promise<ScrydexPullCard[]> {
 }
 
 /**
- * Daily refresh of CURRENT price for the OWNED-cards set. Bounded + resumable.
+ * Manual/operator refresh of CURRENT price for the OWNED-cards set (NOT
+ * auto-scheduled — owner spec "not auto pull"). Bounded + resumable.
  * Returns a summary (also written as a SyncLog row for admin/logs visibility).
  */
 export async function refreshOwnedPrices(): Promise<OwnedPriceRefreshSummary> {

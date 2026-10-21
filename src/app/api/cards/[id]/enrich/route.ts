@@ -86,13 +86,16 @@ export async function POST(
     return NextResponse.json({ enriched: false, reason: "disabled" }, { status: 200 });
   }
 
-  // WEEKLY freshness: a card is re-enriched at most ONCE per 7 days. The first
-  // view of a card pulls+stores (1 charge); every view inside the next 7 days is
-  // free; after 7 days the next view refreshes once. `population_report.
-  // refreshedAt` is the per-card "last enriched at" marker (enrich pulls history
-  // + population together). We refresh when EITHER piece is missing OR the pop
-  // marker is older than STALE_MS.
-  const STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  // 24h freshness (owner spec): a card is re-enriched at most ONCE per 24h, and
+  // ONLY when a user opens it — never a background job. The first open of a card
+  // pulls+stores (1 charge); every open inside the next 24h is free; the first
+  // open AFTER 24h re-pulls once. `population_report.refreshedAt` is the per-card
+  // "last enriched at" marker (enrich pulls history + population together). We
+  // refresh when EITHER piece is missing OR the pop marker is older than STALE_MS.
+  // History points are date-keyed/immutable, so a re-pull after 24h only ADDS a
+  // genuinely new day's point (skipDuplicates) — the 24h window governs when we
+  // RE-CHECK on open, not wasteful re-storage of existing points.
+  const STALE_MS = 24 * 60 * 60 * 1000; // 24h — owner spec: re-pull on open only after 24h
   const hasHistory = (await prisma.pricingHistory.count({ where: { cardId: card.id } })) > 0;
   const pop = await getStoredPopulationReport(id);
   const popAgeMs = pop?.refreshedAt ? Date.now() - new Date(pop.refreshedAt).getTime() : Infinity;
@@ -100,9 +103,9 @@ export async function POST(
   if (isFresh) {
     return NextResponse.json({ enriched: false, reason: "fresh" }, { status: 200 });
   }
-  // Not fresh → this is the once-per-week refresh (triggered BY the user opening
+  // Not fresh → this is the once-per-24h refresh (triggered BY the user opening
   // the card, never a background job). Refresh BOTH history and population so
-  // the weekly spend keeps everything current together. Each pull is fail-open
+  // the on-open spend keeps everything current together. Each pull is fail-open
   // (a ScrydexCreditsNotApproved or any throw must NOT 5xx — AGENTS.md rule 7).
   // Surfaced in the 200 body so a swallowed/truncated write shows as stored:0
   // instead of being masked by a bare `enriched:true` (fail-open contract kept).

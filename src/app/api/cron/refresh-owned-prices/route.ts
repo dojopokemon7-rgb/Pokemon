@@ -1,11 +1,14 @@
 /**
  * GET/POST /api/cron/refresh-owned-prices
  *
- * Scheduled by Vercel Cron (see vercel.json, 03:00 UTC daily). Also invocable
- * manually — include the CRON_SECRET as either an Authorization bearer or a
- * `?secret=` query param. Refreshes CURRENT price for the OWNED-cards set only
- * (distinct active holdings across all users), via refreshOwnedPrices(). It
- * does NOT touch history / population / the on-view 7-day cadence.
+ * NOT auto-scheduled (owner spec: "not auto pull"). This route is UNSCHEDULED
+ * in vercel.json — Vercel never fires it automatically. It remains invocable
+ * MANUALLY by an operator — include the CRON_SECRET as either an Authorization
+ * bearer or a `?secret=` query param. Refreshes CURRENT price for the
+ * OWNED-cards set only (distinct active holdings across all users), via
+ * refreshOwnedPrices(). It does NOT touch history / population / the on-view
+ * 24h cadence. Automatic price freshness now comes ONLY from the on-open enrich
+ * + graded routes (pull-on-open, 24h gate) — no background pulling.
  *
  * -----------------------------------------------------------------
  * Auth (fail-CLOSED — do NOT regress)

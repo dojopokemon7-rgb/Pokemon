@@ -11,9 +11,9 @@
  *   - This endpoint owns PORTFOLIO price freshness (24h), via the pricing
  *     service's own built-in 24h gate (SCRYDEX_STALE_MS on
  *     SyncLog(job="scrydex_history", cardId)).
- *   - The per-card on-view enrich route (`/api/cards/[id]/enrich`, STALE_MS 7d)
- *     is a SEPARATE concern — the card-DETAIL history+population weekly refresh.
- *     The 7-day enrich window does NOT contradict this 24h portfolio refresh.
+ *   - The per-card on-view enrich route (`/api/cards/[id]/enrich`, STALE_MS 24h)
+ *     is a SEPARATE concern — the card-DETAIL history+population on-open refresh.
+ *     Both now use a 24h window; they do not contradict each other.
  *
  * SPEND IS DOUBLE-BOUNDED:
  *   1. Credit gate (isScrydexLiveApproved): when live spend is NOT approved the
