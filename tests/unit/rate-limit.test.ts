@@ -137,13 +137,23 @@ describe("enforceRateLimit — identity keying", () => {
   });
 });
 
-describe("clientIp — proxy header resolution", () => {
-  it("takes the first hop of x-forwarded-for", () => {
-    expect(clientIp(req({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" }))).toBe("203.0.113.7");
+describe("clientIp — proxy header resolution (audit 10 F2 / 12 F8)", () => {
+  it("uses x-real-ip when present (Caddy-set, unspoofable)", () => {
+    expect(clientIp(req({ "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
   });
 
-  it("falls back to x-real-ip when x-forwarded-for is absent", () => {
-    expect(clientIp(req({ "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
+  it("does NOT let a forged x-forwarded-for override x-real-ip (anti-spoof)", () => {
+    // Attacker sends a forged XFF first hop; Caddy still sets the real peer in
+    // x-real-ip. The real IP must win so the per-IP bucket can't be rotated.
+    const res = clientIp(
+      req({ "x-forwarded-for": "6.6.6.6, 10.0.0.1", "x-real-ip": "198.51.100.2" })
+    );
+    expect(res).toBe("198.51.100.2");
+    expect(res).not.toBe("6.6.6.6");
+  });
+
+  it("falls back to the first x-forwarded-for hop when x-real-ip is absent (local/dev/CI)", () => {
+    expect(clientIp(req({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" }))).toBe("203.0.113.7");
   });
 
   it("falls back to 'unknown' when no proxy header is present", () => {

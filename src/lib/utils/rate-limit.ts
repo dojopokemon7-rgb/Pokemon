@@ -69,24 +69,40 @@ export function searchTier(): RateLimitTier {
 }
 
 /**
- * Resolves the real client IP. The app sits behind a proxy (Vercel/DigitalOcean/
- * Caddy), so the socket IP is the proxy — and the App Router `Request` has no
- * reliable socket IP anyway. We trust the FIRST hop of `x-forwarded-for` (the
- * original client as recorded by our edge), falling back to `x-real-ip`, then a
- * literal `"unknown"`.
+ * Resolves the real client IP. The app sits behind a SINGLE Caddy reverse proxy
+ * (no CDN) that terminates every connection, so the socket IP is always Caddy
+ * and the App Router `Request` has no reliable socket IP anyway.
+ *
+ * We trust `x-real-ip` FIRST because Caddy sets it from `{remote_host}` — the
+ * real TCP peer IP Caddy itself observes — and OVERWRITES any client-supplied
+ * value, so it CANNOT be spoofed. We must NOT trust the first hop of
+ * `x-forwarded-for`: Caddy forwards XFF by default, APPENDING the real peer to
+ * whatever the client sent, so the FIRST XFF hop is the attacker-CONTROLLED
+ * value. Keying the rate limiter on it let an attacker rotate a forged XFF to
+ * get a fresh per-IP bucket on every request and brute-force past the cap on
+ * sign-in / email-OTP / admin-auth (audit 10 F2, 12 F8).
+ *
+ * Fallback chain for environments WITHOUT the proxy (local dev, tests, CI where
+ * `x-real-ip` is absent): fall back to the first `x-forwarded-for` hop, then a
+ * literal `"unknown"` so those setups still get a stable key. This degrades,
+ * never hard-fails (defense-in-depth; the Redis layer is fail-open per RULE 1).
  *
  * ponytail: when NO proxy header is present (bare local/test setup) every
  * unauthenticated caller shares the single `"unknown"` bucket. Accepted —
- * production always sets the proxy header, and the authed routes key by user id.
+ * production always sets `x-real-ip`, and the authed routes key by user id.
  */
 export function clientIp(request: Request): string {
+  // TRUSTED first: Caddy's `header_up X-Real-IP {remote_host}` overwrites any
+  // client value with the real peer IP — unspoofable in this single-proxy topology.
+  const real = request.headers.get("x-real-ip");
+  if (real && real.trim()) return real.trim();
+  // UNTRUSTED fallback (no proxy): the first XFF hop is client-appended by Caddy,
+  // so it's only used when x-real-ip is absent (local/dev/test/CI).
   const xff = request.headers.get("x-forwarded-for");
   if (xff) {
     const first = xff.split(",")[0]?.trim();
     if (first) return first;
   }
-  const real = request.headers.get("x-real-ip");
-  if (real && real.trim()) return real.trim();
   return "unknown";
 }
 
