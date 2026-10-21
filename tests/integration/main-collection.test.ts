@@ -10,6 +10,11 @@ const prismaMock = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findMany: vi.fn(),
   },
+  // deleteCollection now re-homes active lots + want rows inside a $transaction
+  // before deleting (audit 05 F-01 / 01 P-05), so the delete path touches these.
+  userCollection: { findMany: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  wantListItem: { findMany: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  $transaction: vi.fn(),
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -80,6 +85,12 @@ describe("Main protection", () => {
   beforeEach(() => {
     prismaMock.collection.findFirst.mockResolvedValue({ name: "Main" });
     prismaMock.collection.findMany.mockResolvedValue([MAIN]);
+    // Interactive-callback $transaction + empty re-home reads for the delete path.
+    prismaMock.$transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
+      cb(prismaMock)
+    );
+    prismaMock.userCollection.findMany.mockResolvedValue([]);
+    prismaMock.wantListItem.findMany.mockResolvedValue([]);
   });
 
   it("rejects rename / delete / settings change of Main with zero writes", async () => {

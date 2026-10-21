@@ -110,14 +110,30 @@ export async function DELETE(
 
   try {
     await deleteCollection(userId, id);
-    // Invalidate collections:{userId} + dashboard:{userId}. Best-effort.
-    await invalidateUserCaches(userId, ["collections", "dashboard"]);
+    // Delete re-homes active lots + want rows into the uncategorized/account
+    // scope (see deleteCollection), so the collection, want-list, uncategorized
+    // collection view, and dashboard all go stale. Best-effort (RULE 1).
+    await invalidateUserCaches(userId, ["collections", "dashboard", "collection", "wantlist"]);
     return NextResponse.json({ data: { id } });
   } catch (err) {
     if (err instanceof VirtualCollectionReadonlyError) return readonlyVirtual();
     if (err instanceof MainCollectionProtectedError) return mainProtected(err);
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
-      return notFound();
+    if (err instanceof Prisma.PrismaClientKnownRequestError) {
+      if (err.code === "P2025") return notFound();
+      // Belt-and-suspenders for a concurrent race: a NULL-scoped sibling created
+      // between the merge read and the delete commit trips uc_variant_coalesced /
+      // wli_scope_coalesced. The merge (deleteCollection) handles the common case,
+      // so this maps the race to 409 — never a bare 500.
+      if (err.code === "P2002") {
+        return NextResponse.json(
+          {
+            error: "Conflict",
+            message:
+              "Couldn’t delete this collection because one of its cards conflicts with an existing uncategorized copy. Please try again.",
+          },
+          { status: 409 }
+        );
+      }
     }
     throw err;
   }

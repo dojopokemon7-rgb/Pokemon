@@ -243,12 +243,103 @@ export async function renameCollection(userId: string, collectionId: string, nam
   });
 }
 
-/** Deletes a collection the user owns (never the virtual ALL view). */
+/**
+ * Deletes a collection the user owns (never the virtual ALL view).
+ *
+ * SAFE & ATOMIC re-home (audit 05 F-01 / 01 P-05). The FK
+ * `UserCollection.collectionId` is `onDelete: SetNull`, so a bare delete would
+ * NULL this collection's active lots' `collectionId`. The partial unique index
+ * `uc_variant_coalesced` — UNIQUE(userId, COALESCE(collectionId,''), cardId,
+ * isFoil, COALESCE(condition,'')) WHERE isSold=false — treats NULL as ''. If the
+ * user already holds a NULL-scoped (uncategorized) active lot of the same
+ * (cardId, isFoil, condition), SetNull would collide → Postgres P2002 → an
+ * uncaught 500 and the collection silently survives.
+ *
+ * Instead, BEFORE deleting, we re-home the collection's ACTIVE lots to the
+ * NULL/uncategorized scope by MERGING into any colliding NULL-scoped active lot
+ * (bump its quantity, drop the duplicate — quantity conserved, RULE 2), else
+ * just NULL the lot. `WantListItem.collectionId` is also SetNull under
+ * `wli_scope_coalesced` UNIQUE(userId, COALESCE(collectionId,''), cardId,
+ * intent): a deleted collection's want rows fall to account level and can
+ * collide with an existing account-scoped want row of the same (cardId, intent)
+ * — a want row has no quantity, so a collision is resolved by deleting the
+ * duplicate, else NULL the row. The lot merge, the want-row remediation, and the
+ * collection delete all run in ONE `$transaction` so any failure rolls back
+ * cleanly. Sold lots are untouched: the index is partial on isSold=false, so
+ * sold rows SetNull harmlessly.
+ *
+ * This mirrors the sell-revert merge-back (commit 8bafcf8). The caller maps a
+ * concurrent P2002 (a sibling created between our read and the delete commit) to
+ * 409, so a legitimate delete is never blocked by a bare 500.
+ */
 export async function deleteCollection(userId: string, collectionId: string) {
   assertNotVirtual(collectionId);
   await assertNotMain(userId, collectionId);
-  return prisma.collection.delete({
-    where: { id: collectionId, userId },
+
+  // Same normalization the add route / sell-revert fix use so the app-side
+  // variant key matches the DB index's COALESCE(condition,'').
+  const norm = (c: string | null | undefined) => (c ?? "").trim().toUpperCase();
+
+  return prisma.$transaction(async (tx) => {
+    // --- Re-home active lots, merging on NULL-scope collision ----------------
+    const lots = await tx.userCollection.findMany({
+      where: { collectionId, userId, isSold: false },
+    });
+    // Index the user's existing NULL-scoped active lots by variant key so a
+    // collision folds into the sibling. Mutated in-place as lots are re-homed so
+    // two source lots that share a key both fold into the same target.
+    const nullScoped = await tx.userCollection.findMany({
+      where: { userId, collectionId: null, isSold: false },
+    });
+    const lotKey = (l: { cardId: string; isFoil: boolean; condition: string | null }) =>
+      `${l.cardId}|${l.isFoil}|${norm(l.condition)}`;
+    const siblingByKey = new Map<string, { id: string; quantity: number }>();
+    for (const s of nullScoped) siblingByKey.set(lotKey(s), { id: s.id, quantity: s.quantity });
+
+    for (const lot of lots) {
+      const key = lotKey(lot);
+      const sibling = siblingByKey.get(key);
+      if (sibling) {
+        // Collision: merge into the NULL-scoped sibling, drop the duplicate.
+        const mergedQty = sibling.quantity + lot.quantity;
+        await tx.userCollection.update({
+          where: { id: sibling.id },
+          data: { quantity: mergedQty },
+        });
+        await tx.userCollection.delete({ where: { id: lot.id } });
+        sibling.quantity = mergedQty; // a later same-key lot folds into this one
+      } else {
+        // No collision: re-home to NULL scope and register it as a sibling so a
+        // later same-key lot in this batch merges into it.
+        await tx.userCollection.update({
+          where: { id: lot.id },
+          data: { collectionId: null },
+        });
+        siblingByKey.set(key, { id: lot.id, quantity: lot.quantity });
+      }
+    }
+
+    // --- Re-home want rows, deleting on NULL-scope collision -----------------
+    const wants = await tx.wantListItem.findMany({ where: { collectionId, userId } });
+    const nullWants = await tx.wantListItem.findMany({
+      where: { userId, collectionId: null },
+    });
+    const wantKey = (w: { cardId: string; intent: string }) => `${w.cardId}|${w.intent}`;
+    const wantSeen = new Set<string>(nullWants.map(wantKey));
+    for (const want of wants) {
+      const key = wantKey(want);
+      if (wantSeen.has(key)) {
+        // Collision: a null-scoped want of this (cardId, intent) already exists.
+        // Want rows have no quantity, so just drop the duplicate.
+        await tx.wantListItem.delete({ where: { id: want.id } });
+      } else {
+        await tx.wantListItem.update({ where: { id: want.id }, data: { collectionId: null } });
+        wantSeen.add(key);
+      }
+    }
+
+    // --- Delete the collection (ownership-scoped) ----------------------------
+    return tx.collection.delete({ where: { id: collectionId, userId } });
   });
 }
 

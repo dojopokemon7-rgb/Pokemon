@@ -29,13 +29,15 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     groupBy: vi.fn(),
   },
-  wantListItem: { groupBy: vi.fn() },
+  wantListItem: { groupBy: vi.fn(), findMany: vi.fn(), update: vi.fn(), delete: vi.fn() },
   cardSet: { upsert: vi.fn() },
   card: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   currentPrice: { findMany: vi.fn() },
   pricingHistory: { createMany: vi.fn() },
+  $transaction: vi.fn(),
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -147,6 +149,14 @@ describe("renameCollection", () => {
 
 describe("deleteCollection", () => {
   it("deletes a collection the user owns", async () => {
+    // Non-Main owner check + interactive-callback $transaction + empty re-home
+    // reads (no lots/want rows to move → straight to the delete).
+    prismaMock.collection.findFirst.mockResolvedValue({ name: "Vintage WOTC" });
+    prismaMock.$transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
+      cb(prismaMock)
+    );
+    prismaMock.userCollection.findMany.mockResolvedValue([]);
+    prismaMock.wantListItem.findMany.mockResolvedValue([]);
     prismaMock.collection.delete.mockResolvedValue({ id: "col_1" });
 
     await deleteCollection(USER_ID, "col_1");

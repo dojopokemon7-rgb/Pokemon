@@ -315,7 +315,8 @@ Every mutation deletes the keys its data feeds, best-effort via `invalidateUserC
 |---|---|
 | add / sell / update / delete collection item (`POST/PATCH/DELETE /api/users/me/collection[...]`, `POST .../[id]/sell`) | `collection:{userId}` + `dashboard:{userId}` |
 | want-list add / move / remove (`POST /api/want-list`, `PATCH/DELETE /api/want-list/[id]`) | `wantlist:{userId}:*` (whole family) + `dashboard:{userId}` |
-| collection create / rename / delete (`POST /api/collections`, `PATCH/DELETE /api/collections/[id]`) | `collections:{userId}` + `dashboard:{userId}` |
+| collection create / rename (`POST /api/collections`, `PATCH /api/collections/[id]`) | `collections:{userId}` + `dashboard:{userId}` |
+| collection delete (`DELETE /api/collections/[id]`) | `collections:{userId}` + `dashboard:{userId}` + `collection:{userId}` + `wantlist:{userId}:*` (delete re-homes lots + want rows to the uncategorized/account scope, so those views also go stale) |
 
 **Every** Redis read/write is individually try/caught → outage falls through to live data. Non-fatal `[Redis] … falling through` logs in dev are expected. `redis` is a lazy Proxy so `next build` never needs `REDIS_URL`.
 

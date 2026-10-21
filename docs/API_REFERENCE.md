@@ -126,7 +126,7 @@ Better Auth catch-all via `toNextJsHandler(auth)`. Subpaths: `sign-in/email`, `s
 ### `PATCH /api/collections/[id]`
 - Body `{ name? }` and/or `{ isPrivate?, typeTag? }` (at least one, else 400). 200 `{ data }`; 404 foreign/nonexistent id (P2025 — no existence leak); 409 (duplicate name, or FEAT-004 Main protected: Main cannot be renamed or have privacy/tag changed); 400.
 
-### `DELETE /api/collections/[id]` → 200 `{ data: { id } }`; 404; 409 if the collection is the protected Main (FEAT-004). (Cards unfile, not deleted — SetNull.)
+### `DELETE /api/collections/[id]` → 200 `{ data: { id } }`; 404; 409 if the collection is the protected Main (FEAT-004), or on a concurrent uncategorized-scope conflict. (Cards unfile, not deleted.) Atomic: inside one `$transaction` the collection's active lots are re-homed to the uncategorized (`collectionId=null`) scope — MERGING quantity into any existing colliding null-scoped lot (`uc_variant_coalesced`) instead of a bare SetNull that would trip P2002 → 500 — and its want rows fall to account level (duplicate dropped on `wli_scope_coalesced` collision), THEN the collection is deleted. A concurrent P2002 race maps to 409 (audit 05 F-01 / 01 P-05).
 
 ### `GET /api/want-list` — Query `intent?` (`BUY|SELL|TRADE`; invalid silently ignored → all) + F-#8 `collectionId?`.
 - `collectionId=<id>` → that collection; `collectionId=__account__` → account-level (`null`) rows; ABSENT → all scopes.
