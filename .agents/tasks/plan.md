@@ -1,211 +1,210 @@
-# Implementation Plan — Portfolio value-over-time chart pipeline (A/B/C)
+# Implementation Plan — Safe & atomic collection delete (audit 05 F-01 / 01 P-05, HIGH)
 
-Worktree: `d:\Pokemon\Pokemon\.worktrees\portfolio-value-series` (branch `portfolio-value-series`).
-Windows/PowerShell — quote all paths. Git: `git -C "d:\Pokemon\Pokemon\.worktrees\portfolio-value-series"`.
-Zero external credits — pure code + Prisma-read logic only. Do NOT touch `prisma/schema.prisma`,
-`src/lib/auth.ts`, or any Scrydex enrich / credit-gate / `SCRYDEX_ONVIEW` config.
+## Context & design decisions (grounded in the worktree)
 
-## Context discovered during exploration (ground truth, not assumptions)
+**The bug.** `DELETE /api/collections/[id]` → `deleteCollection(userId, id)` in
+`src/lib/services/collection.service.ts` calls a bare `prisma.collection.delete`.
+The FK `UserCollection.collectionId` is `onDelete: SetNull`
+(`prisma/schema.prisma` line 334), so deleting a collection nulls its active lots'
+`collectionId`. The partial unique index `uc_variant_coalesced` is
+`UNIQUE(userId, COALESCE(collectionId,''), cardId, isFoil, COALESCE(condition,'')) WHERE isSold=false`
+— NULL `collectionId` coalesces to `''`. If the user already holds a NULL-scoped
+(uncategorized) active lot of the same `(cardId, isFoil, condition)`, the SetNull
+collides → Postgres unique violation (P2002). The DELETE route only maps P2025
+(not-found) → 404; a P2002 falls through the `throw err` → uncaught 500, and the UI
+silently keeps the collection.
 
-- **Two chart builders.** `buildCollectionHistories` (`src/lib/services/collection-history.service.ts`,
-  server-only, Prisma reads) orchestrates DB reads + timeline + calls the pure
-  `buildCollectionSeries` (`src/lib/utils/collection-series.ts`). The dashboard comparison chart
-  (one series per collection) AND the portfolio value chart (`collectionIds=all&range=ALL`) BOTH go
-  through this same service/route — so a regression here hits both surfaces.
-- **(A) The flat branch exists** in the service as the `isAllRange && earliestAdded >= nowMs - SHORT_WINDOW_DAYS*DAY_MS`
-  block (SHORT_WINDOW_DAYS = 7). It emits a 2-point FLAT series (`[flatStart, nowMs]`) for a
-  recent-but-real portfolio, masking real price movement. This is what must be dropped/neutralized.
-- **(B) The ownership gate already drops sold lots** — `buildCollectionSeries` has
-  `if (lot.soldAt != null && t >= lot.soldAt) continue;`. Once A makes the series a real moving line,
-  the sale's drop becomes visible automatically. `statsFromLots` keeps Realized separate and is NOT
-  touched. Requirement B is therefore mostly already satisfied by A; it needs an explicit regression test.
-- **(C) Single-source variant parity is PARTLY done.** `collection-history.service.ts` already reads the
-  latest graded `CurrentPrice` rows and threads a `gradedVariant` onto each `HoldingInterval`;
-  `buildCollectionSeries` honours it; `pickGradedVariant`/`pickGradedFromRows`/`pickRealGradedPrice`
-  are the shared selectors; the collection route already ships `card.gradedPrices` from `CurrentPrice`.
-  What is MISSING for this task: (1) a shared helper that RETURNS the chosen real row
-  `{price, variant, condition}` (today `pickGradedVariant` returns only a variant string); (2) the
-  **missing-current-grade historical fallback** — when a lot's company+grade has graded `PricingHistory`
-  but NO matching `CurrentPrice` row, both the chart and the API `gradedPrices` payload must value from
-  the REAL historical row, preserving its actual variant + condition (never invent `normal`/``); (3)
-  **bounded-window parity** — a lot the display path values (from unbounded `CurrentPrice`) must not be
-  an all-null gap on the chart because its last matching `PricingHistory` point predates the requested
-  window start.
-- **Tests.** `tests/unit/collection-series.test.ts` (19) + `tests/unit/collection-history-service.test.ts`
-  (22) are green at baseline. The history-service suite has a `describe("QA #6b short-window sparse shaping")`
-  block whose assertions pin the OLD 2-point flat behaviour — those tests MUST be rewritten under A (they
-  will otherwise fail, which is correct: the behaviour is being removed per owner confirmation). The
-  history service is unit-tested with a **hoisted Prisma mock** (`userCollection`/`pricingHistory`/
-  `currentPrice` `.findMany`) — follow that exact pattern for new service tests; no live DB.
-- **Page-export guard (load-bearing).** `src/app/(dashboard)/portfolio/page.tsx` is a client page; no
-  non-default export may be added to it. All new helpers go in `src/lib`. `tsc` does NOT catch this —
-  verify by a manual grep (see step 9). `next build` cannot run here (remote DB busy).
-- **Build/test commands:** `npm run type-check` (tsc --noEmit), `npm run lint`,
-  `npm run test:unit` (vitest run tests/unit src), `npm run test:integration`. `npm run verify` also runs
-  chart-accuracy + e2e which need a reachable remote DB / production build and are out of scope to run here.
+**The fix (chosen approach — MERGE, not just catch).** Replace the bare delete with
+a `$transaction` that re-homes active lots to the NULL/uncategorized scope by
+MERGING into any colliding NULL-scoped active lot, THEN deletes the Collection — all
+atomic. This mirrors the sell-revert merge-back shipped in commit `8bafcf8`
+(`src/app/api/users/me/collection/[id]/route.ts`, the `isSold === false` branch):
+look up the active sibling, bump its quantity, delete the duplicate, all in one
+`$transaction`. Chosen over the fallback (catch P2002 → 409) because a 409 still
+BLOCKS a legitimate delete, leaving the user stuck. The 409 catch is kept only as a
+belt-and-suspenders guard for a concurrent race (same pattern as commit `8bafcf8`).
 
-## Design decisions (made here, grounded in the code above)
+**Merge key must match the DB index semantics.** The add route
+(`src/app/api/users/me/collection/route.ts` ~line 434) and the sell-revert fix both
+normalize condition as `norm(c) = (c ?? "").trim().toUpperCase()` and match on
+`(userId, cardId, isFoil, condition, isSold:false)` within a fixed `collectionId`
+scope. The merge here matches the SAME tuple but with the TARGET scope fixed to
+`collectionId: null`. `norm` collapses `null`/`""`/whitespace to `""`, mirroring the
+index's `COALESCE(condition,'')`. Reuse this exact `norm` so the app-side merge key
+and the DB index agree. (`condition` holds either a raw string or a graded label
+like `"PSA 10"`; exact-normalized compare keeps raw-vs-graded as distinct lots,
+consistent with the add path.)
 
-1. **A — neutralize, don't branch.** Delete the entire short-window flat block (and its `SHORT_WINDOW_DAYS`,
-   `isAllRange`, `earliestAdded`/`latestAdded`/`flat` machinery that exists only to serve it). A recent-but-real
-   portfolio then flows through the existing dense daily-grid + addedAt-anchor path, which already produces
-   `>=2` valued points from real carry-forward. Rationale: the owner confirmed the flat placeholder is wrong;
-   the dense grid is already honest (carry-forward of real `PricingHistory`, null gaps otherwise), so removing
-   the branch is the smallest change that yields a real moving line. The `>=2 real points` empty-state
-   (`chartData.length >= 2` in the page; honest "Not enough history to chart yet") is preserved untouched.
-2. **C — one selector returns the real row.** Add a single helper `pickGradedRow(rows, company, grade, variant?)`
-   in `src/lib/utils/raw-price.ts` next to the existing graded selectors, returning
-   `{ price, variant, condition } | null` chosen by the SAME variant-priority rule `pickGradedVariant` uses
-   (reuse it internally — no parallel rule). `pickGradedFromRows` is re-expressed as `pickGradedRow(...)?.price`
-   so there is exactly ONE selection rule. Rationale: the task requires both the chart and the API payload to
-   consume the same real identity; returning the row (not just a price or a variant) is what lets each caller
-   take the field it needs from one decision.
-3. **C — historical fallback source is per-lot, current-first.** The service decides each graded lot's identity
-   from the CURRENT `CurrentPrice` snapshot first (existing behaviour, keeps chart↔display parity). Only when
-   current has NO matching company+grade row does it fall back to the most-recent real graded `PricingHistory`
-   row for that company+grade (via `pickGradedRow` over the lot's history rows), and threads THAT row's actual
-   variant + condition into both the chart valuation (`gradedVariant`) and a new API `gradedPrices` fallback
-   entry. Rationale: honours RULE 2 (real row only, real variant/condition), and fixes the audit's
-   "graded history exists but no current row → all-null gap" case without fabricating.
-4. **C — bounded-window parity via per-lot seed.** In the service, after the windowed `pricingHistory.findMany`
-   (`recordedAt >= startDate`), run a SECOND bounded read for the last real matching point AT-OR-BEFORE
-   `startDate` per (cardId, lot-identity) and prepend it as a seed `PricePoint`. Rationale: the display path is
-   unbounded (latest `CurrentPrice`), the chart is windowed; seeding the carry-forward with the last real point
-   before the window start makes a lot that display can price also drawable on the chart, without widening the
-   whole query or inventing data. Chosen over "make both unbounded" because the chart window is a deliberate
-   range feature (1M/3M/…); seeding is the minimal reconciliation.
-5. **Commits are per-requirement:** one commit for A (+ its test rewrites), one for B (regression test), one for
-   C (selector + fallback + bounded-window + API payload + docs + tests). Keep all load-bearing comments.
+**Sold lots are untouched.** The index is partial (`WHERE isSold=false`), so sold
+rows never collide. SetNull on a sold row is harmless. The merge only scans/moves
+`isSold:false` lots; sold rows are left to SetNull naturally (collectionId nulled,
+no uniqueness interaction).
+
+**WantListItem (audit 01 P-05).** `WantListItem.collectionId` is also
+`onDelete: SetNull` (`prisma/schema.prisma` line 586) under `wli_scope_coalesced`
+`UNIQUE(userId, COALESCE(collectionId,''), cardId, intent)` — the SAME latent
+collision. The collection-delete path IS reachable to want rows: deleting a
+collection SetNulls its want items to account-level, so a user who holds an
+account-level (null-scoped) want row of the same `(cardId, intent)` AND a
+collection-scoped one hits the same P2002. Therefore fix it too, in the SAME
+transaction: for each want row in the deleted collection, if a null-scoped row with
+the same `(userId, cardId, intent)` already exists, DELETE the duplicate (a want row
+has no quantity — a collision just means drop it); otherwise SetNull it (set
+`collectionId = null`). Do the want-row remediation inside the same `$transaction`
+as the lot merge and the collection delete so the whole operation is atomic.
+
+**Cache invalidation (audit 05 F-09 / caching 12 F6).** The DELETE route ALREADY
+invalidates `["collections", "dashboard"]` after a successful delete
+(`invalidateUserCaches(userId, ["collections", "dashboard"])`). Because lots and
+want rows now move to the uncategorized/account scope, the `collection` and
+`wantlist` scopes also go stale. Extend the existing call to
+`["collections", "dashboard", "collection", "wantlist"]` — a one-line, safe addition
+using the existing `CacheScope` union (all four scopes already exist in
+`src/lib/utils/cache.ts`). No client-side TanStack change is planned: the client
+refetch on delete is out of scope and would be scope-creep; noted here for the
+reviewer.
+
+**Constraints honored.** Ownership scoping (`where: { id, userId }`) and the existing
+P2025→404 mapping are preserved. No change to `prisma/schema.prisma` or
+`src/lib/auth.ts` (held-back H-2). RULE 2 (no fabrication) — quantities are conserved
+on merge, nothing invented. No push/deploy/merge.
+
+**Transaction shape decision.** Use the interactive `$transaction(async (tx) => …)`
+callback form (not the array form), because the merge needs to READ (find colliding
+null-scoped siblings) and conditionally WRITE within the same transaction — the array
+form can't branch on reads. The service's `deleteCollection` keeps its existing
+pre-checks (`assertNotVirtual`, `assertNotMain`) OUTSIDE/BEFORE the transaction
+(they already run before any write today).
 
 ---
 
-## Ordered items
+## Plan
 
-- [ ] 1. **(C, foundation) Add `pickGradedRow` to the shared raw-price module and re-express `pickGradedFromRows` on top of it.**
-      In `src/lib/utils/raw-price.ts`, add `export interface GradedRowPick { price: number; variant: string; condition: string | null }`
-      and `export function pickGradedRow(rows, company, grade, variant?): GradedRowPick | null`. It filters the same
-      `type==="graded" && company && grade && priceMarket != null` matches, chooses the variant via the EXISTING
-      `pickGradedVariant` (preferred/explicit variant first, else its priority rule), returns the matched row's
-      `{ price: rowPrice(row), variant: row.variant ?? "normal", condition: row.condition ?? null }`, or null when no
-      match. Rewrite `pickGradedFromRows` to `return pickGradedRow(rows, company, grade, variant)?.price ?? null` so
-      there is ONE selection rule. Do not change `pickGradedVariant`'s signature (other callers depend on it).
-      Files: `src/lib/utils/raw-price.ts`
-      Verify: `npx vitest run tests/unit/raw-price.test.ts src/lib/utils` (or the raw-price unit suite if named differently) — existing selector tests still pass; add a case asserting `pickGradedRow` returns the real row's variant/condition and that `pickGradedFromRows` price is unchanged.
+- [ ] 1. Rewrite `deleteCollection` in the service to merge-then-delete atomically.
+      In `src/lib/services/collection.service.ts`, replace the body of
+      `deleteCollection(userId, collectionId)` (currently a bare
+      `prisma.collection.delete`). Keep the leading `assertNotVirtual(collectionId)`
+      and `await assertNotMain(userId, collectionId)` guards. Then run one
+      `prisma.$transaction(async (tx) => { … })` that, scoped to `{ userId }`:
+      (a) loads the collection's ACTIVE lots
+      (`tx.userCollection.findMany({ where: { collectionId, userId, isSold: false } })`);
+      (b) loads the user's existing NULL-scoped active lots once
+      (`tx.userCollection.findMany({ where: { userId, collectionId: null, isSold: false } })`)
+      and indexes them by the key `cardId|isFoil|norm(condition)` where
+      `norm = (c) => (c ?? "").trim().toUpperCase()` (copy the helper used in the add
+      route / commit 8bafcf8); (c) for each collection lot: if a null-scoped sibling
+      with the same key exists, `tx.userCollection.update` the sibling
+      `quantity: sibling.quantity + lot.quantity` and `tx.userCollection.delete` the
+      lot, updating the in-memory index so two collection lots that share a key both
+      fold into the same sibling; else `tx.userCollection.update` the lot to
+      `collectionId: null` (and add it to the index so a later same-key lot merges
+      into it); (d) handle WantListItem the same way: load
+      `tx.wantListItem.findMany({ where: { collectionId, userId } })` and the user's
+      null-scoped want rows keyed by `cardId|intent`; for each, if a null-scoped
+      sibling exists `tx.wantListItem.delete` the duplicate, else
+      `tx.wantListItem.update` it to `collectionId: null`; (e) finally
+      `tx.collection.delete({ where: { id: collectionId, userId } })` and return its
+      result (preserves the existing return shape used by the route's
+      `{ data: { id } }`). Sold lots are deliberately not touched (the index is
+      partial on `isSold=false`). Keep the existing doc-comment and extend it to
+      explain the merge (RULE 14 — comments are load-bearing).
+      Files: `src/lib/services/collection.service.ts`
+      Verify: `npm run type-check` passes (no new errors outside the pre-existing
+      `src/lib/auth.ts` ones); `npm run test:integration -- collections` — existing
+      `deleteCollection` test (`deletes a collection the user owns`) still passes
+      (it mocks `prisma.collection.delete` + now `$transaction`/`userCollection`/
+      `wantListItem` — see item 3).
 
-- [ ] 2. **(A) Remove the QA#6b short-window flat branch from the history service.**
-      In `src/lib/services/collection-history.service.ts` delete: the `SHORT_WINDOW_DAYS` const + its block comment,
-      the `isAllRange` computation, the whole `if (isAllRange && earliestAdded >= nowMs - SHORT_WINDOW_DAYS*DAY_MS) { … }`
-      block (including `addedTimes`/`earliestAdded`/`latestAdded`/`flatStart`/`flat` locals used ONLY there). Keep the
-      dense daily-grid construction, the addedAt-anchor injection, the dedup, and the final `buildCollectionSeries` call.
-      Keep the `DAY_MS` const (still used by the anchor logic). A recent-but-real portfolio now flows through the dense
-      grid. Do NOT change the empty-state contract (service still returns null-gapped points; the page's `>=2 real
-      points` gate is unchanged).
-      Files: `src/lib/services/collection-history.service.ts`
-      Verify: `npx vitest run tests/unit/collection-history-service.test.ts` — expect the `QA #6b short-window sparse shaping` block to FAIL (it pins removed behaviour); that is the signal to proceed to step 3. The grep-pin test (`no synthetic/mock chart generator`) must still pass.
+- [ ] 2. Map a concurrent P2002 to 409 in the DELETE route (belt-and-suspenders).
+      In `src/app/api/collections/[id]/route.ts`, in the `DELETE` handler's `catch`,
+      before the final `throw err`, add: if
+      `err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"`,
+      return a 409 `{ error: "Conflict", message: "Couldn’t delete this collection because one of its cards conflicts with an existing uncategorized copy. Please try again." }`
+      (mirrors the 409 mapping already present in the PATCH handler and in commit
+      8bafcf8). Keep the existing `VirtualCollectionReadonlyError`,
+      `MainCollectionProtectedError`, and P2025→404 branches, and the already-present
+      `invalidateUserCaches(...)` call (item 4 extends its scopes). This is the
+      fallback guard for a race where a null-scoped sibling is created between the
+      transaction's read and the delete commit; the merge in item 1 handles the
+      common case so a legitimate delete is no longer blocked.
+      Files: `src/app/api/collections/[id]/route.ts`
+      Verify: `npm run type-check` passes; covered by the route-level test in item 3.
 
-- [ ] 3. **(A) Rewrite the short-window tests to assert a real moving dense series.**
-      In `tests/unit/collection-history-service.test.ts` replace the `describe("QA #6b short-window sparse shaping (ALL/MAX)")`
-      block with a `describe("real moving series for a recent-but-real portfolio (A)")` that, with a hoisted-mock lot added
-      ~2 days ago over range `"ALL"` and REAL `PricingHistory` points that MOVE (e.g. 5 → 8 → 11 across the window),
-      asserts: (a) the series has many points (`> 3`, not capped at 2), (b) the valued points reflect the movement
-      (contains both an early and a late distinct value — proving it is not flat), (c) no fabricated `0`. Keep the
-      "multi-month history keeps full dense series" and "bounded 1M still >=2 points" tests (they already assert the
-      dense path and must still pass).
-      Files: `tests/unit/collection-history-service.test.ts`
-      Verify: `npx vitest run tests/unit/collection-history-service.test.ts` — all tests pass. Commit A now (service change + test rewrite together) with a message scoped to requirement A.
+- [ ] 3. Add an integration test reproducing the collision + happy path.
+      Create `tests/integration/collection-delete.test.ts` following the mocked-Prisma
+      harness in `tests/integration/collection-revert.test.ts` and
+      `tests/integration/collections.test.ts` (hoisted `prismaMock` with
+      `collection.{findFirst,delete}`, `userCollection.{findMany,update,delete}`,
+      `wantListItem.{findMany,update,delete}`, and `$transaction`; mock
+      `@/lib/db`, `@/lib/utils/auth-guard` → session `user_123`, and
+      `@/lib/utils/cache`). Make `$transaction.mockImplementation(async (cb) => cb(prismaMock))`
+      (interactive-callback form — the service now uses the callback form, so the mock
+      must invoke the callback with the mock client; see collection-revert's
+      beforeEach for the pattern, adapted to callback form). Import the DELETE route
+      handler from `@/app/api/collections/[id]/route`. Cover:
+      (1) **collision merges, no 500** — `collection.findFirst` (for `assertNotMain`)
+      returns a non-Main collection; the collection's active `userCollection.findMany`
+      returns one lot of card X in collection A; the null-scoped `findMany` returns an
+      existing null-scoped active lot of the SAME `(cardId, isFoil, condition)`; want
+      `findMany`s return empty; assert status 200, `userCollection.update` called with
+      the sibling's id and merged `quantity`, `userCollection.delete` called for the
+      collection lot, and `collection.delete` called with
+      `where: { id, userId }`;
+      (2) **happy path, no colliding lots** — collection lot exists, null-scoped
+      `findMany` returns `[]`; assert 200, the lot is `update`d to
+      `collectionId: null` (not deleted), `collection.delete` called, and the response
+      body is `{ data: { id } }` (existing success shape);
+      (3) **want-row collision** — a collection want row collides with an existing
+      null-scoped want row of the same `(cardId, intent)`; assert `wantListItem.delete`
+      called for the duplicate and no P2002 surfaces (status 200);
+      (4) **concurrent P2002 → 409** — make `collection.delete` reject with a
+      `Prisma.PrismaClientKnownRequestError` `{ code: "P2002" }`; assert the route
+      returns 409, not 500;
+      (5) **foreign/nonexistent id → 404** — `collection.delete` rejects with P2025;
+      assert 404 (regression guard on the preserved mapping).
+      Files: `tests/integration/collection-delete.test.ts`
+      Verify: `npm run test:integration -- collection-delete` — all new cases pass.
 
-- [ ] 4. **(B) Add a sold-lot step-down regression test.**
-      In `tests/unit/collection-series.test.ts` add a test under a `describe("sale drops the line (B — active-value only)")`:
-      a collection with TWO lots over a daily timeline where lot L1 is held throughout and lot L2 is sold mid-timeline
-      (`soldAt` set). With real per-lot prices, assert the series value BEFORE `soldAt` includes L2's contribution and
-      AFTER `soldAt` is lower by exactly L2's `price × quantity` (i.e. equals L1 alone), and that soldPrice/realized is
-      NEVER added to the line. This pins requirement B against future regressions. (Pure builder test — no Prisma.)
-      Files: `tests/unit/collection-series.test.ts`
-      Verify: `npx vitest run tests/unit/collection-series.test.ts` — the new test passes against the current builder (B already works via the ownership gate). Commit B now with a message scoped to requirement B.
+- [ ] 4. Extend post-delete cache invalidation to the moved scopes.
+      In `src/app/api/collections/[id]/route.ts`, change the DELETE handler's
+      `invalidateUserCaches(userId, ["collections", "dashboard"])` to
+      `invalidateUserCaches(userId, ["collections", "dashboard", "collection", "wantlist"])`
+      (all four are existing members of `CacheScope` in `src/lib/utils/cache.ts`), so
+      the uncategorized collection view and the account-level want list refetch after
+      lots/want rows move. Best-effort and after-commit — a Redis fault still can't
+      fail the delete (RULE 1). Do NOT add any client/TanStack changes (out of scope).
+      Files: `src/app/api/collections/[id]/route.ts`
+      Verify: `npm run type-check` passes (type-checks the `CacheScope[]` arg);
+      `npm run lint` passes.
 
-- [ ] 5. **(C) Add the missing-current-grade historical fallback + bounded-window seed to the service, using `pickGradedRow`.**
-      In `src/lib/services/collection-history.service.ts`:
-      (a) Replace the inline `currentGradedVariant` memo so that, for a graded lot, it first tries the CURRENT snapshot
-      via `pickGradedRow(currentRows, company, grade)`; if that is null, it falls back to the most-recent real graded
-      `PricingHistory` row for that company+grade via `pickGradedRow(historyRowsForCard, company, grade)`. Thread the
-      CHOSEN row's `variant` into `HoldingInterval.gradedVariant` (current row's variant when current priced it; else the
-      historical row's actual variant — never invent `"normal"`). When BOTH are null, keep `gradedVariant = null` so the
-      lot stays an honest null gap (RULE 2). Memoize per (cardId, company, grade) as today.
-      (b) Bounded-window seed: after the existing windowed `pricingHistory.findMany({ recordedAt: { gte: startDate } })`,
-      add a second `findMany` for rows with `recordedAt < startDate` reduced to the LATEST row per
-      (cardId, type, company, grade, variant) — or order desc + take a bounded slice and dedup in JS — and prepend those
-      as seed `PricePoint`s so per-lot carry-forward has a real anchor at/just-before the window. Keep it Prisma-read-only,
-      bounded by `cardId: { in: cardIds }`. Preserve all load-bearing comments and the cross-snapshot-parity comment block.
-      Files: `src/lib/services/collection-history.service.ts`
-      Verify: `npx vitest run tests/unit/collection-history-service.test.ts` — existing graded parity tests still pass (step 6 adds the new coverage).
+- [ ] 5. Full gate + doc touch.
+      Run the matching test scopes and static checks for the layers touched (service,
+      route, tests). If `docs/API_REFERENCE.md` or `docs/ARCHITECTURE.md` documents the
+      `DELETE /api/collections/[id]` contract or the SetNull-on-delete behavior, add a
+      one-line note that delete now merges active lots + want rows into the
+      uncategorized/account scope atomically and may return 409 on a concurrent
+      conflict (AGENTS.md: update docs in the same change when routes/services change).
+      Files: `docs/API_REFERENCE.md` and/or `docs/ARCHITECTURE.md` (only if they cover
+      this route)
+      Verify: `npm run lint` && `npm run type-check` &&
+      `npm run test:integration -- collection` all pass (the `collection*` integration
+      suite, which includes the new delete test and the existing collections/revert
+      suites). `npm run test:unit` if any unit file is affected (none expected). Note
+      for the reviewer: full `npm run verify` additionally runs e2e against a live
+      remote `DATABASE_URL` + production build, which may be unavailable in this
+      worktree; if so, state that e2e was not run and why.
 
-- [ ] 6. **(C) Make the collection API payload carry the real historical-fallback identity, and pin all three C cases in tests.**
-      In `src/app/api/users/me/collection/route.ts`: when a lot's condition is graded and NO `CurrentPrice` graded row
-      matches its company+grade, append ONE `gradedPrices` entry derived from the real most-recent matching graded
-      `PricingHistory` row (via `pickGradedRow`), carrying that row's ACTUAL `variant` + `condition` and a provenance
-      marker distinguishing it from current rows (e.g. `source: "history"` on the appended entry; current rows keep their
-      existing shape / implicit current provenance). This keeps `displayPrice`/`statsFromLots` and the chart valuing the
-      SAME real identity. Do NOT fabricate when neither current nor history has a matching row (omit the entry → "—").
-      Then add unit tests (hoisted-Prisma-mock service tests in `tests/unit/collection-history-service.test.ts`, and
-      pure-builder parity tests in `tests/unit/collection-series.test.ts`) covering:
-        - **C-parity, divergent arrays:** feed the chart one `PricePoint[]` array and the display path a DIFFERENT
-          `GradedPriceRow[]` array (two distinct arrays, per the Phase-1 review note that reusing one array hides
-          divergence) for the same PSA 9 lot where the two snapshots carry different variant sets; assert chart value ===
-          display value.
-        - **C-missing-current-grade:** current snapshot has no PSA 9 row but history does → the chart values from the real
-          historical PSA 9 row preserving its actual variant/condition, and the API appends a `source:"history"`
-          `gradedPrices` entry with that same variant/condition.
-        - **C-bounded-window:** the last real matching point predates the requested window start → with the seed, the lot
-          is drawable (not an all-null gap) and valued at that real carried-forward price; without a matching row anywhere
-          it stays a null gap.
-      Files: `src/app/api/users/me/collection/route.ts`, `tests/unit/collection-history-service.test.ts`, `tests/unit/collection-series.test.ts`
-      Verify: `npx vitest run tests/unit/collection-series.test.ts tests/unit/collection-history-service.test.ts` — all pass.
+## Notes / assumptions for the reviewer
 
-- [ ] 7. **(C) Document the gradedPrices provenance in the API reference.**
-      In `docs/API_REFERENCE.md`, update the `GET /api/users/me/collection` entry so `gradedPrices` documents that
-      entries come from current `CurrentPrice` rows, PLUS an optional historical-fallback entry (marked `source:"history"`)
-      carrying the real most-recent matching graded `PricingHistory` row's variant/condition when current has no matching
-      row — and that a lot with no matching row anywhere contributes no entry (UI renders "—", never fabricated). Keep the
-      note that these feed `displayPrice`/`statsFromLots` AND the portfolio-value chart via the one shared selector.
-      Files: `docs/API_REFERENCE.md`
-      Verify: `npx vitest run tests/unit/collection-history-service.test.ts` (unaffected, sanity) and manually re-read the
-      edited doc block for accuracy against step 6's payload shape.
-
-- [ ] 8. **Full static + unit/integration gate for the whole change.**
-      Run the project's real checks over everything changed.
-      Files: (none)
-      Verify: `npm run type-check` (clean), `npm run lint` (clean), `npm run test:unit`, `npm run test:integration` — all
-      pass. Fix any failures before proceeding. (chart-accuracy + e2e from `npm run verify` need the remote DB/production
-      build and are out of scope to run in this worktree; note that explicitly if asked to run the full `verify`.)
-
-- [ ] 9. **Page-export guard manual check (tsc does not catch it).**
-      Confirm no non-default export was added to any page.
-      Files: (none)
-      Verify: run `grep -rnE "^export (const|function|async function|class|interface|type|enum) " "src/app"` (PowerShell:
-      `Select-String -Path (Get-ChildItem -Recurse src/app -Filter page.tsx) -Pattern '^export (const|function|async|class|interface|type|enum) '`)
-      and confirm NO `page.tsx` appears (only the required `export default` + route config). If any helper leaked into a
-      `page.tsx`, move it to `src/lib` and re-run step 8.
-
-- [ ] 10. **Commit C and leave the tree clean.**
-      Stage only the files changed for C (`src/lib/utils/raw-price.ts` if not already committed under its own step,
-      `src/lib/services/collection-history.service.ts`, `src/app/api/users/me/collection/route.ts`,
-      `docs/API_REFERENCE.md`, the two test files) and commit with a message scoped to requirement C. Confirm
-      `git -C "<worktree>" status --short` is clean afterward. Do NOT push.
-      Files: (git only)
-      Verify: `git -C "d:\Pokemon\Pokemon\.worktrees\portfolio-value-series" log --oneline -3` shows the three
-      per-requirement commits (A, B, C); `git status --short` is clean.
-
-## Notes / gaps / assumptions
-
-- **A vs the existing anchor logic:** removing the flat branch leaves the dense-grid + addedAt-anchor code intact; that
-  code already guarantees `>=2` valued points for recent lots, so the empty-state only triggers on genuinely <2 real
-  valued points. If a recent portfolio still looks near-flat, that is the HONEST truth (prices genuinely did not move in
-  stored history) — not to be "fixed" by fabrication (RULE 2).
-- **Bounded-window seed scope:** the seed read is deliberately a thin `recordedAt < startDate` latest-per-identity query,
-  not a widening of the main windowed query, so range semantics (1M/3M/…) are preserved. If per-identity dedup in SQL is
-  awkward under the current Prisma version, dedup in JS after an ordered-desc bounded read — equally correct, still one
-  extra bounded read. `ponytail:` if lot/card counts ever grow large, bound the seed read with a per-card `take`.
-- **Provenance marker:** `source:"history"` on the appended `gradedPrices` entry is the minimal honest signal; it does not
-  change `displayPrice`/`statsFromLots` selection (they match on company+grade+variant+price), it only documents origin.
-- Could not run `next build` / chart-accuracy / e2e here (remote DB busy, per the task) — step 9's manual grep is the
-  stand-in for the page-export guard; call that out in the completion report.
+- The want-list path IS reachable on collection delete (SetNull on
+  `WantListItem.collectionId`), so it is fixed in the same transaction. Want rows have
+  no quantity, so a collision is resolved by deleting the duplicate, not merging.
+- Sold lots are intentionally excluded from the merge: `uc_variant_coalesced` is
+  partial on `isSold=false`, so sold rows can never trip it; they SetNull harmlessly.
+- The 409 catch (item 2) is a race-only fallback; the merge (item 1) is the primary
+  fix so legitimate deletes are never blocked.
+- No schema change: the `onDelete: SetNull` FK and the expression indexes stay as-is;
+  the application now remediates the collision before the FK fires. `prisma/schema.prisma`
+  and `src/lib/auth.ts` are untouched per the held-back-H-2 constraint.
+- Client-side TanStack query invalidation on delete is deliberately out of scope
+  (server-cache invalidation is extended; client refetch would be scope-creep).
