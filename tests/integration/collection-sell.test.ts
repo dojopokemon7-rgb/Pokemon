@@ -55,6 +55,12 @@ beforeEach(() => {
     costBasisCurrency: "USD",
   });
   prismaMock.userCollection.update.mockResolvedValue({ id: LOT_ID });
+  prismaMock.userCollection.create.mockResolvedValue({ id: "uc_new" });
+  // A partial sale (qty < lot.quantity) runs $transaction([update, create]);
+  // pass the array of promises through so the route can destructure the result.
+  prismaMock.$transaction.mockImplementation(async (ops: unknown) =>
+    Array.isArray(ops) ? Promise.all(ops) : (ops as (tx: unknown) => unknown)(prismaMock)
+  );
 });
 
 describe("BUG 4 — sell gross price must be finite + nonnegative", () => {
