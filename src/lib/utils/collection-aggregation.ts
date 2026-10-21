@@ -8,16 +8,25 @@
  * the user picks a specific collection from the selector.
  */
 
+import { displayPrice, type GradedPriceRow } from "./graded-price";
+
 /** Sentinel selection meaning "aggregate across every collection". */
 export const ALL_COLLECTIONS = "all" as const;
 
 /** The minimal item shape needed to aggregate: the dashboard's owned-copy
- *  row (card market price, quantity) plus its F-10 collection membership. */
+ *  row (card market price, quantity) plus its F-10 collection membership.
+ *  GRADED-VALUE PARITY (R2): carries `condition` + `card.gradedPrices` so a
+ *  graded lot aggregates at its REAL graded price via the shared `displayPrice`
+ *  resolver — not the raw `card.marketPrice` — the same rule every other
+ *  owned-lot surface uses. (F-22 Compare-Collections is the only consumer and
+ *  is not yet wired to UI; fixing the shape now keeps it correct when it is.) */
 export interface AggregatableItem {
   quantity: number;
   purchasePrice?: number | null;
   collectionId: string | null;
-  card: { marketPrice: number | null };
+  /** Free-text grade/condition (e.g. "PSA 10"); raw/null → raw price. */
+  condition?: string | null;
+  card: { marketPrice: number | null; gradedPrices?: GradedPriceRow[] | null };
 }
 
 export interface CollectionStats {
@@ -67,7 +76,10 @@ export function aggregateCollectionStats(
   let totalValue = 0;
   let cardCount = 0;
   for (const i of scoped) {
-    totalValue += (i.card.marketPrice ?? 0) * i.quantity;
+    // R2: value each lot through the SHARED resolver so a graded lot uses its
+    // real graded price (never the raw multiplier/marketPrice). Null → 0 here,
+    // same as before (empty-state math never fabricates a value).
+    totalValue += (displayPrice(i) ?? 0) * i.quantity;
     cardCount += i.quantity;
   }
   totalValue = Math.round(totalValue * 100) / 100;

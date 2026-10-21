@@ -75,6 +75,46 @@ describe("dual-All contract (F-#8) — scope resolver agrees with the aggregator
   });
 });
 
+describe("aggregateCollectionStats — graded lots (R2)", () => {
+  // A PSA 9 lot must aggregate at its REAL stored graded price, NOT the raw
+  // card.marketPrice — the same shared resolution every other owned-lot surface
+  // uses. (Mirrors the Base Charizard case: raw $359.95 vs graded $6,163.18.)
+  const gradedItems: AggregatableItem[] = [
+    {
+      quantity: 1,
+      purchasePrice: 100,
+      collectionId: "slabs",
+      condition: "PSA 9",
+      card: {
+        marketPrice: 359.95, // RAW — must NOT be used for this graded lot
+        gradedPrices: [
+          { company: "PSA", grade: "9", priceMarket: 6163.18, type: "graded", variant: "normal" },
+        ],
+      },
+    },
+  ];
+
+  it("values a graded lot at its real graded price, not the raw marketPrice", () => {
+    const stats = aggregateCollectionStats(gradedItems, ALL_COLLECTIONS);
+    expect(stats.totalValue).toBe(6163.18);
+  });
+
+  it("multiplies the graded price by quantity", () => {
+    const twoSlabs = [{ ...gradedItems[0], quantity: 2 }];
+    const stats = aggregateCollectionStats(twoSlabs, ALL_COLLECTIONS);
+    expect(stats.totalValue).toBe(12326.36); // 6163.18 * 2
+  });
+
+  it("still uses the raw price for a raw (ungraded) lot alongside a graded one", () => {
+    const mixed: AggregatableItem[] = [
+      ...gradedItems,
+      { quantity: 2, purchasePrice: 5, collectionId: "slabs", card: { marketPrice: 50 } },
+    ];
+    const stats = aggregateCollectionStats(mixed, ALL_COLLECTIONS);
+    expect(stats.totalValue).toBe(6263.18); // 6163.18 graded + 2*50 raw
+  });
+});
+
 describe("aggregateCollectionStats — empty state", () => {
   it("returns $0 value, 0 count, and non-crashing empty chart for a collection with no cards", () => {
     const stats = aggregateCollectionStats(items, "does-not-exist");
