@@ -23,7 +23,10 @@ import { invalidateUserCaches } from "@/lib/utils/cache";
 
 const SellSchema = z.object({
   quantity: z.number().int().min(1),
-  grossPricePerCopy: z.number().min(0),
+  // .finite() mirrors the sibling [id]/route.ts money fields: z.number() alone
+  // accepts Infinity, which would record a non-finite proceeds value. Reject it
+  // (and any negative) with a 400 (RULE 4).
+  grossPricePerCopy: z.number().finite().nonnegative(),
   // ISO date (YYYY-MM-DD) or full timestamp; defaults to now when omitted.
   soldAt: z.string().trim().optional(),
   currency: z.string().trim().optional(),
