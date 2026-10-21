@@ -939,7 +939,14 @@ function PortfolioPageInner() {
       // multiply by quantity again.
       return filteredItems.reduce((a, i) => a + (i.soldPrice ?? 0), 0);
     }
-    return filteredItems.reduce((a, i) => a + (i.card.marketPrice ?? 0) * i.quantity, 0);
+    // PARITY: value each active lot through the SAME shared `displayPrice`
+    // resolver the tile / GainLossTag / statsFromLots / dashboard use — a graded
+    // lot gets its real per-grade price, NOT the raw `card.marketPrice`. Using
+    // the raw price here made the TOTAL VALUE header disagree with the tile and
+    // the dashboard for graded holdings (e.g. a PSA 9 lot showed $359.95 raw
+    // instead of $6,163.18 graded). `displayPrice` returns the per-copy value
+    // (null → 0 for the sum, matching the honest "—"/no-value handling).
+    return filteredItems.reduce((a, i) => a + (displayPrice(i) ?? 0) * i.quantity, 0);
   }, [filteredItems, cardType]);
 
   const typeLabel = CARD_TYPE_OPTIONS.find((o) => o.id === cardType)!.label;
