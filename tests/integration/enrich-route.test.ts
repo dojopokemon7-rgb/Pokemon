@@ -9,13 +9,15 @@ import { Game } from "@prisma/client";
  *   (a) with SCRYDEX_ONVIEW_ENABLED UNSET (allowance off) AND the big-bulk
  *       credit gate DENY, the route returns {enriched:false} and calls NEITHER
  *       pullAndStoreScrydexHistory NOR pullAndStorePopulation (no Scrydex HTTP).
- *   (b) when the card already has stored history AND a population refreshed
- *       within the 24h window, the route is a no-op
+ *   (b) when a per-card enrich marker SyncLog(job="scrydex_onview_enrich") was
+ *       written within the 24h window, the route is a no-op
  *       {enriched:false,reason:"fresh"} without calling the services — even if
- *       the allowance were on (owner spec: pull-on-open only after 24h).
+ *       the allowance were on (owner spec: pull-on-open only after 24h). Bug C:
+ *       this marker (NOT population-presence) is the freshness clock, so a
+ *       pop-less card is throttled too (the P-02 regression below).
  *
- * Mocked Prisma + Scrydex service + population reader + Redis — ZERO network,
- * ZERO credits, no live DB. The allowance is env-only; we never set the flag.
+ * Mocked Prisma + Scrydex service + Redis — ZERO network, ZERO credits, no live
+ * DB. The allowance is env-only; we never set the flag.
  */
 
 // SECURITY: the enrich POST now requires a session (it can trigger a live
@@ -33,6 +35,10 @@ const prismaMock = vi.hoisted(() => ({
   card: { findUnique: vi.fn() },
   pricingHistory: { count: vi.fn() },
   currentPrice: { findMany: vi.fn() },
+  // Bug C: freshness now keys on a per-card SyncLog marker
+  // (job="scrydex_onview_enrich") instead of population-presence. findFirst
+  // reads the last marker; create writes the attempt marker after the pulls.
+  syncLog: { findFirst: vi.fn(), create: vi.fn() },
 }));
 vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 
@@ -76,6 +82,10 @@ beforeEach(() => {
     unauthorized: null,
     session: { user: { id: "user_1" } },
   });
+  // Bug C freshness-marker defaults: no prior marker (stale), writes succeed.
+  prismaMock.syncLog.findFirst.mockResolvedValue(null);
+  prismaMock.syncLog.create.mockResolvedValue({});
+  prismaMock.currentPrice.findMany.mockResolvedValue([]);
   // Clear the Scrydex flags BEFORE each test so the suite is deterministic
   // regardless of ambient env. The project's .env now sets
   // SCRYDEX_ONVIEW_ENABLED=true (prod on-view enrichment), which would leak into
@@ -103,21 +113,18 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.enriched).toBe(false);
     expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
-    // Short-circuit happens before any freshness query.
-    expect(prismaMock.pricingHistory.count).not.toHaveBeenCalled();
+    // Short-circuit happens before any freshness query (the SyncLog marker read).
+    expect(prismaMock.syncLog.findFirst).not.toHaveBeenCalled();
   });
 
-  it("(b) fresh within 24h (has history + recent population) → {enriched:false}, NO service call", async () => {
+  it("(b) fresh within 24h (recent enrich marker) → {enriched:false}, NO service call", async () => {
     // Owner spec: a card enriched <24h ago is served from the store on open —
-    // no pull, no credit. Even with the allowance ON, a card refreshed 23h ago
-    // (inside the 24h window) must not spend.
+    // no pull, no credit. Even with the allowance ON, a card whose last enrich
+    // marker is 23h old (inside the 24h window) must not spend.
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
-    prismaMock.pricingHistory.count.mockResolvedValue(5);
-    populationMock.getStoredPopulationReport.mockResolvedValue({
-      source: "scrydex",
-      companies: [],
-      refreshedAt: new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(), // 23h ago → still fresh
+    prismaMock.syncLog.findFirst.mockResolvedValue({
+      ranAt: new Date(Date.now() - 23 * 60 * 60 * 1000), // 23h ago → still fresh
     });
 
     const [req, ctx] = enrichRequest("base1-4");
@@ -129,20 +136,18 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.reason).toBe("fresh");
     expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
+    // Fresh short-circuit does not write a new marker.
+    expect(prismaMock.syncLog.create).not.toHaveBeenCalled();
   });
 
-  it("(c) stale > 24h → re-pulls once (calls both services) on open when allowance ON", async () => {
-    // Owner spec: the first open AFTER 24h re-pulls once. A card last refreshed
-    // 25h ago is re-enriched on this view (triggered by the user opening the
-    // card — never a background job).
+  it("(c) stale > 24h → re-pulls once (calls both services) + writes marker when allowance ON", async () => {
+    // Owner spec: the first open AFTER 24h re-pulls once. A marker 25h old is
+    // stale → re-enriched on this view (triggered by the user opening the card —
+    // never a background job).
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
-    prismaMock.pricingHistory.count.mockResolvedValue(5);
-    prismaMock.currentPrice.findMany.mockResolvedValue([]);
-    populationMock.getStoredPopulationReport.mockResolvedValue({
-      source: "scrydex",
-      companies: [],
-      refreshedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), // 25h old → stale
+    prismaMock.syncLog.findFirst.mockResolvedValue({
+      ranAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // 25h old → stale
     });
 
     const [req, ctx] = enrichRequest("base1-4");
@@ -153,6 +158,59 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.enriched).toBe(true);
     expect(pricingMock.pullAndStoreScrydexHistory).toHaveBeenCalledTimes(1);
     expect(pricingMock.pullAndStorePopulation).toHaveBeenCalledTimes(1);
+    // The 24h clock is (re)started by writing a fresh marker.
+    expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ job: "scrydex_onview_enrich", cardId: "card_1" }),
+      })
+    );
+  });
+
+  it("(P-02) pop-less + history-less card is NOT re-pulled within 24h (marker throttles)", async () => {
+    // The regression: a card that legitimately has no population AND no history
+    // used to never be "fresh" and re-pulled on EVERY open. With the marker
+    // model a 1h-old marker throttles it regardless of stored data.
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
+    prismaMock.pricingHistory.count.mockResolvedValue(0); // no history
+    populationMock.getStoredPopulationReport.mockResolvedValue(null); // no population
+    prismaMock.syncLog.findFirst.mockResolvedValue({
+      ranAt: new Date(Date.now() - 1 * 60 * 60 * 1000), // 1h ago → fresh
+    });
+
+    const [req, ctx] = enrichRequest("op01-120");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.enriched).toBe(false);
+    expect(body.reason).toBe("fresh");
+    expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
+    expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
+  });
+
+  it("first-ever open (no marker) pulls once AND writes the enrich marker", async () => {
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
+    prismaMock.syncLog.findFirst.mockResolvedValue(null); // never enriched
+
+    const [req, ctx] = enrichRequest("base1-4");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.enriched).toBe(true);
+    expect(pricingMock.pullAndStoreScrydexHistory).toHaveBeenCalledTimes(1);
+    expect(pricingMock.pullAndStorePopulation).toHaveBeenCalledTimes(1);
+    expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          job: "scrydex_onview_enrich",
+          cardId: "card_1",
+          credits: 0,
+        }),
+      })
+    );
   });
 
   it("SECURITY: unauthenticated POST → 401, NO Scrydex service call (closes credit drain)", async () => {

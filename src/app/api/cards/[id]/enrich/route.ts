@@ -34,7 +34,6 @@ import {
   pullAndStoreScrydexHistory,
   pullAndStorePopulation,
 } from "@/lib/services/scrydex-pricing.service";
-import { getStoredPopulationReport } from "@/lib/services/population.service";
 
 // On-view enrich makes several SEQUENTIAL Scrydex round-trips (raw + graded
 // price_history + population). The default serverless timeout (~10s Hobby)
@@ -46,6 +45,12 @@ export const maxDuration = 60;
 // Each (company,grade) is one extra Scrydex call, so we only pull the grades
 // the card ACTUALLY has stored — never a speculative fan-out.
 const ONVIEW_GRADES = new Set(["PSA|10", "PSA|9", "BGS|10", "CGC|10"]);
+
+// SyncLog job label for the per-card on-view enrich ATTEMPT marker. This is the
+// per-card "last enriched at" clock (replacing the old population-presence
+// heuristic) — a single const so the freshness read and the marker write can
+// never drift. `SyncLog.job` is free-text, so this needs NO migration.
+const ONVIEW_ENRICH_JOB = "scrydex_onview_enrich";
 
 export async function POST(
   request: Request,
@@ -91,19 +96,28 @@ export async function POST(
   }
 
   // 24h freshness (owner spec): a card is re-enriched at most ONCE per 24h, and
-  // ONLY when a user opens it — never a background job. The first open of a card
-  // pulls+stores (1 charge); every open inside the next 24h is free; the first
-  // open AFTER 24h re-pulls once. `population_report.refreshedAt` is the per-card
-  // "last enriched at" marker (enrich pulls history + population together). We
-  // refresh when EITHER piece is missing OR the pop marker is older than STALE_MS.
-  // History points are date-keyed/immutable, so a re-pull after 24h only ADDS a
-  // genuinely new day's point (skipDuplicates) — the 24h window governs when we
-  // RE-CHECK on open, not wasteful re-storage of existing points.
+  // ONLY when a user opens it — never a background job. The first open pulls+
+  // stores (1 charge); every open inside the next 24h is free; the first open
+  // AFTER 24h re-pulls once.
+  //
+  // FRESHNESS MARKER = a per-card `SyncLog(job="scrydex_onview_enrich")` row
+  // written on EVERY enrich ATTEMPT (below). The OLD heuristic keyed freshness
+  // on `population_report.refreshedAt` AND a stored-history row, which never
+  // marked a card that LEGITIMATELY has no pop/history data (most One Piece
+  // cards → getStoredPopulationReport == null): such a card was never "fresh",
+  // so it re-pulled on EVERY open forever (audit 01 P-02 / 08 F-12). Keying on
+  // the attempt marker instead means a pop-less / history-less card is still
+  // throttled for 24h — the clock records that we TRIED, not that we found
+  // data (RULE 2: the marker is an honest attempt timestamp, never fabricated
+  // pop/history rows). History points stay date-keyed/immutable, so a re-pull
+  // after 24h only ADDS a genuinely new day's point (skipDuplicates).
   const STALE_MS = 24 * 60 * 60 * 1000; // 24h — owner spec: re-pull on open only after 24h
-  const hasHistory = (await prisma.pricingHistory.count({ where: { cardId: card.id } })) > 0;
-  const pop = await getStoredPopulationReport(id);
-  const popAgeMs = pop?.refreshedAt ? Date.now() - new Date(pop.refreshedAt).getTime() : Infinity;
-  const isFresh = hasHistory && pop != null && popAgeMs < STALE_MS;
+  const lastEnrich = await prisma.syncLog.findFirst({
+    where: { job: ONVIEW_ENRICH_JOB, cardId: card.id },
+    orderBy: { ranAt: "desc" },
+    select: { ranAt: true },
+  });
+  const isFresh = lastEnrich != null && Date.now() - lastEnrich.ranAt.getTime() < STALE_MS;
   if (isFresh) {
     return NextResponse.json({ enriched: false, reason: "fresh" }, { status: 200 });
   }
@@ -159,6 +173,21 @@ export async function POST(
     } catch {
       // fail-open — never a 5xx. stored stays false.
     }
+  }
+
+  // Write the per-card freshness marker (the 24h clock) — ALWAYS when we reach
+  // the pull branch, even if both pulls stored 0 or threw. The whole point is
+  // to throttle pop-less / history-less cards: the credit spend already happened
+  // (or was denied) on this attempt, so the 24h window starts now. credits:0 —
+  // the marker is NOT itself a Scrydex call (history/population meter their own
+  // SyncLog rows with the real credit cost). Fail-open (try/catch) so a marker-
+  // write fault never 5xx (RULE 7).
+  try {
+    await prisma.syncLog.create({
+      data: { job: ONVIEW_ENRICH_JOB, cardId: card.id, status: "ok", credits: 0 },
+    });
+  } catch {
+    // Marker write is best-effort — never fail the request on it.
   }
 
   // Best-effort cache busting so the next GET re-reads fresh (fail-open).
