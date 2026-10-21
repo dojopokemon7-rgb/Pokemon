@@ -25,6 +25,7 @@ import { AreaChart, type AreaChartDatum } from "@/components/AreaChart";
 import { UNCAT_ID, shouldShowUncategorized } from "@/lib/utils/collection-ids";
 import { CARD_SORT_LABELS, WEEK_SORT_KEYS, sortByWeeklyChange, type WeekSortKey } from "@/lib/utils/card-sort";
 import { statsFromLots, isSellQtyValid } from "@/lib/utils/portfolio-accounting";
+import { allocateSell } from "@/lib/utils/portfolio-sell-allocation";
 import { isGraded, displayPrice } from "@/lib/utils/graded-price";
 import { paramOrDefault } from "@/lib/utils/list-controls";
 
@@ -42,6 +43,9 @@ export interface CollectionItem {
   soldAt?: string | null;
   addedAt: string;
   allIds?: string[];
+  // BUG 3: the per-row (id, quantity, addedAt) of every lot merged into this
+  // tile, so sell/revert can allocate across ALL rows (not just the first id).
+  allRows?: { id: string; quantity: number; addedAt: string }[];
   card: {
     id: string;
     externalId?: string;
@@ -358,7 +362,7 @@ function CardGrid({
   onToggleSelect: (id: string) => void;
   onWantToSell: (item: CollectionItem) => void;
   onMarkAsSold: (item: CollectionItem) => void;
-  onRevertSold: (id: string) => void;
+  onRevertSold: (item: CollectionItem) => void;
   owned: boolean;
 }) {
   const price = displayPrice(item);
@@ -441,7 +445,7 @@ function CardGrid({
       {owned && item.isSold && (
         <button
           type="button"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRevertSold(item.id); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRevertSold(item); }}
           style={{
             marginTop: "8px", width: "100%", padding: "7px 0", cursor: "pointer",
             border: "1px solid var(--color-dojo-stroke)", background: "transparent",
@@ -466,7 +470,7 @@ function CardRow({
   onToggleSelect: (id: string) => void;
   onWantToSell: (item: CollectionItem) => void;
   onMarkAsSold: (item: CollectionItem) => void;
-  onRevertSold: (id: string) => void;
+  onRevertSold: (item: CollectionItem) => void;
   owned: boolean;
 }) {
   const price = displayPrice(item);
@@ -557,7 +561,7 @@ function CardRow({
       {owned && item.isSold && (
         <button
           type="button"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRevertSold(item.id); }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRevertSold(item); }}
           style={{
             flex: "none", padding: "7px 10px", cursor: "pointer", whiteSpace: "nowrap",
             border: "1px solid var(--color-dojo-stroke)", background: "transparent",
@@ -673,19 +677,26 @@ function PortfolioPageInner() {
   });
 
   const markAsSold = useMutation({
-    mutationFn: async ({ id, soldPrice, soldQuantity, soldAt }: { id: string; soldPrice: number; soldQuantity: number; soldAt?: string }) => {
-      // Use the dedicated sell route: it takes GROSS PRICE PER COPY (which is
-      // exactly what the modal collects — "Selling Price ($ per card)"),
-      // partial-splits the lot into a Sold row in the same collection, and
-      // records sale provenance. Correct per-copy semantics vs the old PATCH.
-      const res = await fetch(`/api/users/me/collection/${id}/sell`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ quantity: soldQuantity, grossPricePerCopy: soldPrice, soldAt }),
-      });
-      if (!res.ok) throw new Error("Could not mark card as sold.");
-      return res.json();
+    mutationFn: async ({ rows, soldPrice, soldQuantity, soldAt }: { rows: { id: string; quantity: number; addedAt: string }[]; soldPrice: number; soldQuantity: number; soldAt?: string }) => {
+      // BUG 3 (audit 13 F-02): a consolidated tile can merge several lots, so
+      // the sold quantity must be allocated ACROSS the tile's active rows —
+      // oldest addedAt first (RULE 9) — not pinned to the first row id (which
+      // threw "Cannot sell N; only M owned"). Each draw hits the dedicated sell
+      // route, which takes GROSS PRICE PER COPY (exactly the modal's "Selling
+      // Price ($ per card)"), partial-splits that lot into a Sold row in the
+      // same collection, and records provenance. Each POST is ownership-scoped
+      // and atomic server-side.
+      const draws = allocateSell(rows, soldQuantity);
+      for (const draw of draws) {
+        const res = await fetch(`/api/users/me/collection/${draw.id}/sell`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ quantity: draw.quantity, grossPricePerCopy: soldPrice, soldAt }),
+        });
+        if (!res.ok) throw new Error("Could not mark card as sold.");
+      }
+      return { ok: true };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
@@ -721,15 +732,21 @@ function PortfolioPageInner() {
   });
 
   const revertSold = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`/api/users/me/collection/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ isSold: false }),
-      });
-      if (!res.ok) throw new Error("Could not revert sale.");
-      return res.json();
+    mutationFn: async (ids: string[]) => {
+      // BUG 3: a sold tile can merge several sold rows (allIds). Revert each.
+      // The BUG 2 merge-back makes each revert safe (no uc_variant_coalesced
+      // P2002 500 when an active sibling exists). Sequential so a merge-back on
+      // one row can't race the next.
+      for (const id of ids) {
+        const res = await fetch(`/api/users/me/collection/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ isSold: false }),
+        });
+        if (!res.ok) throw new Error("Could not revert sale.");
+      }
+      return { ok: true };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
@@ -828,7 +845,7 @@ function PortfolioPageInner() {
   // Deduplicate / consolidate identical cards so if the same card is added twice,
   // it shows as Qty: 2 and does not list it again as a duplicate row!
   const consolidatedItems = useMemo(() => {
-    const map = new Map<string, CollectionItem & { allIds: string[] }>();
+    const map = new Map<string, CollectionItem & { allIds: string[]; allRows: { id: string; quantity: number; addedAt: string }[] }>();
     for (const item of rawItems) {
       const cardKey = item.card.name.trim().toLowerCase();
       const setKey = (item.card.set?.name ?? "").trim().toLowerCase();
@@ -839,16 +856,18 @@ function PortfolioPageInner() {
       const key = `${cardKey}::${setKey}::${foilKey}::${condKey}::${soldKey}::${collKey}`;
 
       const existing = map.get(key);
+      const row = { id: item.id, quantity: item.quantity, addedAt: item.addedAt };
       if (existing) {
         existing.quantity += item.quantity;
         existing.allIds.push(item.id);
+        existing.allRows.push(row);
         if (item.purchasePrice != null && existing.purchasePrice != null) {
           existing.purchasePrice = (existing.purchasePrice + item.purchasePrice) / 2;
         } else if (item.purchasePrice != null) {
           existing.purchasePrice = item.purchasePrice;
         }
       } else {
-        map.set(key, { ...item, allIds: [item.id] });
+        map.set(key, { ...item, allIds: [item.id], allRows: [row] });
       }
     }
     return Array.from(map.values());
@@ -1237,7 +1256,7 @@ function PortfolioPageInner() {
               onToggleSelect={toggleSelectId}
               onWantToSell={(i) => wantToSell.mutate(i.card.externalId ?? i.cardId)}
               onMarkAsSold={(i) => setSellModalItem(i)}
-              onRevertSold={(id) => revertSold.mutate(id)}
+              onRevertSold={(i) => revertSold.mutate(i.allIds ?? [i.id])}
               owned={canSelect}
             />
           ))}
@@ -1253,7 +1272,7 @@ function PortfolioPageInner() {
               onToggleSelect={toggleSelectId}
               onWantToSell={(i) => wantToSell.mutate(i.card.externalId ?? i.cardId)}
               onMarkAsSold={(i) => setSellModalItem(i)}
-              onRevertSold={(id) => revertSold.mutate(id)}
+              onRevertSold={(i) => revertSold.mutate(i.allIds ?? [i.id])}
               owned={canSelect}
             />
           ))}
@@ -1267,8 +1286,10 @@ function PortfolioPageInner() {
           isPending={markAsSold.isPending}
           onClose={() => setSellModalItem(null)}
           onConfirm={async ({ soldPrice, quantity, soldAt }) => {
+            // BUG 3: pass the tile's merged active rows so the sell is allocated
+            // across them (oldest first), not pinned to the first row id.
             await markAsSold.mutateAsync({
-              id: sellModalItem.id,
+              rows: sellModalItem.allRows ?? [{ id: sellModalItem.id, quantity: sellModalItem.quantity, addedAt: sellModalItem.addedAt }],
               soldPrice,
               soldQuantity: quantity,
               soldAt,
