@@ -1,5 +1,5 @@
 import { it, expect, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { createElement } from "react";
@@ -98,6 +98,53 @@ it("renders one card tile per collection on the default view (D8)", () => {
   // Values come straight from the seeded lots via the existing aggregation.
   expect(vault!.textContent).toContain("$100.00");
   expect(gallery!.textContent).toContain("$50.00");
+});
+
+it("Gainers/Losers tab shows a graded lot's GRADED value, not the raw price (R1)", () => {
+  // A PSA 9 lot with a real stored graded price ($6,163.18) and a RAW
+  // marketPrice ($359.95). It must surface its graded value in the Gainers tab
+  // — the same resolution Most-Valuable / portfolio / summary already use —
+  // never the raw number. `weeklyChangePct` present + >= 0 so it lands in Gainers.
+  const gradedLot: CollectionItem = {
+    id: "g1",
+    cardId: "card-g1",
+    quantity: 1,
+    isFoil: false,
+    purchasePrice: null,
+    collectionId: "slabs",
+    isSold: false,
+    condition: "PSA 9",
+    card: {
+      id: "card-g1",
+      externalId: "base1-4",
+      name: "Charizard",
+      imageUrl: null,
+      marketPrice: 359.95, // RAW — must NOT be shown for this graded lot
+      weeklyChangePct: 5.2, // positive → Gainers
+      set: { name: "Base Set" },
+      gradedPrices: [
+        { company: "PSA", grade: "9", priceMarket: 6163.18 },
+      ],
+    },
+  };
+
+  render(
+    createElement(DashboardClient, {
+      firstName: "Ash",
+      initialItems: [gradedLot],
+      collections: [{ id: "slabs", name: "Slabs" }],
+    }),
+    { wrapper: wrapper(makeClient()) }
+  );
+
+  // Switch to the Gainers tab (default is Most Valuable).
+  fireEvent.click(screen.getByRole("button", { name: "Gainers" }));
+
+  // The Gainers row for this lot shows the GRADED value (the same value also
+  // appears in the summary header + Most-Valuable, so match all occurrences),
+  // and the RAW price ($359.95) is NEVER rendered anywhere.
+  expect(screen.getAllByText("$6,163.18").length).toBeGreaterThanOrEqual(1);
+  expect(screen.queryByText("$359.95")).toBeNull();
 });
 
 it("each tile is an accessible, keyboard-operable button", () => {

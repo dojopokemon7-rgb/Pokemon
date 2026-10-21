@@ -676,7 +676,11 @@ export default function DashboardClient({
       return {
         name: item.card.name,
         sub,
-        price: fmt((item.card.marketPrice ?? 0) * item.quantity),
+        // GRADED-VALUE PARITY (R1): value an owned lot via the SAME shared
+        // `displayPrice` resolution the Most-Valuable tab / summary / portfolio
+        // use — a graded lot (e.g. PSA 9) shows its graded price, never the raw
+        // `card.marketPrice`. `item` satisfies `DisplayPriceItem` structurally.
+        price: fmt((displayPrice(item) ?? 0) * item.quantity),
         delta,
         up,
         card: toPopupCard(item),
