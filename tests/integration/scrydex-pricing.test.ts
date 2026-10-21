@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Game, DataSource } from "@prisma/client";
 
 /**
@@ -53,11 +53,14 @@ const scrydexMock = vi.hoisted(() => ({
   resolveScrydexCard: vi.fn(),
   fetchScrydexCardById: vi.fn(),
   pickRawPrice: vi.fn(),
+  // Bug B: history-writer test needs the documented /price_history fetch.
+  fetchScrydexPriceHistory: vi.fn(),
 }));
 vi.mock("@/lib/services/scrydex.service", () => scrydexMock);
 
 import {
   pullAndStoreScrydexPrice,
+  pullAndStoreScrydexHistory,
   SCRYDEX_STALE_MS,
   SCRYDEX_CREDITS_PER_CALL,
 } from "@/lib/services/scrydex-pricing.service";
@@ -491,5 +494,70 @@ describe("pullAndStoreScrydexPrice — credit gate (FIX A, sec-audit)", () => {
     expect(result).toEqual({ pulled: false, credits: 0, card: null });
     expect(scrydexMock.resolveScrydexCard).not.toHaveBeenCalled();
     expect(scrydexMock.fetchScrydexCardById).not.toHaveBeenCalled();
+  });
+});
+
+describe("pullAndStoreScrydexHistory — raw per-day identity (Bug B)", () => {
+  // The raw-only partial unique index `ph_raw_coalesced` (authored in
+  // 20250113000000_pricing_history_raw_dedupe) relies on the history writer
+  // keying every raw NM point to UTC MIDNIGHT of its Scrydex day and writing
+  // with skipDuplicates. These assertions pin that per-day contract (the index
+  // itself is DB-level and not unit-testable without a live DB — see APPLY.md).
+  //
+  // We authorize via the ON-VIEW gate (creditAuth:"onview" + flag) so the test
+  // is independent of the bulk-gate mock in this file.
+  const HISTORY_SCRYDEX_ID = "me55c-4";
+
+  afterEach(() => {
+    delete process.env.SCRYDEX_ONVIEW_ENABLED;
+  });
+
+  it("stores raw NM points at UTC midnight with company/grade null + skipDuplicates", async () => {
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    scrydexMock.fetchScrydexPriceHistory.mockResolvedValue([
+      {
+        date: "2026/10/03",
+        prices: [
+          { type: "raw", condition: "NM", market: 100, low: 90, currency: "USD", variant: "normal" },
+        ],
+      },
+      {
+        date: "2026/10/04",
+        prices: [
+          { type: "raw", condition: "NM", market: 110, low: 95, currency: "USD", variant: "normal" },
+          // Non-raw / non-NM entries are filtered out (RAW NM series only).
+          { type: "graded", condition: null, market: 999, low: null, currency: "USD", variant: "normal" },
+          { type: "raw", condition: "LP", market: 80, low: null, currency: "USD", variant: "normal" },
+        ],
+      },
+    ]);
+
+    const result = await pullAndStoreScrydexHistory(
+      { id: CARD.id, game: Game.POKEMON, scrydexId: HISTORY_SCRYDEX_ID },
+      { days: 365, creditAuth: "onview" }
+    );
+
+    expect(result.stored).toBe(2); // two raw NM days; graded + LP filtered out
+
+    const call = prismaMock.pricingHistory.createMany.mock.calls[0][0];
+    expect(call.skipDuplicates).toBe(true); // index relies on skipDuplicates
+    const rows = call.data;
+    expect(rows).toHaveLength(2);
+
+    // Every stored raw row: UTC midnight recordedAt (the per-day index key),
+    // null-free raw identity (company/grade absent), source scrydex.
+    for (const r of rows) {
+      expect(r.recordedAt.toISOString()).toBe(
+        `${r.recordedAt.toISOString().slice(0, 10)}T00:00:00.000Z`
+      );
+      expect(r.company ?? null).toBeNull();
+      expect(r.grade ?? null).toBeNull();
+      expect(r.source).toBe("scrydex");
+      expect(r.condition).toBe("NM");
+    }
+    expect(rows.map((r: { recordedAt: Date }) => r.recordedAt.toISOString()).sort()).toEqual([
+      "2026-10-03T00:00:00.000Z",
+      "2026-10-04T00:00:00.000Z",
+    ]);
   });
 });
