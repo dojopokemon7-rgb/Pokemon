@@ -55,6 +55,44 @@ function bad(message: string, status: 400 | 404 | 502) {
   return NextResponse.json({ error: title, message }, { status });
 }
 
+/**
+ * Strip the trailing /(large|medium|small) size suffix → the card-art base-id.
+ * `https://images.scrydex.com/onepiece/OP01-120A/large` → `.../OP01-120A`.
+ * Two urls that differ only by size share a base-id; two DIFFERENT arts do not.
+ */
+function imageBaseId(url: string): string {
+  return url.replace(/\/(large|medium|small)$/i, "");
+}
+
+/**
+ * Pick which stored url to serve.
+ *
+ * Default (grid tile) serves `imageUrl`. `?hi=1` (detail hero) prefers the
+ * hi-res `imageUrlHi`, falling back to `imageUrl` when none is stored.
+ *
+ * HARDENING (img-mismatch): a stale re-ingest can leave `imageUrlHi` pointing at
+ * a DIFFERENT card art than `imageUrl` (e.g. OP01-120 altArt: imageUrl is the
+ * correct alt-art `OP01-120A`, imageUrlHi the WRONG plain base `OP01-120`). That
+ * makes the grid and the `?hi=1` hero show different Shanks. When the two base-ids
+ * DIVERGE we prefer `imageUrl` — the grid and the detail then always resolve to
+ * the SAME art (correct art at medium res beats a divergent hi-res). Same-art /
+ * size-only differences (…/large vs …/medium) still serve the hi-res as before.
+ */
+function resolveStored(
+  card: { imageUrl: string | null; imageUrlHi: string | null },
+  wantHi: boolean
+): string | null {
+  if (!wantHi) return card.imageUrl;
+  if (!card.imageUrlHi) return card.imageUrl;
+  if (
+    card.imageUrl &&
+    imageBaseId(card.imageUrl) !== imageBaseId(card.imageUrlHi)
+  ) {
+    return card.imageUrl; // divergent art — serve the correct (grid) image
+  }
+  return card.imageUrlHi;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -113,7 +151,7 @@ export async function GET(
 
   if (!card) return bad("Card image not available.", 404);
 
-  const stored = wantHi ? card.imageUrlHi ?? card.imageUrl : card.imageUrl;
+  const stored = resolveStored(card, wantHi);
   if (!stored) return bad("Card image not available.", 404);
 
   // Defense in depth: the URL came from our DB, but we STILL enforce the

@@ -123,6 +123,32 @@ describe("GET /api/card-img/<id> — happy path", () => {
     );
   });
 
+  // HARDENING (img-mismatch): ?hi=1 prefers imageUrlHi only when it is the SAME
+  // art as imageUrl (size-only difference). When imageUrlHi points at a
+  // DIFFERENT art (divergent base-id — the OP01-120 "different Shanks" bug),
+  // serve imageUrl so grid and hero agree.
+  it("?hi=1 prefers imageUrlHi when it is the same art at a larger size", async () => {
+    findExternalExact.mockResolvedValueOnce({
+      imageUrl: "https://images.scrydex.com/onepiece/OP01-120A/medium",
+      imageUrlHi: "https://images.scrydex.com/onepiece/OP01-120A/large",
+    });
+    await call("OP01-120", true);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://images.scrydex.com/onepiece/OP01-120A/large"
+    );
+  });
+
+  it("?hi=1 serves imageUrl when imageUrlHi is a DIFFERENT art (divergent base-id)", async () => {
+    findExternalExact.mockResolvedValueOnce({
+      imageUrl: "https://images.scrydex.com/onepiece/OP01-120A/large", // correct alt-art
+      imageUrlHi: "https://images.scrydex.com/onepiece/OP01-120/large", // WRONG plain base
+    });
+    await call("OP01-120", true);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://images.scrydex.com/onepiece/OP01-120A/large"
+    );
+  });
+
   it("falls back to lookup by internal id when externalId misses", async () => {
     // Both externalId lookups (exact + insensitive) miss → cuid fallback hits.
     findById.mockResolvedValueOnce({
