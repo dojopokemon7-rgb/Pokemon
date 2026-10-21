@@ -28,6 +28,7 @@ import {
 import {
   parseGradedCondition,
   pickGradedRow,
+  pickBestRaw,
   type PriceRowLike,
 } from "@/lib/utils/raw-price";
 
@@ -216,18 +217,44 @@ export async function buildCollectionHistories(
       });
       currentGradedByCard.set(r.cardId, arr);
     }
-    // Memoize the variant decision per (cardId, company, grade) — the identical
-    // rule pickRealGradedPrice uses, so chart and display agree by construction.
-    const variantCache = new Map<string, string | null>();
-    function resolveGradedVariant(
+    // Current RAW rows per card (Prisma-only, ZERO credits) — the latest-point
+    // anchor source for RAW lots (Bug B). Same CurrentPrice table, type:"raw";
+    // the ONE shared raw selector (pickBestRaw / pickDefaultVariant) derives the
+    // headline raw price+variant, identical to displayPrice's raw path.
+    const currentRaw = await prisma.currentPrice.findMany({
+      where: { cardId: { in: cardIds }, type: "raw", priceMarket: { not: null } },
+      select: { cardId: true, company: true, grade: true, variant: true, condition: true, priceMarket: true },
+    });
+    const currentRawByCard = new Map<string, PriceRowLike[]>();
+    for (const r of currentRaw) {
+      const arr = currentRawByCard.get(r.cardId) ?? [];
+      arr.push({
+        type: "raw",
+        company: r.company,
+        grade: r.grade,
+        variant: r.variant,
+        condition: r.condition,
+        priceMarket: r.priceMarket,
+      });
+      currentRawByCard.set(r.cardId, arr);
+    }
+
+    // Memoize the (variant, price) decision per (cardId, company, grade) — the
+    // identical rule pickRealGradedPrice uses, so chart and display agree by
+    // construction. We keep the PRICE too (Bug B): the chart's latest point is
+    // anchored to this authoritative CURRENT price so the chart's end value ==
+    // the summary (displayPrice/statsFromLots) value for the same lot.
+    const gradedPickCache = new Map<string, { variant: string | null; price: number } | null>();
+    function resolveGradedPick(
       cardId: string,
       condition: string | null | undefined
-    ): string | null | undefined {
+    ): { variant: string | null; price: number } | null {
       const parsed = parseGradedCondition(condition);
-      if (!parsed) return undefined; // raw lot — no graded variant decision
+      if (!parsed) return null; // raw lot — no graded decision
       const company = parsed.company.toUpperCase();
       const key = `${cardId}\u0000${company}\u0000${parsed.grade}`;
-      if (variantCache.has(key)) return variantCache.get(key);
+      const cached = gradedPickCache.get(key);
+      if (cached !== undefined) return cached;
       // Current snapshot first (keeps chart↔display parity by construction).
       const currentPick = pickGradedRow(
         currentGradedByCard.get(cardId) ?? [],
@@ -239,9 +266,19 @@ export async function buildCollectionHistories(
       const pick =
         currentPick ??
         pickGradedRow(historyGradedByCard.get(cardId) ?? [], company, parsed.grade);
-      const v = pick?.variant ?? null;
-      variantCache.set(key, v);
-      return v;
+      const result = pick ? { variant: pick.variant, price: pick.price } : null;
+      gradedPickCache.set(key, result);
+      return result;
+    }
+    // Backward-compatible variant accessor for HoldingInterval.gradedVariant.
+    // undefined → raw lot (chart uses raw series); null → graded lot with no
+    // resolvable variant (honest null gap).
+    function resolveGradedVariant(
+      cardId: string,
+      condition: string | null | undefined
+    ): string | null | undefined {
+      if (parseGradedCondition(condition) == null) return undefined;
+      return resolveGradedPick(cardId, condition)?.variant ?? null;
     }
 
     const holdings: HoldingInterval[] = lots.map((l) => ({
@@ -327,7 +364,69 @@ export async function buildCollectionHistories(
     timeline.sort((a, b) => a - b);
     const deduped = timeline.filter((t, i) => i === 0 || t !== timeline[i - 1]);
 
-    const [series] = buildCollectionSeries(holdings, prices, deduped);
+    // CURRENT-PRICE ANCHOR AT `now` (Bug B — chart↔summary parity): the chart
+    // valued every instant (incl. the `now` endpoint) from the newest matching
+    // PricingHistory point, but the summary (displayPrice/statsFromLots) values
+    // from the latest CurrentPrice. For base1-4 the newest matching-variant
+    // history point is $4,200 while the authoritative current value is $6,163.18,
+    // so the chart's end disagreed with the headline. Fix: append a synthetic
+    // PricePoint at `nowMs` per DISTINCT lot identity carrying the SAME
+    // authoritative CURRENT price+variant the summary uses (routed through the
+    // SAME shared selectors — no 4th resolution path). Because
+    // `buildCollectionSeries` carries forward the newest point at/before t, this
+    // anchor becomes the chart's LATEST value and equals displayPrice, while all
+    // earlier instants still use REAL windowed history. RULE 2: every anchor is a
+    // REAL stored CurrentPrice row; a lot with no current price adds NO anchor
+    // (honest gap). The history/current variant-vocabulary mismatch (base1-4) is
+    // handled honestly — earlier points use real same-variant history where it
+    // exists; where it doesn't the line is a short/flat run anchored to `now`.
+    const anchorPoints: PricePoint[] = [];
+    const anchoredIdentity = new Set<string>();
+    for (const l of lots) {
+      if (l.isSold) continue; // a sold lot ends at soldAt; no `now` anchor
+      const parsed = parseGradedCondition(l.condition);
+      if (parsed) {
+        const company = parsed.company.toUpperCase();
+        const idKey = `${l.cardId}\u0000graded\u0000${company}\u0000${parsed.grade}`;
+        if (anchoredIdentity.has(idKey)) continue;
+        const pick = resolveGradedPick(l.cardId, l.condition);
+        if (!pick) continue; // no current/history graded row → honest gap
+        anchoredIdentity.add(idKey);
+        anchorPoints.push({
+          cardId: l.cardId,
+          at: nowMs,
+          price: pick.price,
+          type: "graded",
+          company,
+          grade: parsed.grade,
+          variant: pick.variant,
+          condition: null,
+        });
+      } else {
+        const idKey = `${l.cardId}\u0000raw`;
+        if (anchoredIdentity.has(idKey)) continue;
+        // Raw headline: the SAME pickBestRaw/pickDefaultVariant rule displayPrice
+        // uses, over the current RAW snapshot. Stamp the anchor with the chosen
+        // (condition, variant) so buildCollectionSeries' raw filter keeps it.
+        const rawRows = currentRawByCard.get(l.cardId) ?? [];
+        const best = pickBestRaw(rawRows) ?? null;
+        const chosen = best ?? null;
+        if (!chosen) continue; // no current raw price → honest gap
+        anchoredIdentity.add(idKey);
+        anchorPoints.push({
+          cardId: l.cardId,
+          at: nowMs,
+          price: chosen.price,
+          type: "raw",
+          company: null,
+          grade: null,
+          variant: chosen.variant,
+          condition: chosen.condition,
+        });
+      }
+    }
+
+    const [series] = buildCollectionSeries(holdings, [...prices, ...anchorPoints], deduped);
     histories[collId] = (series?.points ?? []).map((p) => ({
       date: new Date(p.t).toISOString().slice(0, 10),
       value: p.value, // null = honest gap (chart skips it)

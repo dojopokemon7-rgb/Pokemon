@@ -428,6 +428,74 @@ describe("C — SINGLE SOURCE OF TRUTH: one resolved (grade, variant) feeds char
   });
 });
 
+describe("Bug B — chart's LATEST point is anchored to the current value (vocabulary mismatch)", () => {
+  // base1-4-style reproduction: a PSA 9 lot whose PricingHistory uses DIFFERENT
+  // variant labels than CurrentPrice. The authoritative summary value lives in
+  // CurrentPrice (unlimitedHolofoil = $6,163.18). The service threads the
+  // resolved variant (unlimitedHolofoil) AND appends a synthetic current anchor
+  // at the latest instant. The chart's LAST point must equal the summary value
+  // ($6,163.18), NOT the newest matching-variant HISTORY point ($4,200), and NOT
+  // the newer `normal` history point that the resolved-variant filter excludes.
+  const CURRENT = 6163.18;
+  const OLD_HOLO = 4200; // unlimitedHolofoil history point, dated earlier
+  const NEWER_NORMAL = 14629.69; // a different-variant history point, newer
+
+  it("anchors the latest point to the current price, not the newest history point", () => {
+    const tOld = t0;
+    const tNew = t0 + DAY; // newer than the unlimitedHolofoil history point
+    const now = t0 + 2 * DAY; // the current-anchor instant
+    const history: PricePoint[] = [
+      // unlimitedHolofoil history (older) — the resolved variant, but STALE value.
+      { cardId: "c1", at: tOld, price: OLD_HOLO, type: "graded", company: "PSA", grade: "9", variant: "unlimitedHolofoil" },
+      // a DIFFERENT variant, NEWER — must be excluded by the variant filter.
+      { cardId: "c1", at: tNew, price: NEWER_NORMAL, type: "graded", company: "PSA", grade: "9", variant: "unlimitedShadowlessHolofoil" },
+    ];
+    // Synthetic current anchor at `now`, carrying the resolved variant + current value.
+    const anchor: PricePoint = {
+      cardId: "c1", at: now, price: CURRENT, type: "graded", company: "PSA", grade: "9", variant: "unlimitedHolofoil",
+    };
+    const holdings: HoldingInterval[] = [
+      { collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9", gradedVariant: "unlimitedHolofoil" },
+    ];
+    const line = buildCollectionSeries(holdings, [...history, anchor], [tOld, tNew, now])[0].points;
+    // Latest point == current value (6163.18), NOT 4200 and NOT 14629.69.
+    expect(line[line.length - 1].value).toBe(CURRENT);
+    expect(line[line.length - 1].value).not.toBe(OLD_HOLO);
+    expect(line[line.length - 1].value).not.toBe(NEWER_NORMAL);
+    // Earlier instant still carries the REAL same-variant history point.
+    expect(line[0].value).toBe(OLD_HOLO);
+  });
+
+  it("the chart's latest point equals displayPrice for the same base1-4-style lot", () => {
+    const now = t0 + 2 * DAY;
+    const gradedPrices: GradedPriceRow[] = [
+      { type: "graded", company: "PSA", grade: "9", variant: "firstEditionShadowlessHolofoil", condition: null, priceMarket: 82660.12 },
+      { type: "graded", company: "PSA", grade: "9", variant: "unlimitedShadowlessHolofoil", condition: null, priceMarket: 11750.5 },
+      { type: "graded", company: "PSA", grade: "9", variant: "unlimitedHolofoil", condition: null, priceMarket: CURRENT },
+      { type: "graded", company: "PSA", grade: "9", variant: "metal", condition: null, priceMarket: 540.77 },
+    ];
+    // The summary's chosen variant/price (the authoritative resolution).
+    const resolved = pickGradedRow(gradedPrices as PriceRowLike[], "PSA", "9");
+    expect(resolved?.variant).toBe("unlimitedHolofoil");
+    expect(resolved?.price).toBe(CURRENT);
+
+    const anchor: PricePoint = {
+      cardId: "c1", at: now, price: resolved!.price, type: "graded", company: "PSA", grade: "9", variant: resolved!.variant,
+    };
+    const chartLatest = buildCollectionSeries(
+      [{ collectionId: "A", cardId: "c1", quantity: 1, addedAt: t0, soldAt: null, condition: "PSA 9", gradedVariant: resolved!.variant }],
+      [anchor],
+      [now]
+    )[0].points[0].value;
+
+    const summary = displayPrice({ isSold: false, condition: "PSA 9", card: { marketPrice: 359.95, gradedPrices } });
+
+    expect(chartLatest).toBe(CURRENT);
+    expect(summary).toBe(CURRENT);
+    expect(chartLatest).toBe(summary); // the Bug-B parity contract
+  });
+});
+
 describe("isVirtualCollectionId", () => {
   it("recognises the reserved ALL view id", () => {
     expect(isVirtualCollectionId(ALL_VIEW_ID)).toBe(true);

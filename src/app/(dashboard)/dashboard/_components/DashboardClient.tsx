@@ -30,6 +30,7 @@ import { toHistoryToken, shouldShowUncategorized } from "@/lib/utils/collection-
 import { computeOverallChange, hasChartableHistory } from "@/lib/utils/overall-change";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
+import { displayPrice } from "@/lib/utils/graded-price";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -615,11 +616,20 @@ export default function DashboardClient({
       }))
     );
 
-    // Most valuable: top 5 by value (REAL cards, mocked deltas, formatted like Image 1)
+    // Most valuable: top 5 by value (REAL cards, mocked deltas, formatted like Image 1).
+    // GRADED-VALUE PARITY (Bug A): a graded lot is worth its GRADED price, not the
+    // raw `card.marketPrice`. Value each lot via the SAME shared `displayPrice`
+    // resolution the summary (statsFromLots) and the portfolio tiles use — so a
+    // PSA 9 lot surfaces its PSA 9 graded price here, never the raw number. Both
+    // the sort key AND the shown price use this per-lot value. `item` satisfies
+    // `DisplayPriceItem` structurally (isSold/soldPrice/condition + card.marketPrice
+    // /card.gradedPrices). A null resolution renders $0 in the (unsorted-out) tail,
+    // same as before; null price never fabricates a number for the summary.
     const mostValuable = [...items]
-      .sort((a, b) => (b.card.marketPrice ?? 0) * b.quantity - (a.card.marketPrice ?? 0) * a.quantity)
+      .map((item) => ({ item, value: (displayPrice(item) ?? 0) * item.quantity }))
+      .sort((a, b) => b.value - a.value)
       .slice(0, 5)
-      .map((item) => {
+      .map(({ item, value }) => {
         // REAL weekly change (null → "—"), never a fabricated delta.
         const { delta, up } = fmtDelta(item.card.weeklyChangePct);
         const conditionStr = item.condition ? item.condition : "Raw";
@@ -632,7 +642,7 @@ export default function DashboardClient({
         return {
           name: item.card.name,
           sub,
-          price: fmt((item.card.marketPrice ?? 0) * item.quantity),
+          price: fmt(value),
           delta,
           up,
           card: toPopupCard(item),
