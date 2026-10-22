@@ -24,7 +24,7 @@
  */
 
 import Redis from "ioredis";
-import { shouldUseTls, redactRedisUrl } from "@/lib/utils/redis-tls";
+import { shouldUseTls, redactRedisUrl, redisRetryDelay } from "@/lib/utils/redis-tls";
 
 // Extend global to hold the singleton across Next.js hot reloads
 const globalForRedis = globalThis as unknown as {
@@ -54,17 +54,15 @@ function createRedisClient(): Redis {
     // so a serverless invocation never blocks on an unreachable Redis.
     connectTimeout: 10000,
     maxRetriesPerRequest: 1,
-    // Retry logic: exponential backoff, max 10 retries
-    retryStrategy(times: number): number | null {
-      if (times > 10) {
-        console.error(
-          "[Redis] Max retry attempts reached. Giving up on reconnection."
-        );
-        return null; // stop retrying
-      }
-      // Wait 2^times * 100ms between retries (100ms, 200ms, 400ms…)
-      return Math.min(Math.pow(2, times) * 100, 3000);
-    },
+    // Retry logic: exponential backoff capped at 3s, retrying INDEFINITELY
+    // (never gives up — audit 12 F5). A previous version returned null after
+    // 10 attempts, which ended the ioredis client permanently while the
+    // cachedClient singleton kept holding the dead client — silently disabling
+    // caching + rate limiting + circuit breakers until a process restart. The
+    // capped-infinite backoff lets the client reconnect on its own when Redis
+    // returns; per-command fail-open is unchanged (enableOfflineQueue:false +
+    // maxRetriesPerRequest:1 above). See redisRetryDelay in redis-tls.ts.
+    retryStrategy: redisRetryDelay,
     lazyConnect: false,
     // TLS last: rediss:// / Upstash host ⇒ TLS; plain redis:// ⇒ plaintext.
     ...(useTls ? { tls: {} } : {}),

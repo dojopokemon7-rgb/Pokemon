@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldUseTls, redactRedisUrl } from "@/lib/utils/redis-tls";
+import { shouldUseTls, redactRedisUrl, redisRetryDelay } from "@/lib/utils/redis-tls";
 
 /**
  * Guards the TLS decision for the Redis connection URL. Vercel's Upstash
@@ -53,5 +53,34 @@ describe("redactRedisUrl", () => {
 
   it("returns a constant placeholder (never the raw input) for an unparseable string", () => {
     expect(redactRedisUrl("not a url:with:colons")).toBe("<redis-url>");
+  });
+});
+
+/**
+ * Guards the reconnect backoff (audit 12 F5). Returning null would end the
+ * ioredis client permanently and leave the singleton holding a dead client →
+ * caching + rate limiting silently off until a restart. The strategy must
+ * ALWAYS return a capped numeric delay so the client self-heals when Redis
+ * returns.
+ */
+describe("redisRetryDelay", () => {
+  it("NEVER returns null — always a number — for any attempt count", () => {
+    for (const times of [0, 1, 5, 10, 11, 50, 1000]) {
+      const delay = redisRetryDelay(times);
+      expect(delay).not.toBeNull();
+      expect(typeof delay).toBe("number");
+    }
+  });
+
+  it("ramps below the cap for small attempt counts", () => {
+    expect(redisRetryDelay(1)).toBe(200);
+    expect(redisRetryDelay(2)).toBe(400);
+    expect(redisRetryDelay(3)).toBe(800);
+  });
+
+  it("caps the delay at 3000ms so it keeps retrying indefinitely", () => {
+    expect(redisRetryDelay(11)).toBe(3000);
+    expect(redisRetryDelay(50)).toBe(3000);
+    expect(redisRetryDelay(1000)).toBe(3000);
   });
 });
