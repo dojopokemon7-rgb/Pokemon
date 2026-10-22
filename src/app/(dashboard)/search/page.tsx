@@ -45,6 +45,7 @@ import { paramOrDefault } from "@/lib/utils/list-controls";
 import { Toast } from "@/components/Toast";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
+import { isNonEmptyPricesPayload } from "@/lib/utils/prices-payload";
 
 // ── Prefetch-on-intent (Batch 2B · Item 1) ─────────────────────────
 // On first hover/focus/touch of a card tile we warm the TanStack cache
@@ -59,14 +60,20 @@ import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 // navigates with (AGENTS.md #3), never the internal cuid.
 function prefetchCardDetail(queryClient: QueryClient, id: string) {
   if (!id) return;
-  // ["card-prices", id] — detail page has NO explicit staleTime (inherits
-  // the global 5-minute default in providers.tsx), so mirror that here.
+  // ["card-prices", id] — warm the cache, but NEVER pin a transient-empty
+  // payload. The /prices route can 200-empty during a pre-resolve window; if a
+  // hover-prefetch caches {prices:[]} the detail page would serve it on mount
+  // (empty chart, Raw-only chips). A prefetch is best-effort, so we THROW on an
+  // empty payload → React Query writes no cache entry → the detail page fetches
+  // fresh on mount (which also sets staleTime 0 + refetchOnMount "always").
   queryClient.prefetchQuery({
     queryKey: ["card-prices", id],
     queryFn: async () => {
       const res = await fetch(`/api/cards/${encodeURIComponent(id)}/prices`);
       if (!res.ok) throw new Error("Failed to load prices");
-      return res.json();
+      const data = await res.json();
+      if (!isNonEmptyPricesPayload(data)) throw new Error("empty prices payload");
+      return data;
     },
     staleTime: 5 * 60 * 1000,
   });

@@ -242,14 +242,16 @@ function CardDetailInner() {
   const setName = searchParams.get("set") ?? "";
   const priceParam = Number(searchParams.get("price") ?? 0);
   
-  // Batch 2B · Item 2 (paint-from-cache): this query intentionally sets NO
-  // staleTime, so it inherits the global 5-minute default (providers.tsx).
-  // A revisited card therefore paints instantly from cache then
-  // background-refreshes — do NOT lower it to 0. ["card-history", id] +
-  // ["graded", …] below keep their 60s staleTime (quick back/forward cache
-  // hit without harming correctness). The search grid prefetches these
-  // exact keys on hover (search/page.tsx prefetchCardDetail), so the first
-  // open is usually already a cache hit too.
+  // Always revalidate (staleTime 0 + refetchOnMount "always") so the opened
+  // card paints from the CURRENT /prices rather than a stale prefetched entry —
+  // mirroring the ["card-history", id] / ["population", id] queries below. The
+  // search grid prefetches ["card-prices", id] on hover (search/page.tsx
+  // prefetchCardDetail), and the /prices route can legitimately 200-empty
+  // during a pre-resolve window; under the global 5-minute staleTime that empty
+  // blob would be served as "fresh" on mount, painting [] prices (empty chart,
+  // Raw-only chips) even though the server now returns real rows. A cache hit is
+  // still instant — it just refetches behind the paint. The prefetch no longer
+  // caches a transient-empty payload either (prefetchCardDetail guard).
   const { data: pricesData, isLoading: pricesLoading } = useQuery({
     queryKey: ["card-prices", id],
     queryFn: async () => {
@@ -257,6 +259,8 @@ function CardDetailInner() {
       if (!res.ok) throw new Error("Failed to load prices");
       return res.json();
     },
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const allPrices: CurrentPriceRow[] = useMemo(() => pricesData?.prices ?? [], [pricesData]);
