@@ -42,6 +42,7 @@ import { DojoSelect } from "@/components/DojoSelect";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { hasActiveFilter as anyFilterActive } from "@/lib/utils/search-query";
 import { paramOrDefault } from "@/lib/utils/list-controls";
+import { buildSearchUrl, buildSearchQueryParams, gameSwitchFilters } from "@/lib/utils/search-url";
 import { Toast } from "@/components/Toast";
 import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
@@ -643,9 +644,28 @@ function SearchPageInner() {
     router.push(`/search/${encodeURIComponent(c.id)}?${params.toString()}`);
   };
 
+  // audit 02 F-A: a new search must PRESERVE the active filters + sort, not
+  // just write q+game (which silently dropped set/rarity/graded/price/
+  // hasPrice/language on every commit). Built via the shared buildSearchUrl
+  // so this path emits the exact same URL shape as applyFilters/changeSort.
   const doSearch = (q: string) => {
-    router.replace(`/search?q=${encodeURIComponent(q)}&game=${game}`);
+    router.replace(
+      buildSearchUrl({
+        q,
+        game,
+        set: setFilter,
+        rarity: rarityFilter,
+        graded: gradedFilter,
+        minPrice: minPriceFilter,
+        maxPrice: maxPriceFilter,
+        hasPrice: hasPriceFilter,
+        language: languageFilter,
+        sort,
+      })
+    );
   };
+  // clearSearch intentionally resets to the bare trending view — it clears
+  // the query AND every active filter/sort (not a filter-preserving path).
   const clearSearch = () => {
     router.replace("/search");
   };
@@ -862,16 +882,10 @@ function SearchPageInner() {
       language: languageFilter,
       ...overrides,
     };
-    const params = new URLSearchParams();
-    if (initialQ) params.set("q", initialQ);
-    params.set("game", game);
-    for (const [k, v] of Object.entries(current)) {
-      if (v) params.set(k, v);
-    }
-    // BUG 2: preserve the active sort across filter changes (it rides the URL
-    // now). Only written when non-default so default URLs stay clean.
-    if (sort !== "trending") params.set("sort", sort);
-    router.replace(`/search?${params.toString()}`);
+    // audit 02 F-A: delegate to the shared buildSearchUrl so the URL shape has
+    // ONE source of truth. Preserves q+game+every filter and (BUG 2) the active
+    // sort, dropping it only when default — identical behavior to before.
+    router.replace(buildSearchUrl({ q: initialQ, game, ...current, sort }));
   };
   const applySetFilter = (nextSet: string) => applyFilters({ set: nextSet });
 
@@ -880,11 +894,22 @@ function SearchPageInner() {
   // filter + the query/game are preserved; drops ?sort= when it is the default.
   const changeSort = (next: SortKey) => {
     setSort(next);
-    const params = new URLSearchParams(searchParams.toString());
-    if (next === "trending") params.delete("sort");
-    else params.set("sort", next);
-    const qs = params.toString();
-    router.replace(qs ? `/search?${qs}` : "/search");
+    // audit 02 F-A: rebuild via the shared buildSearchUrl so every active
+    // filter + the query/game are preserved; it drops ?sort= when default.
+    router.replace(
+      buildSearchUrl({
+        q: initialQ,
+        game,
+        set: setFilter,
+        rarity: rarityFilter,
+        graded: gradedFilter,
+        minPrice: minPriceFilter,
+        maxPrice: maxPriceFilter,
+        hasPrice: hasPriceFilter,
+        language: languageFilter,
+        sort: next,
+      })
+    );
   };
 
   // Rarity options: unique rarities present in the (unfiltered) results,
@@ -967,11 +992,31 @@ function SearchPageInner() {
               key={g}
               onClick={() => {
                 setGame(g);
-                if (hasQuery) {
-                  router.replace(`/search?q=${encodeURIComponent(initialQ)}&game=${g}`);
-                } else {
-                  router.replace(`/search?game=${g}`);
-                }
+                // audit 02 F-A: switching game now carries the game-AGNOSTIC
+                // filters (minPrice/maxPrice/hasPrice/graded/language) plus
+                // q+sort, and DROPS the per-game ones (set, rarity) — those are
+                // per-franchise catalog attributes that can't apply across
+                // Pokémon<->One Piece (gameSwitchFilters owns that decision).
+                // With no query it still lands on a valid /search?game=... URL,
+                // now possibly carrying the preserved game-agnostic filters.
+                router.replace(
+                  buildSearchUrl(
+                    gameSwitchFilters(
+                      {
+                        q: initialQ,
+                        set: setFilter,
+                        rarity: rarityFilter,
+                        graded: gradedFilter,
+                        minPrice: minPriceFilter,
+                        maxPrice: maxPriceFilter,
+                        hasPrice: hasPriceFilter,
+                        language: languageFilter,
+                        sort,
+                      },
+                      g
+                    )
+                  )
+                );
               }}
               style={{
                 flex: 1,
@@ -1084,6 +1129,11 @@ function SearchPageInner() {
                 <label className="dojo-label">Price range (USD)</label>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <input
+                    // audit 02 F-A: the uncontrolled input reads defaultValue
+                    // once at mount, so a game-switch that clears minPrice would
+                    // leave stale text. Keying on the URL-driven value forces a
+                    // remount when it changes, clearing the field.
+                    key={`min-${minPriceFilter}`}
                     type="number"
                     inputMode="decimal"
                     min={0}
@@ -1101,6 +1151,9 @@ function SearchPageInner() {
                   />
                   <span style={{ color: "var(--color-dojo-faint)", fontSize: "12px" }}>–</span>
                   <input
+                    // audit 02 F-A: remount on value change so a cleared
+                    // maxPrice (e.g. after a game switch) empties the field.
+                    key={`max-${maxPriceFilter}`}
                     type="number"
                     inputMode="decimal"
                     min={0}
@@ -1163,7 +1216,9 @@ function SearchPageInner() {
                   effectively hidden. Routes to the multi list for the
                   current game. */}
               <Link
-                href={`/search/multi?game=${game}`}
+                // audit 02 F-A: carry q + active filters to the multi list
+                // (multi does not take a sort — buildSearchQueryParams omits it).
+                href={`/search/multi?${buildSearchQueryParams({ q: initialQ, game, set: setFilter, rarity: rarityFilter, graded: gradedFilter, minPrice: minPriceFilter, maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter })}`}
                 style={{
                   marginLeft: "auto",
                   fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
@@ -1297,7 +1352,8 @@ function SearchPageInner() {
               )}
               <div style={{ marginLeft: "auto" }}>
                 <Link
-                  href={`/search/multi?q=${encodeURIComponent(initialQ)}&game=${game}`}
+                  // audit 02 F-A: carry q + active filters to the multi list.
+                  href={`/search/multi?${buildSearchQueryParams({ q: initialQ, game, set: setFilter, rarity: rarityFilter, graded: gradedFilter, minPrice: minPriceFilter, maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter })}`}
                   style={{
                     fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
                     fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
