@@ -276,7 +276,11 @@ describe("buildChartMatrix", () => {
     expect(data.map((d) => d.raw)).toEqual([10, 20]);
   });
 
-  it("falls back to an honest flat baseline when all chips are excluded", () => {
+  it("returns an HONEST EMPTY matrix when all chips are excluded (no fake $1 baseline)", () => {
+    // audit 04 F-04 (RULE 2): the old all-excluded branch returned
+    // [{value:1},{value:1}] — a fabricated jade "rising" area at a fake $1 with a
+    // misleading "$1.00 … $0.00" Y axis. It must now be EMPTY so the page renders
+    // an honest empty state. This FAILS if the fake baseline ever returns.
     const history: HistoryResponse = { raw: [], graded: {} };
     const raw = chip({ price: null });
     const { data, series } = buildChartMatrix({
@@ -285,10 +289,29 @@ describe("buildChartMatrix", () => {
       chipPrice: { raw: null },
       rangeDays: Infinity,
     });
-    // single-series flat baseline, no fabricated prices
-    expect(series.length).toBeLessThanOrEqual(1);
-    expect(data.length).toBe(2);
-    expect(data.every((d) => d.value === 1)).toBe(true);
+    expect(series).toEqual([]);
+    expect(data).toEqual([]);
+    // the fabricated $1 baseline must be gone
+    expect(data.some((d) => d.value === 1)).toBe(false);
+  });
+
+  it("returns an empty matrix when NO chips are selected at all (every chip deselected)", () => {
+    const history: HistoryResponse = {
+      raw: [
+        { date: "2026-01-01", price: 10 },
+        { date: "2026-02-01", price: 20 },
+      ],
+      graded: {},
+    };
+    // activeChips empty → the user deselected every series → honest empty, not $1.
+    const { data, series } = buildChartMatrix({
+      activeChips: [],
+      history,
+      chipPrice: { raw: 20 },
+      rangeDays: Infinity,
+    });
+    expect(series).toEqual([]);
+    expect(data).toEqual([]);
   });
 
   it("threads the range into the datum labels (1M → day-level, 3M → month)", () => {

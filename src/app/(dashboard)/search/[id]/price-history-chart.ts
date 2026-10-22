@@ -293,15 +293,13 @@ export function buildChartMatrix({
     });
   }
 
-  // All chips excluded → honest single-series flat baseline (no fabricated prices).
+  // All chips excluded (every series deselected, or none has a price/history) →
+  // HONEST EMPTY matrix (audit 04 F-04, RULE 2). The old placeholder
+  // [{value:1},{value:1}] drew a jade "rising" area at a fake $1 level with a
+  // misleading "$1.00 … $0.00" Y axis — a fabricated baseline. Return no data
+  // and no series so the caller renders an honest empty state instead.
   if (drawn.length === 0) {
-    return {
-      data: [
-        { label: "", value: 1 },
-        { label: "", value: 1 },
-      ],
-      series: [],
-    };
+    return { data: [], series: [] };
   }
 
   // Sorted union of every drawn series' dates. Flat markers use synthetic

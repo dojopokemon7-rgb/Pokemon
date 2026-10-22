@@ -911,14 +911,31 @@ function CardDetailInner() {
                   the active range tab. buildChartMatrix emits a dense matrix
                   (>=2 rows per drawn series, no NaN/undefined) so the shared
                   scale is never poisoned. A chip with no history flattens to a
-                  marker at its current price; all-excluded → an honest flat
-                  baseline (never a fabricated curve). */}
-              <AreaChart
-                data={matrix.data}
-                series={matrix.series}
-                height={280}
-                ariaLabel="Price history chart"
-              />
+                  marker at its current price. When every chip is deselected /
+                  excluded the matrix is EMPTY (audit 04 F-04) — render an honest
+                  empty state, NOT a fabricated $1 baseline (AGENTS.md RULE 2). */}
+              {matrix.series.length === 0 ? (
+                <div
+                  data-testid="chart-empty"
+                  role="img"
+                  aria-label="No price history selected"
+                  style={{
+                    height: 280, display: "flex", alignItems: "center", justifyContent: "center",
+                    padding: "0 22px", textAlign: "center",
+                    color: "var(--color-dojo-faint)", fontFamily: "var(--font-display)",
+                    fontWeight: 700, fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase",
+                  }}
+                >
+                  Select a price to view its history
+                </div>
+              ) : (
+                <AreaChart
+                  data={matrix.data}
+                  series={matrix.series}
+                  height={280}
+                  ariaLabel="Price history chart"
+                />
+              )}
             </div>
           )}
         </div>
