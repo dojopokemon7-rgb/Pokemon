@@ -28,6 +28,7 @@ import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
 import { RAW_CONDITION_ORDER, listVariants, pickDefaultVariant } from "@/lib/utils/raw-price";
+import { printingVariantFromId } from "@/lib/utils/card-number";
 
 // Zod at the boundary (RULE 4): the assembled payload is .parse()d before send,
 // and a cached blob is safeParse()d on read — a stale blob without `variants`
@@ -107,9 +108,22 @@ export async function GET(
     const priced = rows.filter((r) => r.priceMarket != null); // NFR-2: never a fabricated 0 point
     const variants = listVariants(priced.map((r) => ({ variant: vOf(r), priceMarket: r.priceMarket })));
 
-    // Variant: explicit param, else the headline variant from current prices,
-    // else the most common variant in history (ties → listVariants order).
-    let variant = variantParam;
+    // Variant: explicit param, else — for a per-printing composite id — THIS
+    // printing's own variant (the `::` suffix), else the headline variant from
+    // current prices, else the most common variant in history.
+    //
+    // ROOT CAUSE (bug fix): a composite per-printing id ("base1-15::<variant>")
+    // is its OWN Card row, and the CLIENT (search/[id]/page.tsx) defaults the
+    // chart to `printingVariantFromId(id)` — THEN omits `?variant=` because its
+    // requested variant equals that default. The server used to re-derive the
+    // default purely from `pickDefaultVariant(currentPrice)`, which can resolve
+    // a DIFFERENT variant (e.g. a better-ranked raw condition on a sibling /
+    // leftover `normal` row). The two derivations then disagree, the server
+    // filters history to the wrong variant, and the raw series comes back EMPTY
+    // even though the points are correctly stored. Preferring the id's OWN
+    // printing variant here puts both sides in lock-step (RULE 3). A BASE id
+    // (no `::`) yields null and falls through to the unchanged behaviour.
+    let variant = variantParam ?? printingVariantFromId(externalId);
     if (!variant) {
       const current = await prisma.currentPrice.findMany({
         where: { cardId: card.id },

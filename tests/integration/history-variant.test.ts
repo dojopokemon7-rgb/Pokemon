@@ -88,3 +88,58 @@ describe("GET /api/cards/[id]/history (variant-aware)", () => {
     expect(redisMock.set).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * READ-SIDE chart bug — a per-printing composite id ("base1-15::<variant>") is
+ * its OWN Card row; the client defaults the chart to printingVariantFromId(id)
+ * and THEN omits ?variant= (its requested variant == its own default). The
+ * server must resolve the SAME default, else it filters history to the wrong
+ * variant and returns an EMPTY raw series even though the points are stored.
+ *
+ * Regression guard: the server must prefer the composite id's OWN printing
+ * variant when ?variant= is omitted, in LOCK-STEP with the client — even when
+ * pickDefaultVariant over the CurrentPrice rows would pick a different variant
+ * (a sibling/leftover `normal` raw row ranking higher by condition).
+ */
+describe("GET /api/cards/[id]/history — composite-id variant lock-step (read-side chart bug)", () => {
+  const COMPOSITE = "base1-15::unlimitedShadowlessHolofoil";
+  const V = "unlimitedShadowlessHolofoil";
+  const compCtx = { params: Promise.resolve({ id: COMPOSITE }) };
+  const compCall = (qs = "") => GET(new Request(`http://localhost/x${qs}`), compCtx);
+
+  it("returns the stored raw series for the id's printing even when the CurrentPrice default disagrees", async () => {
+    prismaMock.card.findUnique.mockResolvedValue({ id: "card_p" });
+    // CurrentPrice default resolves to `normal` (NM ranks above the printing's
+    // LP), which — pre-fix — the server would have used to filter history.
+    prismaMock.currentPrice.findMany.mockResolvedValue([
+      { variant: "normal", type: "raw", condition: "NM", company: null, grade: null, priceMarket: 10 },
+      { variant: V, type: "raw", condition: "LP", company: null, grade: null, priceMarket: 494.19 },
+    ]);
+    // History is all the printing's variant: 3 raw NM points + one graded point.
+    prismaMock.pricingHistory.findMany.mockResolvedValue([
+      h(V, "NM", "2026-01-01", 400),
+      h(V, "NM", "2026-01-02", 410),
+      h(V, "NM", "2026-01-03", 420),
+      h(V, "NM", "2026-01-04", 12000, { type: "graded", company: "PSA", grade: "10" }),
+    ]);
+
+    const body = await (await compCall()).json();
+    // The raw series for THIS printing renders (was EMPTY before the fix).
+    expect(body.raw).toEqual([
+      { date: "2026-01-01", price: 400 },
+      { date: "2026-01-02", price: 410 },
+      { date: "2026-01-03", price: 420 },
+    ]);
+    // Graded chip still works.
+    expect(body.graded["PSA|10"]).toEqual([{ date: "2026-01-04", price: 12000 }]);
+  });
+
+  it("honest empty state (RULE 2): a composite id with no stored points still returns empty", async () => {
+    prismaMock.card.findUnique.mockResolvedValue({ id: "card_p" });
+    prismaMock.currentPrice.findMany.mockResolvedValue([]);
+    prismaMock.pricingHistory.findMany.mockResolvedValue([]);
+    const body = await (await compCall()).json();
+    expect(body).toEqual({ raw: [], graded: {}, variants: [] });
+    expect(redisMock.set).not.toHaveBeenCalled(); // no fabricated/pinned empty
+  });
+});
