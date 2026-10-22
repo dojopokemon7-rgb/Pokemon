@@ -23,11 +23,16 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, useMemo } from "react";
 import { type CardDetailsData } from "@/components/CardDetailsPopup";
-import { AreaChart, type AreaChartDatum, type AreaChartSeries } from "@/components/AreaChart";
+import { AreaChart } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
 import { useDelayedFlag } from "@/components/useDelayedFlag";
 import { toHistoryToken, shouldShowUncategorized } from "@/lib/utils/collection-ids";
-import { computeOverallChange, hasChartableHistory } from "@/lib/utils/overall-change";
+import {
+  buildDashboardMatrix,
+  dashboardOverallChange,
+  hasDashboardHistory,
+  type DashboardSeries,
+} from "@/lib/utils/dashboard-chart";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 import { displayPrice } from "@/lib/utils/graded-price";
@@ -149,12 +154,12 @@ function fmt(n: number): string {
 }
 
 // ── Multi-Line SVG Comparison Chart ────────────────────────────────
-export interface CollectionSeries {
-  id: string;
-  name: string;
-  color: string;
-  data: readonly { value: number }[];
-}
+// A drawable collection series carries its DATE-STAMPED real/null points so the
+// chart aligns series by DATE, not by index (audit 04 F-03 — index-align used
+// to back-fill a shorter series' first real value leftward, drawing a value for
+// dates BEFORE the collection was owned/priced). `DashboardSeries` lives in the
+// shared pure helper so the matrix + headline-change alignment can't drift.
+export type CollectionSeries = DashboardSeries;
 
 function MultiLineComparisonChart({
   seriesList,
@@ -167,9 +172,13 @@ function MultiLineComparisonChart({
    *  the chart (shape + exact dollar amounts return the instant hiding is off). */
   hidden?: boolean;
 }) {
-  // Honest empty states (plan §6): no series, or every series with < 2 real
-  // points → nothing to compare yet. Never fabricate a line.
-  if (seriesList.length === 0 || seriesList.every((s) => s.data.length < 2)) {
+  // Date-aligned dense matrix, honest leading gaps (NaN) preserved so the
+  // AreaChart starts each line at its own first real point (never back-filled).
+  const { data, series } = buildDashboardMatrix(seriesList);
+
+  // Honest empty state (plan §6): no drawable series (none with >= 2 real
+  // points) → nothing to compare yet. Never fabricate a line.
+  if (series.length === 0) {
     return (
       <div
         data-testid="empty-chart"
@@ -180,25 +189,6 @@ function MultiLineComparisonChart({
         }}
       >
         No cards in this collection yet
-      </div>
-    );
-  }
-
-  // With real-history-only data a brand-new / priceless collection has no
-  // points. Show an honest "no history yet" rather than a fabricated line.
-  const anyValues = seriesList.some((s) => s.data.length > 0);
-  if (!anyValues) {
-    return (
-      <div
-        style={{
-          width: "100%", height: "100%", display: "flex", alignItems: "center",
-          justifyContent: "center", color: "var(--color-dojo-faint)",
-          fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "12px",
-        }}
-        role="img"
-        aria-label="No price history yet"
-      >
-        No price history yet
       </div>
     );
   }
@@ -219,36 +209,6 @@ function MultiLineComparisonChart({
       </div>
     );
   }
-
-  // Transpose the per-series arrays into the ported AreaChart's row-per-x-index
-  // shape (one AreaChartSeries per collection). DROP empty series first: a
-  // selected-but-empty collection (0 real points, e.g. a brand-new bucket) used
-  // to zero out `Math.min(...lengths)` and blank the WHOLE chart — the bug where
-  // the chart vanished whenever one filtered collection had no history. Each
-  // kept series then plots its OWN real points; shorter series are LEFT-padded
-  // by carrying their first real value backward so every series spans the full
-  // x-axis as a dense column (AreaChart's shared scale is poisoned by any
-  // null/NaN, so no holes — mirrors the card-detail buildChartMatrix contract).
-  const drawable = seriesList.filter((s) => s.data.length >= 2);
-  const pointsCount = Math.max(...drawable.map((s) => s.data.length));
-  // The real history points carry no per-point date labels here, so we OMIT the
-  // x-axis labels (empty strings) rather than fabricate dates (task Item A.2).
-  const data: AreaChartDatum[] = Array.from({ length: pointsCount }, (_, i) => {
-    const row: AreaChartDatum = { label: "" };
-    for (const s of drawable) {
-      // Right-align: a series shorter than the longest starts later on the
-      // x-axis, so back-fill the lead with its first real value (never null).
-      const offset = pointsCount - s.data.length;
-      const src = i < offset ? s.data[0] : s.data[i - offset];
-      row[s.id] = src.value;
-    }
-    return row;
-  });
-  const series: AreaChartSeries[] = drawable.map((s) => ({
-    valueKey: s.id,
-    label: s.name,
-    color: s.color,
-  }));
 
   return (
     <div style={{ width: "100%", height: "100%" }}>
@@ -799,23 +759,27 @@ export default function DashboardClient({
   // render the real points as-is (a short/flat line) rather than inventing a
   // synthetic trend. A collection with no points yet shows no line (honest gap),
   // never a made-up curve. Never summed — one series per collection.
-  const chartSeriesList = useMemo(() => {
+  const chartSeriesList = useMemo<DashboardSeries[]>(() => {
     return activeSelectedOptions.map((opt) => {
       // Re-key by the translated token so the loose bucket ("__uncat__") reads
       // histories["null"]; named cuids read their own key unchanged.
       const raw: { date?: string; value: number | null }[] =
         realHistoriesData?.histories?.[toHistoryToken(opt.id)] ?? [];
-      // Drop honest gaps (null values) — a gap is simply absent from the drawn
-      // line, never rendered as 0. Real points only.
-      const data = raw
-        .filter((p): p is { date?: string; value: number } => typeof p.value === "number")
-        .map((p) => ({ value: p.value }));
+      // KEEP the date-stamped points AND their honest null gaps (audit 04 F-03):
+      // the chart aligns series by DATE and starts each line at its own first
+      // real point, so a collection owned later shows no value on the earlier
+      // dates — never the first real value back-filled leftward. Non-null points
+      // keep a real stored date; a point missing a date can't be aligned, so it
+      // is dropped (treated as a gap, never fabricated).
+      const points = raw
+        .filter((p): p is { date: string; value: number | null } => typeof p.date === "string")
+        .map((p) => ({ date: p.date, value: p.value }));
       return {
         id: opt.id,
         name: opt.name,
         color: opt.color,
-        // Empty → the chart's "No price history yet" state for this series set.
-        data,
+        // Empty / all-null → the chart's honest empty state for this series set.
+        points,
       };
     });
   }, [activeSelectedOptions, realHistoriesData]);
@@ -832,7 +796,7 @@ export default function DashboardClient({
       focusedId && activeSelectedIds.has(focusedId)
         ? chartSeriesList.filter((s) => s.id === focusedId)
         : chartSeriesList;
-    return computeOverallChange(scoped);
+    return dashboardOverallChange(scoped);
   }, [chartSeriesList, focusedId, activeSelectedIds]);
 
   // Whether the chart draws a line (≥1 drawable series) vs its honest empty
@@ -841,7 +805,7 @@ export default function DashboardClient({
   // nothing to filter, so we hide it rather than show clickable tabs over an
   // empty chart (QA #7).
   const hasChartableHistory_ = useMemo(
-    () => hasChartableHistory(chartSeriesList),
+    () => hasDashboardHistory(chartSeriesList),
     [chartSeriesList],
   );
 

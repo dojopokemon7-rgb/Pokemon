@@ -199,7 +199,13 @@ export function AreaChart({
   const h = height;
   const multi = Array.isArray(series) && series.length > 0;
   const keys = multi ? (series as AreaChartSeries[]).map((s) => s.valueKey) : [valueKey];
-  const allValues = keys.flatMap((k) => data.map((d) => d[k] as number));
+  // A multi-series datum may carry NaN for a series on dates BEFORE that series'
+  // first real point — an HONEST leading gap (the collection wasn't owned/priced
+  // yet, audit 04 F-03), NOT a value to plot. Exclude non-finite values from the
+  // shared scale so one series' leading gap can't poison max/min (which would
+  // blank the whole chart). Single-series data stays dense, so this is a no-op
+  // there.
+  const allValues = keys.flatMap((k) => data.map((d) => d[k] as number)).filter(Number.isFinite);
   const max = Math.max(...allValues);
   const min = Math.min(0, Math.min(...allValues));
 
@@ -249,17 +255,26 @@ export function AreaChart({
   }, [tickIdx, data, labelKey]);
 
   if (multi) {
-    const seriesData = (series as AreaChartSeries[]).map((s, si) => ({
-      ...s,
-      color: s.color || SERIES_PALETTE[si % SERIES_PALETTE.length],
-      coords: scaleCoords(
-        data.map((d) => d[s.valueKey] as number),
-        w,
-        h,
-        max,
-        min
-      ),
-    }));
+    const seriesData = (series as AreaChartSeries[]).map((s, si) => {
+      // Full-length coords keep the x-index aligned across series (index i maps
+      // to the same x), so the hover guide and tooltip stay in sync. A series
+      // whose datum is NaN before its first real point (honest leading gap)
+      // yields NaN coords there; `drawCoords` drops that leading run so the LINE
+      // starts at the first real point instead of back-filling a value backward
+      // (audit 04 F-03). Trailing/interior values are always real (carry-forward
+      // guarantees it), so only the leading run is ever dropped.
+      const vals = data.map((d) => d[s.valueKey] as number);
+      const coords = scaleCoords(vals, w, h, max, min);
+      const firstReal = vals.findIndex((v) => Number.isFinite(v));
+      const drawCoords = firstReal <= 0 ? coords : coords.slice(firstReal);
+      return {
+        ...s,
+        color: s.color || SERIES_PALETTE[si % SERIES_PALETTE.length],
+        coords,
+        drawCoords,
+        firstReal: firstReal < 0 ? 0 : firstReal,
+      };
+    });
     return (
       <div
         style={{ width: "100%", fontFamily: FONT_BODY }}
@@ -303,8 +318,13 @@ export function AreaChart({
                 <line key={i} x1={0} x2={w} y1={h * f} y2={h * f} stroke={STROKE_CARD} strokeWidth={1} />
               ))}
             {seriesData.map((s, si) => {
-              const line = smoothLinePath(s.coords);
-              const area = `${line} L ${w} ${h} L 0 ${h} Z`;
+              // Draw only from this series' first real point (drawCoords); the
+              // area closes to the baseline under the DRAWN span, so a series
+              // that starts later shows no fabricated fill over its leading gap.
+              const line = smoothLinePath(s.drawCoords);
+              const startX = s.drawCoords[0]?.[0] ?? 0;
+              const endX = s.drawCoords[s.drawCoords.length - 1]?.[0] ?? w;
+              const area = `${line} L ${endX} ${h} L ${startX} ${h} Z`;
               return (
                 <g key={si}>
                   <path d={area} fill={`url(#${gidBase}-${si})`} />
@@ -343,17 +363,21 @@ export function AreaChart({
               />
             )}
             {hover !== null &&
-              seriesData.map((s, si) => (
-                <circle
-                  key={si}
-                  cx={s.coords[hover][0]}
-                  cy={s.coords[hover][1]}
-                  r={4}
-                  fill={s.color}
-                  stroke={SURFACE_CARD}
-                  strokeWidth={2}
-                />
-              ))}
+              seriesData.map((s, si) =>
+                // No marker where this series has an honest leading gap (NaN
+                // coords before its first real point).
+                Number.isFinite(s.coords[hover][1]) ? (
+                  <circle
+                    key={si}
+                    cx={s.coords[hover][0]}
+                    cy={s.coords[hover][1]}
+                    r={4}
+                    fill={s.color}
+                    stroke={SURFACE_CARD}
+                    strokeWidth={2}
+                  />
+                ) : null
+              )}
           </svg>
           {hover !== null && (
             <div
@@ -376,22 +400,28 @@ export function AreaChart({
               <div style={{ fontSize: 10, color: TEXT_FAINT, textTransform: "uppercase" }}>
                 {data[hover][labelKey]}
               </div>
-              {seriesData.map((s, si) => (
-                <div
-                  key={si}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 13,
-                    color: TEXT_HEADING,
-                    marginTop: 2,
-                  }}
-                >
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
-                  {s.label || s.valueKey}: {formatValue(data[hover][s.valueKey] as number, valueFormat)}
-                </div>
-              ))}
+              {seriesData.map((s, si) => {
+                // Omit a series from the tooltip on dates it has no real value
+                // (honest leading gap) — never show a fabricated/NaN number.
+                const v = data[hover][s.valueKey] as number;
+                if (!Number.isFinite(v)) return null;
+                return (
+                  <div
+                    key={si}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 13,
+                      color: TEXT_HEADING,
+                      marginTop: 2,
+                    }}
+                  >
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
+                    {s.label || s.valueKey}: {formatValue(v, valueFormat)}
+                  </div>
+                );
+              })}
             </div>
           )}
           </div>
