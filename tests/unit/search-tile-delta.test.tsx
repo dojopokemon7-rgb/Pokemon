@@ -14,7 +14,7 @@ import { createElement } from "react";
  * is needed (same as dashboard-collection-cards.test.tsx).
  */
 
-import { TrendCardTile, CardTile } from "@/app/(dashboard)/search/page";
+import { TrendCardTile, CardTile } from "@/app/(dashboard)/search/card-tiles";
 
 const noop = () => {};
 
