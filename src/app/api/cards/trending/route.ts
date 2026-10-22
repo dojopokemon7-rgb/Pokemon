@@ -275,13 +275,36 @@ export async function GET(request: Request): Promise<NextResponse> {
       const total = await totalPromise;
       hasMore = total > rows.length;
     } else if (sort === "trending") {
-      // PAGE 2+ of the trending sort — plain catalog pagination by the
-      // same `updatedAt desc` order page 1's backfill used, so it composes
-      // with page 1 without re-serving the same cards up front.
+      // PAGE 2+ of the trending sort (F-J fix).
+      //
+      // The page sequence must be DISTINCT and GAPLESS across pages:
+      //   page 1    = rankedIds (hot-right-now, up to `limit`)
+      //               ∪ updatedAt-desc backfill for the remainder
+      //   page 2+   = updatedAt-desc MINUS rankedIds, offset-shifted left by
+      //               rankedIds.length.
+      //
+      // WHY the shift + exclusion: page 1 consumed rankedIds.length ranked
+      // cards off the FRONT of the catalog PLUS (limit - rankedIds.length)
+      // plain updatedAt-desc backfill rows. A naive `skip: offset` over the
+      // full updatedAt-desc order (the old behavior) re-served every ranked
+      // card that ALSO sits in the top-`limit` by updatedAt (client de-dupe
+      // then hid them, so page 2 looked short) AND never showed the up-to-R
+      // non-ranked cards wedged between the backfill end and `limit`.
+      // Removing rankedIds from the plain stream (`id.notIn`) makes the ranked
+      // cards unrepeatable; shifting `skip` left by rankedIds.length lines
+      // page 2 up exactly where page 1's backfill ended, so no plain card is
+      // skipped. The union across pages is distinct + gapless and the client
+      // externalId de-dupe becomes a safety net, not a crutch.
+      //
+      // Stateless server → recompute rankedIds for this request (same window
+      // as page 1). When rankedIds is empty (fresh install) skip reduces to
+      // offset and notIn:[] is a no-op — identical to today. RULE 12 offset
+      // shape (skip: offset-shift + numeric nextCursor) preserved.
+      const rankedIds = await topTrendingCardIds(gameFilter, limit);
       const fetched = await prisma.card.findMany({
         take: limit + 1, // one extra to detect a further page
-        skip: offset,
-        where: gameFilter,
+        skip: Math.max(0, offset - rankedIds.length),
+        where: { ...gameFilter, id: { notIn: rankedIds } },
         orderBy: [{ updatedAt: "desc" }],
         select: TRENDING_SELECT,
       });
