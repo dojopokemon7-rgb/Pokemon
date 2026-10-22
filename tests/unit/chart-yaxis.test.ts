@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatCurrencyCompact } from "@/lib/utils/format";
+import { formatCurrency, formatCurrencyCompact } from "@/lib/utils/format";
 import { valueAtFraction } from "@/components/AreaChart";
 
 /**
@@ -19,6 +19,40 @@ describe("formatCurrencyCompact", () => {
   it("keeps sub-$1000 values full (not compacted)", () => {
     expect(formatCurrencyCompact(0)).toBe("$0.00");
     expect(formatCurrencyCompact(999)).toBe("$999.00");
+  });
+
+  // audit 04 F-02 (RULE 2 — don't mislabel): stored prices are source-native and
+  // may be non-USD (One Piece / Cardmarket EUR). A caller that knows the row's
+  // currency must get an HONEST symbol, not a hard-coded "$". These FAIL if "$"
+  // is ever re-hard-coded for a non-USD currency.
+  it("labels a known non-USD currency honestly (no hard-coded $)", () => {
+    expect(formatCurrencyCompact(650, "EUR")).not.toContain("$");
+    expect(formatCurrencyCompact(650, "EUR")).toContain("€");
+    // compact path too
+    expect(formatCurrencyCompact(61580, "EUR")).not.toContain("$");
+  });
+
+  it("defaults to USD when no currency is given (byte-for-byte unchanged)", () => {
+    expect(formatCurrencyCompact(650)).toBe("$650.00");
+    expect(formatCurrencyCompact(61580)).toBe("$61.58K");
+  });
+});
+
+describe("formatCurrency (audit 04 F-02 — honest currency label)", () => {
+  it("defaults to USD and returns — for null/NaN (unchanged)", () => {
+    expect(formatCurrency(12.5)).toBe("$12.50");
+    expect(formatCurrency(null)).toBe("—");
+    expect(formatCurrency(Number.NaN)).toBe("—");
+  });
+
+  it("labels a known non-USD currency honestly, never '$'", () => {
+    expect(formatCurrency(12.5, "EUR")).toContain("€");
+    expect(formatCurrency(12.5, "EUR")).not.toContain("$");
+  });
+
+  it("falls back to USD on an invalid currency code (never throws)", () => {
+    expect(() => formatCurrency(10, "NOTREAL")).not.toThrow();
+    expect(formatCurrency(10, "NOTREAL")).toBe("$10.00");
   });
 });
 

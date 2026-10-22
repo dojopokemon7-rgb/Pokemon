@@ -68,7 +68,16 @@ export interface HoldingInterval {
 export interface PricePoint {
   cardId: string;
   at: number; // epoch ms
-  price: number; // real stored market price (source-native; charts stay source-native)
+  // real stored market price in its OWN source-native currency (charts stay
+  // source-native — never FX-converted). audit 04 F-02 KNOWN LIMITATION: the
+  // per-collection total below sums `price * quantity` across lots WITHOUT
+  // normalizing currency, so a collection mixing e.g. USD and EUR lots produces
+  // a numerically-blended total. This is a display-label/aggregation gap, not a
+  // data bug (each stored point is honest in its own currency). FX conversion is
+  // unwired and OUT OF SCOPE (audit 09 F4); the honest near-term fix is to LABEL
+  // the dominant/row currency rather than assert "$". ponytail: upgrade = thread
+  // sourceCurrency through and convert via the daily FX table before summing.
+  price: number;
   // BUG 1 & 8: the price row's own identity, so a lot can filter to the series
   // matching its grade. All optional — a point with no `type` is treated as raw
   // (the established isRawRow semantics), so fixtures that omit these are raw.
