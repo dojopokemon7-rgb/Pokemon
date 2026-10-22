@@ -657,6 +657,112 @@ export async function pullAndStoreScrydexHistory(
   return { stored: rawToStore.length + gradedStored, credits: credits * (1 + grades.length) };
 }
 
+// Distinct job label for the ON-VIEW per-printing weekly-delta pull. Kept
+// SEPARATE from SCRYDEX_HISTORY_JOB on purpose: the price/history freshness gate
+// (pullAndStoreScrydexPrice / pullAndStoreScrydexHistory) keys on
+// job="scrydex_history", so metering the delta pull under that label would
+// poison that gate and wrongly throttle a real price/history pull. `SyncLog.job`
+// is free-text → no migration (same precedent as scrydex_population/listings).
+const SCRYDEX_WEEKLY_JOB = "scrydex_weekly";
+
+/**
+ * ON-VIEW per-printing weekly-delta writer (search-grid ▲/▼ for `::` rows).
+ *
+ * WHY THIS EXISTS: `pullAndStoreScrydexPrice` is the ONLY writer of
+ * `Card.weeklyChangePct`/`weeklyChangeAbs`, and it is NEVER called on the
+ * on-view path — so per-printing (`::`) Card rows, which the per-printing
+ * re-ingest never priced, keep those columns NULL forever and render no delta.
+ * This targeted writer populates JUST those two columns during on-view enrich.
+ *
+ * WHY NOT reuse `pullAndStoreScrydexPrice`: that writer delete+createMany's the
+ * whole SCRYDEX `CurrentPrice` set, resolves cost-basis, and writes
+ * `PricingHistory` inside a `$transaction` — far too heavy for on-view, and the
+ * brief forbids rewriting CurrentPrice here. We do ONE `fetchScrydexCardById`
+ * (the SAME 1-credit standard card fetch — no new endpoint/credit class) and a
+ * single targeted `prisma.card.update` of the two columns.
+ *
+ * WHY NOT reuse the on-view history fetch: on-view price history comes from
+ * `fetchScrydexPriceHistory` (the `/price_history` endpoint), whose response
+ * carries per-day points with NO `trends` object. The 7-day `trends.days_7`
+ * delta lives ONLY on the card endpoint, so a separate card fetch is required —
+ * honest cost: +1 standard credit per enrich, once per 24h, gated (dev = DENY).
+ *
+ * PRINTING-SCOPED (RULE 3, mirrors 84ad81b / 229f16c): scope to THIS row's
+ * variant (`card.printing ?? "normal"`) BEFORE reading the trend, so a
+ * `::alt-art` row gets the alt-art trend and never a sibling's. UNLIKE the
+ * price/history writers, an ABSENT printing does NOT fall back to all variants:
+ * a wrong delta is worse than none, so we leave the columns NULL and warn
+ * (RULE 2 — never fabricate).
+ *
+ * RULE 2: only writes a column when Scrydex returns a NUMERIC
+ * `trends.days_7.price_change` / `percent_change` for the scoped variant; an
+ * absent/null trend leaves both columns untouched (NULL → UI renders "—"), and
+ * a 0 is never fabricated.
+ */
+export async function pullAndStoreScrydexWeeklyDelta(
+  card: { id: string; game: Game; scrydexId: string; printing?: string | null },
+  opts?: { creditAuth?: "onview" }
+): Promise<{ written: boolean; credits: number }> {
+  // DUAL credit gate at the top (same contract as the history/population pulls):
+  // a standard card fetch is 1 credit. On-view allowance authorizes it without
+  // opening the bulk gate; dev (both flags off) → throws → caller swallows.
+  await assertScrydexEnrichApproved("standard", 1, opts?.creditAuth);
+
+  const credits = SCRYDEX_CREDIT_COST.standard;
+  const scrydexCard = await fetchScrydexCardById(card.scrydexId, card.game);
+
+  if (!scrydexCard) {
+    await prisma.syncLog.create({
+      data: {
+        job: SCRYDEX_WEEKLY_JOB,
+        cardId: card.id,
+        status: "failed",
+        credits,
+        error: "weekly-delta card fetch returned null",
+      },
+    });
+    return { written: false, credits };
+  }
+
+  // --- Per-printing scope (RULE 3) -----------------------------------------
+  // The shared scrydexId returns EVERY sibling printing. Narrow to THIS row's
+  // printing before reading the trend. NO all-variants fallback here (unlike the
+  // price/history writers): a missing printing means we have no trustworthy
+  // trend for this variant, and a wrong delta is worse than none — leave NULL.
+  const wantVariant = card.printing ?? "normal";
+  const scopedVariants = scrydexCard.variants.filter(
+    (v) => (v.name || "normal") === wantVariant
+  );
+  let written = false;
+  if (scopedVariants.length === 0) {
+    console.warn(
+      `[scrydex-pricing] weekly-delta printing "${wantVariant}" not in payload for ` +
+        `${card.scrydexId} — leaving weeklyChange columns untouched (no fabricated delta)`
+    );
+  } else {
+    const scopedCard: ScrydexCard = { ...scrydexCard, variants: scopedVariants };
+    const wk = pickRawPrice(scopedCard)?.trends?.days_7;
+    // Identical null-safe shape to the weekly block in pullAndStoreScrydexPrice:
+    // write ONLY numeric fields, never fabricate 0, never overwrite with null.
+    if (wk && (typeof wk.price_change === "number" || typeof wk.percent_change === "number")) {
+      await prisma.card.update({
+        where: { id: card.id },
+        data: {
+          ...(typeof wk.price_change === "number" ? { weeklyChangeAbs: wk.price_change } : {}),
+          ...(typeof wk.percent_change === "number" ? { weeklyChangePct: wk.percent_change } : {}),
+        },
+      });
+      written = true;
+    }
+  }
+
+  await prisma.syncLog.create({
+    data: { job: SCRYDEX_WEEKLY_JOB, cardId: card.id, status: "ok", credits },
+  });
+
+  return { written, credits };
+}
+
 /**
  * Pull a card's PSA-English population report and store it as the one CURRENT
  * PopulationReport row (upsert, store-once / overwrite-in-place).

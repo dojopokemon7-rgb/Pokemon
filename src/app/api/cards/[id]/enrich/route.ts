@@ -36,6 +36,7 @@ import {
   pullAndStoreScrydexHistory,
   pullAndStorePopulation,
   pullAndStoreSoldListings,
+  pullAndStoreScrydexWeeklyDelta,
 } from "@/lib/services/scrydex-pricing.service";
 
 // On-view enrich makes several SEQUENTIAL Scrydex round-trips (raw + graded
@@ -192,6 +193,27 @@ export async function POST(
       salesStored = r.stored;
     } catch {
       // fail-open — never a 5xx. stored stays 0.
+    }
+  }
+
+  // Fourth side-write: populate THIS printing's 7-day delta
+  // (Card.weeklyChangePct/weeklyChangeAbs) so the search grid + card header
+  // render ▲/▼ for per-printing (`::`) rows too — today those rows show no delta
+  // because pullAndStoreScrydexPrice (the base-row writer) never runs here and
+  // the per-printing re-ingest never backfilled them. Printing-scoped (RULE 3)
+  // and never fabricated (RULE 2) inside the writer. NOT added to the 200 body —
+  // it is a side-write on the Card row the grid/header read later. Same on-view
+  // auth + fail-open contract as the three pulls above: a thrown
+  // ScrydexCreditsNotApproved (dev DENY) or any fault is swallowed, never a 5xx,
+  // and never blocks the history/population/sales pulls or the marker write.
+  if (card.scrydexId) {
+    try {
+      await pullAndStoreScrydexWeeklyDelta(
+        { id: card.id, game: card.game, scrydexId: card.scrydexId, printing: card.printing },
+        { creditAuth: "onview" }
+      );
+    } catch {
+      // fail-open — never a 5xx (gate DENY / transient fault); delta stays as-stored.
     }
   }
 
