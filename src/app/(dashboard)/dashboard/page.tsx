@@ -19,6 +19,7 @@
  */
 
 import { redirect } from "next/navigation";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getServerSession } from "@/lib/utils/get-server-session";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
@@ -58,6 +59,25 @@ type DashboardCache = {
   histories?: Histories; // optional: legacy entries written before this field
 };
 
+/**
+ * Re-validates the `dashboard:{userId}` cached blob on READ (audit 12 F3,
+ * AGENTS.md RULE 4). Validates the ENVELOPE strictly and the per-row shape
+ * loosely: the full `CollectionItem` is large and client-owned, so the goal is
+ * catching a wholesale payload-SHAPE change after a deploy (the audit's stated
+ * risk), not re-validating every nested field — over-tight nested validation
+ * would churn the cache on benign additive changes for no extra safety.
+ * `.passthrough()` keeps the real row fields. A parse failure is treated as a
+ * MISS (identical to a cache miss) so the live Prisma branch rebuilds AND
+ * re-caches the correct shape; never serve an unvalidated blob.
+ */
+const DashboardCacheSchema = z.object({
+  rows: z.array(z.object({ id: z.string() }).passthrough()),
+  collections: z.array(z.object({ id: z.string(), name: z.string() })),
+  histories: z
+    .record(z.array(z.object({ date: z.string(), value: z.number().nullable() })))
+    .optional(),
+});
+
 export default async function DashboardPage() {
   const session = await getServerSession();
   if (!session) redirect("/login");
@@ -67,7 +87,15 @@ export default async function DashboardPage() {
   // throws on Redis). INVALIDATED BY: add/sell/update/delete collection item,
   // want-list add/move/remove, and collection create/rename/delete.
   const cacheKey = RedisKeys.dashboardData(session.user.id);
-  const cached = await cacheGetJson<DashboardCache>(cacheKey);
+  // Re-validate the cached blob (RULE 4): a parse miss is treated identically to
+  // a cache miss, so the live-Prisma branch below rebuilds AND re-caches the
+  // correct shape. Never serve a wrong/stale-shape blob after a deploy.
+  const rawCached = await cacheGetJson<unknown>(cacheKey);
+  const parsedCache =
+    rawCached != null ? DashboardCacheSchema.safeParse(rawCached) : null;
+  const cached: DashboardCache | null = parsedCache?.success
+    ? (parsedCache.data as unknown as DashboardCache)
+    : null;
 
   // Same shape as `/api/users/me/collection` returns, minus the
   // fields the dashboard never reads (notes, condition, addedAt,

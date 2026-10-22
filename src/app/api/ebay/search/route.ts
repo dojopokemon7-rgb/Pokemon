@@ -20,6 +20,7 @@
  */
 
 import { NextResponse, type NextRequest } from "next/server";
+import { z } from "zod";
 import {
   searchEbayListings,
   type EbayGame,
@@ -28,6 +29,23 @@ import {
 } from "@/lib/services/ebay.service";
 import { redis, RedisKeys } from "@/lib/redis";
 import { enforceRateLimit, searchTier, clientIp } from "@/lib/utils/rate-limit";
+
+// Re-validates the cached listing array on READ (audit 12 F3, AGENTS.md RULE 4).
+// Mirrors NormalizedEbayListing in ebay.service.ts exactly; NOT strict so an
+// additive future field doesn't force a needless cache miss (a changed/removed
+// field still fails and triggers the intended miss). A parse failure is treated
+// as a MISS — fall through to the live eBay call, which re-caches the correct
+// shape — rather than serving an unvalidated blob verbatim.
+const CachedEbayListingsSchema = z.array(
+  z.object({
+    itemId: z.string(),
+    title: z.string(),
+    price: z.number(),
+    currency: z.string().nullable(),
+    imageUrl: z.string().nullable(),
+    itemWebUrl: z.string(),
+  })
+);
 
 interface EbaySearchOk {
   listings: NormalizedEbayListing[];
@@ -117,9 +135,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const cached = await redis.get(cacheKey);
     if (cached) {
-      const parsed = JSON.parse(cached) as NormalizedEbayListing[];
-      const body: EbaySearchOk = { listings: parsed, source: "cache" };
-      return NextResponse.json(body, { status: 200 });
+      // Re-validate the cached blob (RULE 4). A parse failure — malformed JSON
+      // (caught below) OR a stale/wrong shape — is a MISS: fall through to the
+      // live call, which re-caches the correct shape. Never serve a blob verbatim.
+      const parsed = CachedEbayListingsSchema.safeParse(JSON.parse(cached));
+      if (parsed.success) {
+        const body: EbaySearchOk = { listings: parsed.data, source: "cache" };
+        return NextResponse.json(body, { status: 200 });
+      }
+      console.warn(
+        "[api/ebay/search] Cached payload failed validation, proceeding to live call."
+      );
     }
   } catch (err) {
     console.warn(

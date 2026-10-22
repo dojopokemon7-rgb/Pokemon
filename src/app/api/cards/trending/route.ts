@@ -112,6 +112,35 @@ function trendingCacheKey(
   return `card:trending:${game ?? "all"}:${sort}:${limit}:${offset}`;
 }
 
+// Response shape re-validated on a cache READ (audit 12 F3, AGENTS.md RULE 4).
+// Mirrors the `cards.map(...)` output + `nextCursor` the route builds below. A
+// cached blob that doesn't match (an old/wrong shape left by a prior deploy) is
+// treated as a MISS and the live query re-caches the correct shape — the blob
+// is never served verbatim. `.nullable()`/`.optional()` match the real contract
+// (number|null prices, One-Piece-only imageChain) so a valid old blob still
+// passes while a genuinely wrong shape fails. `.passthrough()` on the item keeps
+// an additive future field from forcing a needless miss.
+const TrendingCardSchema = z
+  .object({
+    id: z.string(),
+    externalId: z.string(),
+    name: z.string(),
+    setImage: z.string(),
+    imageUrl: z.string().nullable(),
+    imageChain: z.array(z.string()).optional(),
+    price: z.number().nullable(),
+    rarity: z.string().nullable(),
+    printing: z.string().nullable(),
+    delta: z.string().nullable(),
+    up: z.boolean().nullable(),
+  })
+  .passthrough();
+
+const TrendingResponseSchema = z.object({
+  cards: z.array(TrendingCardSchema),
+  nextCursor: z.number().nullable(),
+});
+
 const TrendingQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
   // Offset cursor: how many items the client has already loaded. Coerced
@@ -197,13 +226,23 @@ export async function GET(request: Request): Promise<NextResponse> {
   try {
     const cached = await redis.get(cacheKey);
     if (cached) {
-      return new NextResponse(cached, {
-        status: 200,
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
-        },
-      });
+      // Re-validate the cached blob with the response schema (RULE 4). A parse
+      // failure — malformed JSON (caught below) OR a stale/wrong shape — is a
+      // MISS: fall through to the live query, which re-caches the correct shape.
+      // Never serve an unvalidated blob verbatim.
+      const validated = TrendingResponseSchema.safeParse(JSON.parse(cached));
+      if (validated.success) {
+        return new NextResponse(JSON.stringify(validated.data), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+          },
+        });
+      }
+      console.warn(
+        "[cards/trending] Cached payload failed validation, falling through to live query."
+      );
     }
   } catch (err) {
     console.warn(
