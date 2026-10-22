@@ -101,6 +101,12 @@ const SearchQuerySchema = z.object({
   // substring "_ja-" (e.g. "bw1b_ja-3"), English/other cards do not
   // (e.g. "xy7-57"). `all` (default/omitted) applies no predicate.
   language: ScanLanguageSchema.optional(),
+  // Offset cursor: how many items the client has already loaded. Coerced to a
+  // non-negative int; absent → page 1 (offset 0). Mirrors /api/cards/trending
+  // so the results grid can page past the first RESULT_LIMIT instead of being
+  // hard-capped (audit 02 F-T). Offset pagination (`skip: cursor`) composes
+  // with every sort order without re-serving page 1 (AGENTS.md RULE 12).
+  cursor: z.coerce.number().int().min(0).default(0),
 }).refine(isValidSearchRequest, {
   path: ["query"],
   message: "query must not be empty unless a filter is set",
@@ -140,6 +146,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     maxPrice: searchParams.get("maxPrice") ?? undefined,
     hasPrice: searchParams.get("hasPrice") ?? undefined,
     language: searchParams.get("language") ?? undefined,
+    cursor: searchParams.get("cursor") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -154,9 +161,11 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query, set, rarity, graded, minPrice, maxPrice, hasPrice, language } = parsed.data;
+  const { game, query, set, rarity, graded, minPrice, maxPrice, hasPrice, language, cursor } = parsed.data;
   const sort = parsed.data.sort ?? "trending";
   const relevance = sort === "trending";
+  // Offset pagination (audit 02 F-T): page past the first RESULT_LIMIT.
+  const offset = cursor;
 
   // USER-AGNOSTIC cache (RULE 3 — the catalog result is identical for every
   // user, so NO userId in the key; sharing it is the point). Keyed by the
@@ -174,15 +183,18 @@ export async function GET(request: Request): Promise<NextResponse> {
     maxPrice,
     hasPrice,
     language,
+    // Page segment: page 2 (cursor=60) must never be served page 1's cache
+    // (mirrors trending embedding offset in its key — audit 02 F-T).
+    cursor: offset,
   });
-  const cached = await cacheGetJson<{ cards: unknown[]; source: string }>(cacheKey);
+  const cached = await cacheGetJson<{ cards: unknown[]; source: string; nextCursor?: number | null }>(cacheKey);
   if (cached) {
     // Re-validate the cached cards with the SAME schema the live path uses; a
     // parse failure is treated as a miss (fall through to live), never served.
     const revalidated = z.array(NormalizedCardSchema).safeParse(cached.cards);
     if (revalidated.success) {
       return NextResponse.json(
-        { cards: revalidated.data, source: cached.source },
+        { cards: revalidated.data, source: cached.source, nextCursor: cached.nextCursor ?? null },
         {
           status: 200,
           headers: {
@@ -340,7 +352,15 @@ export async function GET(request: Request): Promise<NextResponse> {
     ],
   };
 
-  const find = (extra: Prisma.CardWhereInput, take: number, orderBy: Prisma.CardOrderByWithRelationInput[]) =>
+  // `skip` defaults to 0 so the internal pool fetches (relevance 300/600,
+  // Typesense hydrate) are unaffected — only the two response-producing
+  // branches (browse, explicit-sort) pass `skip: offset` for pagination.
+  const find = (
+    extra: Prisma.CardWhereInput,
+    take: number,
+    orderBy: Prisma.CardOrderByWithRelationInput[],
+    skip = 0
+  ) =>
     prisma.card.findMany({
       // Merge `AND` arrays instead of letting the spread overwrite: both
       // baseWhere (hasPrice) and the relevance/sort path (`extra.AND:[{OR}]`)
@@ -355,6 +375,7 @@ export async function GET(request: Request): Promise<NextResponse> {
           : {}),
       },
       take,
+      skip,
       orderBy,
       select: {
         externalId: true,
@@ -455,19 +476,50 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   let rows: Row[];
+  // Offset pagination (audit 02 F-T): each branch produces an EXACT page of at
+  // most RESULT_LIMIT rows and a `hasMore` flag. The DB branches (explicit-sort,
+  // browse) fetch `take: RESULT_LIMIT + 1` with `skip: offset` and detect a
+  // further page from the extra row (same technique as /api/cards/trending);
+  // the relevance branch slices its already-ranked in-memory pool.
+  let hasMore = false;
   if (!relevance) {
-    // Explicit sort overrides relevance: the original single query.
-    rows = await find(queryOr ? { AND: [{ OR: queryOr }] } : {}, RESULT_LIMIT, orderByForCardSort(sort));
+    // Explicit sort overrides relevance: the original single query, now
+    // DB-paginated by `skip: offset` (composes with any orderBy — RULE 12).
+    const fetched = await find(
+      queryOr ? { AND: [{ OR: queryOr }] } : {},
+      RESULT_LIMIT + 1,
+      orderByForCardSort(sort),
+      offset
+    );
+    hasMore = fetched.length > RESULT_LIMIT;
+    rows = hasMore ? fetched.slice(0, RESULT_LIMIT) : fetched;
   } else if (!query) {
     // Browse mode (empty query + filter): no name matching or relevance
     // ranking — most valuable first, same ordering as the relevance pools.
-    rows = await find({}, RESULT_LIMIT, [
-      { marketPrice: { sort: "desc", nulls: "last" } },
-      { externalId: "asc" },
-    ]);
+    // DB-paginated (this is the reported large-set case, e.g. ?set=Base).
+    const fetched = await find(
+      {},
+      RESULT_LIMIT + 1,
+      [
+        { marketPrice: { sort: "desc", nulls: "last" } },
+        { externalId: "asc" },
+      ],
+      offset
+    );
+    hasMore = fetched.length > RESULT_LIMIT;
+    rows = hasMore ? fetched.slice(0, RESULT_LIMIT) : fetched;
   } else {
-    rows = await relevantRows(query);
+    // Relevance: the pool is already fully materialized and ranked in JS, and
+    // bounded (max ~300/600 ranked rows — NOT a full-catalog scan), so page by
+    // slicing the ranked array. `hasMore` stays true until that bounded pool is
+    // exhausted; it does not promise results beyond the pool ceiling.
+    const ranked = await relevantRows(query);
+    hasMore = ranked.length > offset + RESULT_LIMIT;
+    rows = ranked.slice(offset, offset + RESULT_LIMIT);
   }
+  // Single next-page cursor for all three branches: the running OFFSET (items
+  // loaded so far), or null when there is no further page.
+  const nextCursor = hasMore ? offset + rows.length : null;
   if (rows.length === 0) {
     return NextResponse.json(
       {
@@ -484,7 +536,9 @@ export async function GET(request: Request): Promise<NextResponse> {
   // Match the pre-existing NormalizedCard envelope so no client changes
   // are required. `hp` is null: the schema doesn't store it — that
   // column would need to be added if the UI ever needs HP again.
-  const cards: NormalizedCard[] = rows.slice(0, RESULT_LIMIT).map((r) => ({
+  // Each branch above already produced an exact page (≤ RESULT_LIMIT), so no
+  // trailing slice — map `rows` directly.
+  const cards: NormalizedCard[] = rows.map((r) => ({
     id: r.externalId,
     name: r.name,
     number: r.number ?? "",
@@ -519,10 +573,10 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   // Best-effort cache fill. Only non-empty 200s reach here (zero rows returned
   // a 404 above and is NOT cached, so a mid-sync empty result isn't pinned).
-  await cacheSetJson(cacheKey, { cards, source: "local-db" }, CACHE_TTL.cardSearch);
+  await cacheSetJson(cacheKey, { cards, source: "local-db", nextCursor }, CACHE_TTL.cardSearch);
 
   return NextResponse.json(
-    { cards, source: "local-db" },
+    { cards, source: "local-db", nextCursor },
     {
       status: 200,
       headers: {

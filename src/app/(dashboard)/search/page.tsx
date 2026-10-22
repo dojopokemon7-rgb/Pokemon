@@ -123,10 +123,15 @@ function SortIcon() {
 // moved out of this file because a page.tsx may export ONLY its default
 // component — any named export breaks `next build`.
 import type { CardResult, TrendingCard, Game } from "./card-tiles";
+import { flattenDedupe, getNextCursorParam } from "@/lib/utils/paginate-cards";
 
 interface SearchApiResponse {
   cards: CardResult[];
   source?: string;
+  // Numeric OFFSET of the next page (items loaded so far), or null when there
+  // is no further page. The results grid now pages via `useInfiniteQuery`
+  // instead of being hard-capped at the first RESULT_LIMIT (audit 02 F-T).
+  nextCursor: number | null;
 }
 
 interface TrendingApiResponse {
@@ -697,9 +702,21 @@ function SearchPageInner() {
     return out;
   })();
 
-  const { data, isFetching, isLoading: searchLoading, isError } = useQuery<SearchApiResponse>({
+  // Results grid is now offset-paginated (audit 02 F-T): `useInfiniteQuery`
+  // mirrors the trending grid above so "Show more" pages through the full
+  // result set instead of stopping at the first RESULT_LIMIT. Same filter
+  // queryKey as before — no new key entry.
+  const {
+    data: searchPages,
+    isFetching,
+    isLoading: searchLoading,
+    isError,
+    fetchNextPage: fetchMoreSearch,
+    hasNextPage: hasMoreSearch,
+    isFetchingNextPage: fetchingMoreSearch,
+  } = useInfiniteQuery<SearchApiResponse>({
     queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter, languageFilter],
-    queryFn: async () => {
+    queryFn: async ({ pageParam }) => {
       // Compose the optional F-06 filter params only when set.
       // "trending" was never a real search sort: omit it so the API ranks by relevance.
       const params = new URLSearchParams({ game });
@@ -712,13 +729,18 @@ function SearchPageInner() {
       if (maxPriceFilter) params.set("maxPrice", maxPriceFilter);
       if (hasPriceFilter) params.set("hasPrice", hasPriceFilter);
       if (languageFilter) params.set("language", languageFilter);
+      if (pageParam != null) params.set("cursor", String(pageParam));
       const res = await fetch(`/api/cards/search?${params.toString()}`);
       if (!res.ok) {
-        if (res.status === 404) return { cards: [] };
+        // RULE 7: the route returns 404 for zero matches; the client maps it to
+        // an empty, terminal page (no further cursor) rather than erroring.
+        if (res.status === 404) return { cards: [], nextCursor: null };
         throw new Error("Search failed");
       }
       return res.json();
     },
+    initialPageParam: 0 as number,
+    getNextPageParam: getNextCursorParam,
     enabled: browseMode,
     // Item 2 (Batch 2B): keep the previous results painted while a new
     // search/sort/filter loads so the grid doesn't blank. GATED on
@@ -729,7 +751,10 @@ function SearchPageInner() {
       (prevQuery?.queryKey as [string, Game, ...unknown[]] | undefined)?.[1] === game ? prev : undefined,
   });
 
-  const rawCards = data?.cards ?? [];
+  // Flatten paginated search pages, de-duping by the result's `id` (which IS
+  // the catalog externalId for search results — AGENTS.md RULE 3) so a card
+  // never renders twice across pages (F-04).
+  const rawCards = flattenDedupe(searchPages?.pages, (c) => c.id);
 
   // Background repricing (Pokémon): the search/trending APIs read the local
   // DB and never block on an external price call, so brand-new cards can land
@@ -1241,11 +1266,15 @@ function SearchPageInner() {
                   color: "var(--color-dojo-faint)",
                 }}
               >
-                {isFetching
+                {isFetching && cards.length === 0
                   ? "Searching…"
                   : isError
                   ? "Error"
-                  : `${cards.length} result${cards.length !== 1 ? "s" : ""}`}
+                  // Honest count: `cards.length` is the loaded-so-far total
+                  // across pages. When more pages remain, append "+" to signal
+                  // "at least this many" rather than fabricating a grand total
+                  // (AGENTS.md RULE 2).
+                  : `${cards.length}${hasMoreSearch ? "+" : ""} result${cards.length !== 1 ? "s" : ""}`}
               </span>
               {sort !== "trending" && (
                 <button
@@ -1337,18 +1366,22 @@ function SearchPageInner() {
                   ))}
             </div>
 
-            {/* Pull-up hint */}
-            {!isFetching && cards.length > 0 && (
-              <div style={{ marginTop: "24px", display: "flex", justifyContent: "center" }}>
-                <span
-                  style={{
-                    fontFamily: "var(--font-display)", fontWeight: 700, fontStretch: "112%",
-                    fontSize: "9px", letterSpacing: "0.18em", textTransform: "uppercase",
-                    color: "var(--color-dojo-faint)",
-                  }}
+            {/* Show more — offset pagination through the full result set
+                (audit 02 F-T). Mirrors the trending grid's control: shown only
+                when another page exists; hover/focus prefetches the next page
+                so the click lands on already-fetched data. */}
+            {!searchLoading && !isError && hasMoreSearch && (
+              <div style={{ marginTop: "14px", display: "flex", justifyContent: "center" }}>
+                <button
+                  onClick={() => fetchMoreSearch()}
+                  onMouseEnter={() => { if (hasMoreSearch && !fetchingMoreSearch) fetchMoreSearch(); }}
+                  onFocus={() => { if (hasMoreSearch && !fetchingMoreSearch) fetchMoreSearch(); }}
+                  disabled={fetchingMoreSearch}
+                  className="dojo-btn dojo-btn-outline"
+                  style={{ width: "auto", padding: "10px 24px" }}
                 >
-                  Pull up for more
-                </span>
+                  {fetchingMoreSearch ? "LOADING…" : "SHOW MORE"}
+                </button>
               </div>
             )}
           </>

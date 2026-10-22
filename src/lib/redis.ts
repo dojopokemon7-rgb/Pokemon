@@ -298,6 +298,10 @@ export const RedisKeys = {
     maxPrice?: number;
     hasPrice?: string;
     language?: string;
+    // Offset of the requested page (items already loaded). Embedded in the key
+    // so page 2 is never served page 1's cached payload (audit 02 F-T; mirrors
+    // the trending key embedding its offset).
+    cursor?: number;
   }): string => {
     // Stable, order-independent key=value join; query lowercased to match the
     // existing lowercase search convention so ?query=Char and ?query=char hit
@@ -315,6 +319,7 @@ export const RedisKeys = {
       `max=${params.maxPrice ?? ""}`,
       `hasprice=${params.hasPrice ?? ""}`,
       `lang=${params.language ?? ""}`,
+      `cursor=${params.cursor ?? 0}`,
     ];
     return `card:searchq:${parts.join("|")}`;
   },
