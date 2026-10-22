@@ -90,7 +90,26 @@ describe("GET /api/cards/search", () => {
       expect(w.set).toMatchObject({ name: { equals: "Base" } });
       expect(w.rarity).toBeDefined();
       expect(w.NOT).toBeDefined();
-      expect(w.marketPrice).toEqual({ gte: 1, lte: 9 });
+      // audit 02 F-F: the price range now predicates on the DISPLAYED price
+      // (raw CurrentPrice in bounds, OR marketPrice in bounds when no raw row),
+      // folded into AND — NOT a top-level marketPrice-only gte/lte spread.
+      expect(w.marketPrice).toBeUndefined();
+      const and = w.AND as Array<Record<string, unknown>> | undefined;
+      expect(and).toEqual(
+        expect.arrayContaining([
+          {
+            OR: [
+              { currentPrices: { some: { type: "raw", priceMarket: { gte: 1, lte: 9 } } } },
+              {
+                AND: [
+                  { currentPrices: { none: { type: "raw", priceMarket: { not: null } } } },
+                  { marketPrice: { gte: 1, lte: 9 } },
+                ],
+              },
+            ],
+          },
+        ])
+      );
     }
   });
 

@@ -228,15 +228,44 @@ export async function GET(request: Request): Promise<NextResponse> {
     currentPrices: { some: { type: "graded", priceMarket: { not: null } } },
   } as const;
 
-  // F-06 price range on marketPrice. Compose gte/lte only for the bounds
-  // that were provided.
-  const priceFilter =
+  // F-06 price range — audit 02 F-F. The tile DISPLAYS
+  // `pickHeadlineRaw(currentPrices type:"raw") ?? marketPrice` (see the
+  // `cards.map` below), so the range filter MUST predicate on that SAME
+  // displayed value, not on Card.marketPrice alone. The old marketPrice-only
+  // gte/lte wrongly EXCLUDED a card with null marketPrice but a real raw
+  // CurrentPrice in range, and could KEEP a card whose displayed raw price
+  // falls outside the requested range. This predicate mirrors the hasPrice
+  // OR-structure exactly:
+  //   • arm 1 — a raw CurrentPrice row with priceMarket in bounds (the price
+  //     the tile actually shows); OR
+  //   • arm 2 — marketPrice in bounds, but ONLY when the card has NO raw
+  //     priceMarket row (`currentPrices.none`), i.e. exactly the fallback the
+  //     tile uses. The `none` guard stops a card with an out-of-range raw row
+  //     from sneaking in on its marketPrice, and stops double-counting a card
+  //     that has a raw row.
+  // ponytail: `currentPrices.some/none.priceMarket` is an un-indexed relation
+  // scan, bounded here by the already-filtered paginated take (≤300/600/60);
+  // upgrade = an index on CurrentPrice.priceMarket.
+  const bounds = {
+    ...(minPrice != null ? { gte: minPrice } : {}),
+    ...(maxPrice != null ? { lte: maxPrice } : {}),
+  };
+  const priceRangeFilter: Prisma.CardWhereInput =
     minPrice != null || maxPrice != null
       ? {
-          marketPrice: {
-            ...(minPrice != null ? { gte: minPrice } : {}),
-            ...(maxPrice != null ? { lte: maxPrice } : {}),
-          },
+          AND: [
+            {
+              OR: [
+                { currentPrices: { some: { type: "raw", priceMarket: bounds } } },
+                {
+                  AND: [
+                    { currentPrices: { none: { type: "raw", priceMarket: { not: null } } } },
+                    { marketPrice: bounds },
+                  ],
+                },
+              ],
+            },
+          ],
         }
       : {};
 
@@ -337,16 +366,20 @@ export async function GET(request: Request): Promise<NextResponse> {
     // F-06 (QA D5): graded → card HAS graded pricing; ungraded → it doesn't.
     ...(graded === "graded" ? GRADED_PRICING : {}),
     ...(graded === "ungraded" ? { NOT: GRADED_PRICING } : {}),
-    // F-06: price range.
-    ...priceFilter,
-    // "Has price data", Language, and the unconditional image-presence filter
-    // all use a nested `AND` (so their top-level `NOT`/`OR` never clobber the
-    // graded top-level `currentPrices`/`NOT`). Spreading them would let one `AND` key
-    // overwrite another, so their clauses are concatenated into ONE `AND` array
-    // here. The image-presence clauses are ALWAYS folded in (imagePresentFilter
-    // has no opt-in gate); `all` language contributes an empty object → no clause.
+    // "Has price data", the F-F display-price range, Language, and the
+    // unconditional image-presence filter all use a nested `AND` (so their
+    // top-level `NOT`/`OR` never clobber the graded top-level
+    // `currentPrices`/`NOT`). Spreading them would let one `AND` key overwrite
+    // another, so their clauses are concatenated into ONE `AND` array here. The
+    // price range is folded in HERE (not spread as a top-level marketPrice key)
+    // for the same reason — its `OR` arm references `currentPrices`, so a
+    // top-level spread would collide with the graded `currentPrices`. The
+    // image-presence clauses are ALWAYS folded in (imagePresentFilter has no
+    // opt-in gate); `all` language and an absent price range contribute empty
+    // objects → no clause.
     AND: [
       ...toArray(hasPriceFilter.AND),
+      ...toArray(priceRangeFilter.AND),
       ...toArray(languageFilter.AND),
       ...toArray(imagePresentFilter.AND),
     ],
