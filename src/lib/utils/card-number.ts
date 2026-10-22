@@ -79,3 +79,32 @@ export function printingExternalId(baseId: string, variantName: string, baseName
 export function printingVariantFromId(externalId: string): string | null {
   return externalId.split("::").slice(1).join("::") || null;
 }
+
+/**
+ * The canonical (decoded) card externalId for a value read from the App Router.
+ *
+ * Next.js 15's `useParams()` returns the URL-encoded route segment verbatim — it
+ * does NOT run `decodeURIComponent` (cf. vercel/next.js #48058). For a composite
+ * per-printing id the `::` separator rides the URL as `%3A%3A`, so the raw param
+ * is e.g. "base1-2%3A%3AunlimitedShadowlessHolofoil". Left undecoded, every
+ * downstream use mis-handles it: the TanStack query key (`["card-prices", id]`)
+ * no longer matches the grid's prefetch key (which used the literal `::`
+ * externalId) → cache miss; `encodeURIComponent(id)` double-encodes to
+ * `%253A%253A` → the /api/cards/[id]/prices lookup misses → 200-empty; and
+ * `printingVariantFromId(id)` splits on literal `::` and returns null → the
+ * per-printing chart default never engages. Decoding ONCE at the read site
+ * restores the canonical externalId so all of those line up again.
+ *
+ * Idempotent on a BASE id (no `%`, no `::` → decodes to itself), so the base
+ * card path is unchanged. A malformed `%` sequence (which would throw in
+ * `decodeURIComponent`) returns the input unchanged so render never crashes;
+ * an empty/nullish value returns `""`.
+ */
+export function decodeRouteId(raw: string | null | undefined): string {
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}

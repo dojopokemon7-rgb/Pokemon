@@ -5,6 +5,7 @@ import {
   baseVariantName,
   printingExternalId,
   printingVariantFromId,
+  decodeRouteId,
 } from "@/lib/utils/card-number";
 import { normalizeNumber } from "@/lib/services/card-recognition.service";
 
@@ -111,5 +112,43 @@ describe("printingVariantFromId", () => {
 
   it("rejoins a variant that itself contains `::`", () => {
     expect(printingVariantFromId("base1-2::weird::variant")).toBe("weird::variant");
+  });
+});
+
+describe("decodeRouteId", () => {
+  it("decodes an encoded composite id's `%3A%3A` back to `::`", () => {
+    expect(decodeRouteId("base1-2%3A%3AunlimitedShadowlessHolofoil")).toBe(
+      "base1-2::unlimitedShadowlessHolofoil",
+    );
+  });
+
+  it("round-trips a base id unchanged (idempotent on no-encoding ids)", () => {
+    expect(decodeRouteId("base1-2")).toBe("base1-2");
+    expect(decodeRouteId("OP01-120")).toBe("OP01-120");
+  });
+
+  it("is idempotent on an already-decoded composite id", () => {
+    expect(decodeRouteId("base1-2::x")).toBe("base1-2::x");
+  });
+
+  it("returns the input unchanged on a malformed `%` sequence (never throws)", () => {
+    expect(() => decodeRouteId("%E0%A4%A")).not.toThrow();
+    expect(decodeRouteId("%E0%A4%A")).toBe("%E0%A4%A");
+  });
+
+  it("returns '' for empty/nullish input", () => {
+    expect(decodeRouteId("")).toBe("");
+    expect(decodeRouteId(null)).toBe("");
+    expect(decodeRouteId(undefined)).toBe("");
+  });
+
+  it("re-enables variant resolution — the heart of the bug", () => {
+    // Decoded → printingVariantFromId recovers the variant.
+    expect(
+      printingVariantFromId(decodeRouteId("base1-2%3A%3AunlimitedShadowlessHolofoil")),
+    ).toBe("unlimitedShadowlessHolofoil");
+    // Un-decoded (encoded `%3A%3A`) has no literal `::` → null, proving the
+    // decode is what re-enables the per-printing chart default.
+    expect(printingVariantFromId("base1-2%3A%3AunlimitedShadowlessHolofoil")).toBeNull();
   });
 });

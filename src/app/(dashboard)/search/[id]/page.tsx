@@ -40,7 +40,7 @@ import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
 import { cardImgById, onePieceImageUrl, isOnePieceCode } from "@/lib/utils/card-image";
-import { printingVariantFromId } from "@/lib/utils/card-number";
+import { printingVariantFromId, decodeRouteId } from "@/lib/utils/card-number";
 import { isTerminalEnrichResult } from "@/lib/utils/enrich-result";
 import {
   buildChips,
@@ -236,7 +236,14 @@ function CardDetailInner() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const id = params?.id as string;
+  // App Router's useParams() returns the ENCODED route segment (Next.js does
+  // not decodeURIComponent it — vercel/next.js #48058). For a composite
+  // per-printing id the `::` rides the URL as `%3A%3A`; left undecoded it breaks
+  // the prefetch query-key match, double-encodes every fetch URL, and defeats
+  // printingVariantFromId. decodeRouteId restores the canonical externalId once,
+  // here, fixing all downstream uses at the single read site (idempotent on a
+  // base id → base-card behavior unchanged). See decodeRouteId's doc-comment.
+  const id = decodeRouteId(params?.id as string);
 
   const name = searchParams.get("name") ?? "Card";
   const setName = searchParams.get("set") ?? "";
