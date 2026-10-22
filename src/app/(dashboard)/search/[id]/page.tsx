@@ -41,6 +41,7 @@ import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
 import { cardImgById, onePieceImageUrl, isOnePieceCode } from "@/lib/utils/card-image";
 import { printingVariantFromId } from "@/lib/utils/card-number";
+import { isTerminalEnrichResult } from "@/lib/utils/enrich-result";
 import {
   buildChips,
   buildChartMatrix,
@@ -457,38 +458,67 @@ function CardDetailInner() {
     refetchOnMount: "always",
   });
 
-  // ON-VIEW enrichment: fire the enrich POST exactly ONCE per card mount. Using
-  // a useQuery (not a bare useEffect) keyed ["enrich", id] with Infinity
-  // stale/gc + no retry dedupes the POST across remounts via the query cache
-  // (TanStack-first convention). The route is a no-op {enriched:false} unless
-  // SCRYDEX_ONVIEW_ENABLED is on, so this costs nothing in dev. When it reports
-  // enriched:true we invalidate the three read queries (history, population,
-  // recent sales) so the fresh stored data repaints; a failed / {enriched:false}
-  // response is a silent no-op.
+  // ON-VIEW enrichment: fire the enrich POST on mount to pull+store this card's
+  // history / population / recent-sold once per 24h (the server throttles via a
+  // per-card marker). Keyed ["enrich", id] so the query cache dedupes concurrent
+  // mounts. The route is a no-op {enriched:false,reason:"disabled"} unless
+  // SCRYDEX_ONVIEW_ENABLED is on, so this costs nothing in dev.
+  //
+  // RESILIENCE (the fix): the enrich POST must survive a mount that races AHEAD
+  // of session-cookie hydration. The route is requireAuth-guarded, so such a
+  // race returns 401 (also 429 under the credit-tier rate limit, or 5xx / a
+  // network-or-parse fault). The OLD query pinned that dead outcome FOREVER
+  // (staleTime+gcTime Infinity + retry:false → one POST per id, cached success
+  // OR failure), so a card opened a beat before login stayed empty permanently.
+  // Now isTerminalEnrichResult (pure, ./lib/utils/enrich-result) splits a REAL
+  // settled result (res.ok + enriched:true | reason:fresh/disabled/unknown) from
+  // a TRANSIENT failure. On transient we THROW (never fabricate {enriched:false})
+  // so the bounded retry re-attempts; refetchOnMount lets a remount after login
+  // pick it up. A terminal result is returned normally and not retried.
   useQuery({
     queryKey: ["enrich", id],
     queryFn: async () => {
-      const res = await fetch(`/api/cards/${encodeURIComponent(id)}/enrich`, {
-        method: "POST",
-        credentials: "include",
-      });
-      const body = await res.json().catch(() => ({ enriched: false }));
-      // Always re-read history + population after the enrich settles — not only
-      // on enriched:true. A card already enriched returns {reason:"fresh"} but
-      // the first on-mount population/history fetch may have raced AHEAD of the
-      // stored data (or cached an early null), so invalidate regardless so the
-      // panels repaint from the DB. Cheap DB reads (Redis-cached server-side).
+      // A fetch/parse throw is transient (ok:false, no body) → retryable.
+      let res: Response;
+      try {
+        res = await fetch(`/api/cards/${encodeURIComponent(id)}/enrich`, {
+          method: "POST",
+          credentials: "include",
+        });
+      } catch {
+        throw new Error("enrich transient: network error");
+      }
+      const body = await res.json().catch(() => null);
+
+      // Transient (401 pre-hydration / 429 / 5xx / unparseable 200) → THROW so
+      // TanStack Query's bounded retry re-attempts; do NOT invalidate the read
+      // queries (nothing new was stored) and do NOT cache a fake no-op.
+      if (!isTerminalEnrichResult({ ok: res.ok, body })) {
+        throw new Error(`enrich transient: status ${res.status}`);
+      }
+
+      // Terminal (route actually ran). Re-read history + population + recent
+      // sales regardless of the specific terminal reason — even a card that was
+      // already "fresh" may have had its first on-mount read race AHEAD of the
+      // stored data (or cache an early null), so invalidate so the panels
+      // repaint from the DB. Cheap DB reads (Redis-cached server-side). This
+      // runs ONLY after a settled enrich, NEVER after a thrown transient failure.
       queryClient.invalidateQueries({ queryKey: ["card-history", id] });
       queryClient.invalidateQueries({ queryKey: ["population", id] });
-      // The enrich POST now also stores recent eBay SOLD rows (the third pull),
-      // so re-read them too — RecentSales auto-fetches the GET on mount and this
-      // repaints it with the freshly-stored sales once enrich settles.
+      // The enrich POST also stores recent eBay SOLD rows (the third pull), so
+      // re-read them too — RecentSales auto-fetches the GET on mount and this
+      // repaints it with the freshly-stored sales.
       queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });
       return body;
     },
-    staleTime: Infinity,
-    gcTime: Infinity,
-    retry: false,
+    // Bounded retry so a session that hydrates a beat late is picked up, while a
+    // persistent failure does not loop forever. Linear-ish backoff capped at 2s.
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * (attempt + 1), 2000),
+    // Do NOT pin a FAILED attempt forever: a remount (e.g. after login) must
+    // re-attempt. A terminal result is returned normally and simply won't retry.
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 
   // Live price for each price-history chip (null → "—"), keyed on the new chip
