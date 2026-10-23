@@ -7,6 +7,7 @@ import {
   seriesSpanDays,
   maxAvailableSpanDays,
   largestEnabledRange,
+  visibleRanges,
   type Chip,
   type HistoryResponse,
 } from "@/app/(dashboard)/search/[id]/price-history-chart";
@@ -453,6 +454,24 @@ describe("BUG 5 & 6 — availability/default follow the CARD's data, not the sel
     };
     expect(maxAvailableSpanDays(history)).toBe(200);
     expect(largestEnabledRange(rangeAvailability(200))).toBe("1Y"); // 200 > 183, <= 366
+  });
+});
+
+describe("visibleRanges (BUG 4 — render only the enabled ranges, hide 1Y/MAX)", () => {
+  it("renders only the enabled ranges for each span", () => {
+    expect(visibleRanges(0)).toEqual(["1M"]);
+    expect(visibleRanges(10)).toEqual(["1M"]);
+    expect(visibleRanges(40)).toEqual(["1M", "3M"]);
+    // ~6-month card: exactly 1M/3M/6M, NO 1Y, NO ALL(MAX).
+    expect(visibleRanges(100)).toEqual(["1M", "3M", "6M"]);
+    expect(visibleRanges(200)).toEqual(["1M", "3M", "6M", "1Y"]);
+    expect(visibleRanges(400)).toEqual(["1M", "3M", "6M", "1Y", "ALL"]);
+  });
+
+  it("the last visible range equals the largest enabled range (full span still shown)", () => {
+    for (const d of [0, 10, 40, 100, 200, 400]) {
+      expect(visibleRanges(d).pop()).toBe(largestEnabledRange(rangeAvailability(d)));
+    }
   });
 });
 

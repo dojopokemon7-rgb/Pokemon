@@ -150,6 +150,20 @@ export function largestEnabledRange(avail: Record<RangeKey, boolean>): RangeKey 
   return RANGE_ORDER.filter((k) => avail[k]).pop() ?? "1M";
 }
 
+/**
+ * BUG 4 — the ordered list of range tabs to actually RENDER for a given stored
+ * span: only the ENABLED ranges (a tab that would reveal no more data than the
+ * one before it is hidden, not greyed/disabled). So a ~6-month (≈100-day) card
+ * yields ["1M","3M","6M"] — no 1Y/ALL(MAX). The last element is always
+ * largestEnabledRange(rangeAvailability(spanDays)), so the largest rendered tab
+ * still shows the full available span. Pure derivation from real spans — never
+ * implies data that is not stored (AGENTS.md rule 2).
+ */
+export function visibleRanges(spanDays: number): RangeKey[] {
+  const avail = rangeAvailability(spanDays);
+  return RANGE_ORDER.filter((k) => avail[k]);
+}
+
 // Numeric price read for a current-price row (priceMarket ?? priceLow ?? null)
 // — never a formatted string, so buildChartMatrix can plot/flat-fill it.
 function rowPrice(r: CurrentPriceRow): number | null {

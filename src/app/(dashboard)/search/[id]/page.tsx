@@ -50,6 +50,7 @@ import {
   rangeAvailability,
   maxAvailableSpanDays,
   largestEnabledRange,
+  visibleRanges,
   type CurrentPriceRow,
   type HistoryResponse,
 } from "./price-history-chart";
@@ -94,7 +95,10 @@ function ShareIcon() {
 
 // Range tabs filter the REAL history points by a trailing date window
 // (RANGE_DAYS = days back from the newest point; MAX = all points).
-const RANGE_TABS = [["1M", "1M"], ["3M", "3M"], ["6M", "6M"], ["1Y", "1Y"], ["MAX", "ALL"]] as const;
+// BUG 4: only the ENABLED ranges are rendered (visibleRanges) — a range that
+// would reveal no more stored data than the previous one is HIDDEN, not greyed.
+// RANGE_LABEL maps each RangeKey to its display text; only "ALL" renders as "MAX".
+const RANGE_LABEL: Record<string, string> = { "1M": "1M", "3M": "3M", "6M": "6M", "1Y": "1Y", "ALL": "MAX" };
 const RANGE_DAYS: Record<string, number> = { "1M": 31, "3M": 93, "6M": 183, "1Y": 366, "ALL": Infinity };
 
 function fmtUSD(n: number): string {
@@ -934,32 +938,31 @@ function CardDetailInner() {
           )}
         </div>
         <div style={{ display: "flex", marginTop: "4px" }}>
-          {RANGE_TABS.map(([label, key]) => {
-            const enabled = rangeAvail[key];
-            return (
-              <button
-                key={key}
-                onClick={() => {
-                  // BUG 6: an explicit pick sticks — stop the auto-default
-                  // from overriding the user's chosen range thereafter.
-                  setRangeTouched(true);
-                  setRange(key);
-                }}
-                disabled={!enabled}
-                aria-disabled={!enabled}
-                title={enabled ? undefined : "Not enough history yet"}
-                style={{
-                  flex: 1, textAlign: "center", padding: "9px 0 7px", cursor: enabled ? "pointer" : "not-allowed",
-                  background: "transparent", border: "none", opacity: enabled ? 1 : 0.4,
-                  borderBottom: effRange === key ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
-                  fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em",
-                  color: effRange === key ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
-                }}
-              >
-                {label}
-              </button>
-            );
-          })}
+          {/* BUG 4: render ONLY the ranges the stored span actually enables
+              (visibleRanges) so a ~6-month card never shows a greyed 1Y/MAX.
+              The largest rendered tab == largestEnabledRange, so it still spans
+              all available data. Only enabled tabs exist now — no
+              disabled/opacity/aria-disabled/title branches remain. */}
+          {visibleRanges(spanDays).map((key) => (
+            <button
+              key={key}
+              onClick={() => {
+                // BUG 6: an explicit pick sticks — stop the auto-default
+                // from overriding the user's chosen range thereafter.
+                setRangeTouched(true);
+                setRange(key);
+              }}
+              style={{
+                flex: 1, textAlign: "center", padding: "9px 0 7px", cursor: "pointer",
+                background: "transparent", border: "none",
+                borderBottom: effRange === key ? "2px solid var(--color-dojo-gold)" : "2px solid transparent",
+                fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "9.5px", letterSpacing: "0.14em",
+                color: effRange === key ? "var(--color-dojo-ink)" : "var(--color-dojo-faint)",
+              }}
+            >
+              {RANGE_LABEL[key]}
+            </button>
+          ))}
         </div>
         <div data-testid="history-span" style={{ marginTop: "4px", textAlign: "center", fontFamily: "var(--font-display)", fontWeight: 700, fontSize: "8.5px", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--color-dojo-faint)" }}>
           {spanDays > 0 ? `${spanDays} days of history` : "No price history yet"}
