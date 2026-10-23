@@ -276,6 +276,35 @@ export async function pullAndStoreScrydexPrice(
       skipDuplicates: true,
     });
 
+    // --- 3b. Mirror the raw NM headline into Card.marketPrice (BUG 1) -----
+    // WHY (audit 09 F2 / 01 P-09): the UI reads Card.marketPrice for the
+    // raw/headline price (Explore tile, AddCardSheet, portfolio tile+totals,
+    // the card-detail Raw chip's ?price= fallback). This writer persisted the
+    // full CurrentPrice set + weekly-change + scrydexId but NEVER wrote
+    // Card.marketPrice, so it stayed STALE (e.g. $5250) while the chart (reads
+    // PricingHistory) and Scrydex said $4000 — the user-reported divergence.
+    // RULE 3 (printing-scoped): `raw` comes from pickRawPrice(scopedCard), which
+    // is already narrowed to THIS row's printing variant, so a `::variant` row
+    // stores ITS variant's raw NM — never a sibling's. RULE 2: write ONLY a real
+    // numeric raw NM market price; when raw.market is null (graded-only /
+    // no-raw) leave the prior value UNCHANGED — never null it, never 0. Also
+    // stamp lastPricedAt so freshness is visible ("retained until refreshed").
+    // Best-effort (mirrors the adjacent weekly-change / cost-basis blocks): a
+    // marketPrice write failure must never fail the pull.
+    if (raw.market != null) {
+      try {
+        await prisma.card.update({
+          where: { id: card.id },
+          data: { marketPrice: raw.market, lastPricedAt: now },
+        });
+      } catch (mpErr) {
+        console.warn(
+          `[scrydex-pricing] marketPrice update failed for ${card.externalId} (non-fatal):`,
+          mpErr instanceof Error ? mpErr.message : mpErr
+        );
+      }
+    }
+
     // --- 4. Real history backfill: the fabricated scrydex-trend derivation
     // is REMOVED (Req 7.2). Real multi-point history comes from the DOCUMENTED
     // endpoint GET /{slug}/v1/cards/{id}/price_history (fetchScrydexPriceHistory),

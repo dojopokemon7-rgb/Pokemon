@@ -598,6 +598,96 @@ describe("pullAndStoreScrydexPrice — credit gate (FIX A, sec-audit)", () => {
   });
 });
 
+describe("pullAndStoreScrydexPrice — Card.marketPrice mirror (BUG 1)", () => {
+  // BUG 1 (user #7 + #2): the UI headline/raw price reads Card.marketPrice, but
+  // this writer never wrote it — so marketPrice stayed STALE while the chart
+  // (reads PricingHistory) and Scrydex said something else. The fix mirrors the
+  // printing-scoped raw NM market price into Card.marketPrice (+ lastPricedAt),
+  // and ONLY when raw.market is a real number (RULE 2 — never null/0).
+  //
+  // Helper: find the card.update call (if any) whose data carries a marketPrice
+  // key. Other card.update calls fire for scrydexId caching + weekly-change, so
+  // we must filter for the marketPrice write specifically.
+  function marketPriceUpdateCall(): [{ where: { id: string }; data: Record<string, unknown> }] | undefined {
+    return prismaMock.card.update.mock.calls.find((c: unknown[]) => {
+      const arg = c[0] as { data?: Record<string, unknown> } | undefined;
+      return arg?.data != null && Object.prototype.hasOwnProperty.call(arg.data, "marketPrice");
+    }) as [{ where: { id: string }; data: Record<string, unknown> }] | undefined;
+  }
+
+  it("(a) a fresh priced pull writes Card.marketPrice = raw NM market + a lastPricedAt Date", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+    scrydexMock.pickRawPrice.mockReturnValue(RAW); // RAW.market === 191.34
+
+    await pullAndStoreScrydexPrice(CARD);
+
+    const call = marketPriceUpdateCall();
+    expect(call).toBeDefined();
+    expect(call![0]).toEqual(
+      expect.objectContaining({
+        where: { id: CARD.id },
+        data: expect.objectContaining({ marketPrice: 191.34 }),
+      })
+    );
+    expect(call![0].data.lastPricedAt).toBeInstanceOf(Date);
+  });
+
+  it("(b) a graded-only pull (no raw price) does NOT write marketPrice (RULE 2 — unchanged)", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+    scrydexMock.pickRawPrice.mockReturnValue(null); // graded-only / no raw NM
+
+    await pullAndStoreScrydexPrice(CARD);
+
+    // No card.update carries a marketPrice key (scrydexId cache may still fire).
+    expect(marketPriceUpdateCall()).toBeUndefined();
+  });
+
+  it("(c) a raw with market=null (low-only) does NOT write marketPrice (RULE 2 — never null/0)", async () => {
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+    scrydexMock.pickRawPrice.mockReturnValue({ ...RAW, market: null }); // low-only raw
+
+    await pullAndStoreScrydexPrice(CARD);
+
+    expect(marketPriceUpdateCall()).toBeUndefined();
+  });
+
+  it("(d) printing-scoped: the scoped printing's raw NM is written, never a sibling's (RULE 3)", async () => {
+    // Two printings share one scrydexId; pickRawPrice is scoped to the requested
+    // printing. Asserting the WRITTEN marketPrice is the reverse-holofoil raw (55)
+    // and never the holofoil sibling (100) pins the printing scoping.
+    const TWO_PRINTING_CARD = {
+      id: "me55c-4",
+      name: "Charizard",
+      number: "4",
+      variants: [
+        {
+          name: "holofoil",
+          prices: [{ type: "raw", condition: "NM", company: null, grade: null, market: 100, low: 90, currency: "USD" }],
+        },
+        {
+          name: "reverse-holofoil",
+          prices: [{ type: "raw", condition: "NM", company: null, grade: null, market: 55, low: 50, currency: "USD" }],
+        },
+      ],
+    };
+    scrydexMock.resolveScrydexCard.mockResolvedValue({ scrydexId: "me55c-4", card: TWO_PRINTING_CARD });
+    // pickRawPrice echoes the SCOPED card's first raw NM entry (scope applied upstream).
+    scrydexMock.pickRawPrice.mockImplementation(
+      (c: { variants: Array<{ name: string; prices: Array<{ type: string; market: number; low: number; currency: string }> }> }) => {
+        const v = c.variants[0];
+        const p = v.prices.find((x) => x.type === "raw")!;
+        return { market: p.market, low: p.low, currency: p.currency, trends: null, variant: v.name, condition: "NM" };
+      }
+    );
+
+    await pullAndStoreScrydexPrice({ ...CARD, printing: "reverse-holofoil" }, { force: true });
+
+    const call = marketPriceUpdateCall();
+    expect(call).toBeDefined();
+    expect(call![0].data.marketPrice).toBe(55); // scoped variant's raw NM, NOT holofoil's 100
+  });
+});
+
 describe("pullAndStoreScrydexHistory — raw per-day identity (Bug B)", () => {
   // The raw-only partial unique index `ph_raw_coalesced` (authored in
   // 20250113000000_pricing_history_raw_dedupe) relies on the history writer
