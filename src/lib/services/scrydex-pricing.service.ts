@@ -35,6 +35,7 @@ import {
   assertScrydexCreditsApproved,
   assertScrydexEnrichApproved,
   isScrydexLiveApproved,
+  isScrydexOnViewApproved,
   SCRYDEX_CREDIT_COST,
 } from "./scrydex-credit-gate";
 
@@ -91,9 +92,9 @@ export interface ScrydexPullCard {
  */
 export async function pullAndStoreScrydexPrice(
   card: ScrydexPullCard,
-  opts?: { force?: boolean }
+  opts?: { force?: boolean; creditAuth?: "onview" }
 ): Promise<{ pulled: boolean; credits: number; card: ScrydexCard | null }> {
-  // --- 0. Credit gate (SOFT) ----------------------------------------------
+  // --- 0. Credit gate (SOFT, DUAL) ----------------------------------------
   // This is a live 1-credit path (fetchScrydexCardById). Unlike history /
   // population / listings (which `assertScrydexCreditsApproved` at the top),
   // this function is reachable from the UNAUTHENTICATED GET /cards/[id]/graded
@@ -101,7 +102,20 @@ export async function pullAndStoreScrydexPrice(
   // so denial is a clean fail-open no-op (RULE 7) — the graded route then
   // serves its stored/curated fallback and refresh counts 0 — instead of an
   // exception. DENY by default (env/redis approval only).
-  if (!(await isScrydexLiveApproved())) {
+  //
+  // DUAL gate (soft mirror of assertScrydexEnrichApproved): when the caller
+  // carries on-view authorization (creditAuth === "onview") AND
+  // isScrydexOnViewApproved() is true, the ON-VIEW allowance
+  // (SCRYDEX_ONVIEW_ENABLED) authorizes the spend WITHOUT opening the big-bulk
+  // gate — this is what makes the user-initiated portfolio refresh work in
+  // staging/prod (which set ONLY the on-view flag). Otherwise fall back to the
+  // hard bulk gate (isScrydexLiveApproved). Cron/scripts pass NO creditAuth, so
+  // the bulk gate is NOT widened for them; both flags off = clean no-op (dev
+  // DENY unchanged). This is the SOFT equivalent (no throw) of
+  // assertScrydexEnrichApproved so the unauthenticated graded path fails open.
+  const onViewApproved =
+    opts?.creditAuth === "onview" && (await isScrydexOnViewApproved());
+  if (!onViewApproved && !(await isScrydexLiveApproved())) {
     return { pulled: false, credits: 0, card: null };
   }
 

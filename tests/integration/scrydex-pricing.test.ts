@@ -688,6 +688,39 @@ describe("pullAndStoreScrydexPrice — Card.marketPrice mirror (BUG 1)", () => {
   });
 });
 
+describe("pullAndStoreScrydexPrice — on-view credit auth (BUG 2)", () => {
+  // BUG 2 (user #8): the soft top gate now honours on-view authorization so the
+  // portfolio refresh (which passes creditAuth:"onview") works in staging/prod
+  // that enable ONLY SCRYDEX_ONVIEW_ENABLED. With the bulk gate OFF, an on-view
+  // caller must still run; both flags off stays a clean no-op (dev DENY).
+  afterEach(() => {
+    delete process.env.SCRYDEX_ONVIEW_ENABLED;
+  });
+
+  it("runs the pull on creditAuth:'onview' when the on-view flag is on but bulk is off", async () => {
+    gateMock.approved = false; // bulk gate OFF
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true"; // on-view ON
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+    scrydexMock.pickRawPrice.mockReturnValue(RAW);
+
+    const result = await pullAndStoreScrydexPrice(CARD, { creditAuth: "onview" });
+
+    expect(result.pulled).toBe(true);
+    expect(scrydexMock.resolveScrydexCard).toHaveBeenCalled();
+  });
+
+  it("stays a no-op when BOTH gates are off even with creditAuth:'onview' (dev DENY)", async () => {
+    gateMock.approved = false; // bulk OFF
+    // SCRYDEX_ONVIEW_ENABLED unset → on-view OFF
+    scrydexMock.resolveScrydexCard.mockResolvedValue(RESOLVED);
+
+    const result = await pullAndStoreScrydexPrice(CARD, { creditAuth: "onview" });
+
+    expect(result).toEqual({ pulled: false, credits: 0, card: null });
+    expect(scrydexMock.resolveScrydexCard).not.toHaveBeenCalled();
+  });
+});
+
 describe("pullAndStoreScrydexHistory — raw per-day identity (Bug B)", () => {
   // The raw-only partial unique index `ph_raw_coalesced` (authored in
   // 20250113000000_pricing_history_raw_dedupe) relies on the history writer

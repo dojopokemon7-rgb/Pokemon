@@ -16,9 +16,17 @@
  *     Both now use a 24h window; they do not contradict each other.
  *
  * SPEND IS DOUBLE-BOUNDED:
- *   1. Credit gate (isScrydexLiveApproved): when live spend is NOT approved the
- *      whole batch is a safe no-op — 200 { refreshed:0, reason:"disabled" },
- *      zero HTTP, zero credits (AGENTS.md RULE 7 graceful 200).
+ *   1. Credit gate (ON-VIEW *or* bulk): the batch runs when EITHER the on-view
+ *      allowance (isScrydexOnViewApproved → SCRYDEX_ONVIEW_ENABLED) OR the hard
+ *      bulk gate (isScrydexLiveApproved) is approved; when NEITHER is, the whole
+ *      batch is a safe no-op — 200 { refreshed:0, reason:"disabled" }, zero
+ *      HTTP, zero credits (AGENTS.md RULE 7 graceful 200). WHY on-view here:
+ *      this is a user-initiated refresh of the user's OWN bounded holdings, so
+ *      it belongs to the on-view allowance the owner opts into in staging/prod
+ *      (which set ONLY SCRYDEX_ONVIEW_ENABLED) — without that, the button was a
+ *      silent no-op (user-reported bug #8). We pass creditAuth:"onview" down so
+ *      pullAndStoreScrydexPrice honours the on-view gate too; cron/scripts pass
+ *      nothing and keep the hard bulk gate, so the bulk gate is NOT widened.
  *   2. Per-card 24h gate inside pullAndStoreScrydexPrice: a card pulled within
  *      the last 24h is skipped (no HTTP, no credit) — so repeated portfolio
  *      refreshes within a day cost ZERO. We pass NO `force` so the gate stands.
@@ -28,7 +36,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireAuth } from "@/lib/utils/auth-guard";
 import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
-import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
+import {
+  isScrydexLiveApproved,
+  isScrydexOnViewApproved,
+} from "@/lib/services/scrydex-credit-gate";
 import {
   pullAndStoreScrydexPrice,
   type ScrydexPullCard,
@@ -61,9 +72,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   const limited = await enforceRateLimit(request, creditTier(), { kind: "user", id: userId });
   if (limited) return limited;
 
-  // Credit gate — a safe no-op when live spend is not approved (no HTTP, no
-  // credits). Mirrors how the enrich route gates on-view spend.
-  if (!(await isScrydexLiveApproved())) {
+  // Credit gate — a safe no-op when spend is not approved (no HTTP, no
+  // credits). Approve on EITHER the on-view allowance (what staging/prod enable
+  // for user-initiated on-open refreshes) OR the hard bulk gate; dev with both
+  // off stays a clean no-op. Mirrors how the enrich route gates on-view spend.
+  const onView = await isScrydexOnViewApproved();
+  const bulk = await isScrydexLiveApproved();
+  if (!onView && !bulk) {
     return NextResponse.json(
       { refreshed: 0, skipped: 0, reason: "disabled" },
       { status: 200 }
@@ -121,7 +136,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       try {
         // NO force — the built-in 24h gate skips cards priced in the last day,
         // so a repeated portfolio refresh within 24h spends nothing.
-        const { pulled } = await pullAndStoreScrydexPrice(card);
+        // creditAuth:"onview" — a user-initiated refresh of own holdings is
+        // authorized by the on-view allowance (mirrors the enrich route), so it
+        // works in staging/prod which set ONLY SCRYDEX_ONVIEW_ENABLED.
+        const { pulled } = await pullAndStoreScrydexPrice(card, {
+          creditAuth: "onview",
+        });
         if (pulled) refreshed++;
         else skipped++;
       } catch {
