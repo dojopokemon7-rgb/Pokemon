@@ -18,6 +18,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CardImage, cardInitials } from "@/components/CardImage";
 import { DojoSelect } from "@/components/DojoSelect";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
+import { gradedOptionsFromPrices } from "@/lib/utils/graded-options";
 
 // Minimal shape every caller can satisfy (explore tile, search result, or the
 // card-detail header). externalId is the catalog id sent to the collection API.
@@ -90,10 +91,37 @@ export function AddCardSheet({
   const setLabel = card.setName ?? "";
   const showSet = setLabel && setLabel.toLowerCase() !== "unknown set";
 
+  // SELF-FETCH (grid "+" parity): the Explore grid tiles (TrendingCard /
+  // CardResult) do NOT carry graded prices, so when the caller did NOT pass a
+  // `gradedPrices` prop we lazily fetch THIS card's stored graded rows from the
+  // public, DB-only, Redis-cached prices route — the SAME data the card-detail
+  // page passes in — and derive the grader list from it (gradedOptionsFromPrices,
+  // identical to the detail page's inline derivation). This makes the sheet
+  // self-sufficient from EITHER entry point.
+  //   - A provided `gradedPrices` prop takes precedence (detail/scanner callers):
+  //     the query is DISABLED so there is no double-fetch and their behavior is
+  //     byte-for-byte unchanged.
+  //   - RULE 7: the prices route always 200s; a fetch failure or a card with no
+  //     graded rows → [] → Raw-only (honest, same as today).
+  //   - The Raw add path NEVER waits on this fetch (Raw is addable immediately);
+  //     graded graders simply appear once the query resolves.
+  const hasProvidedGraded = card.gradedPrices !== undefined;
+  const { data: fetchedGraded } = useQuery<GradedPriceEntry[]>({
+    queryKey: ["card-prices", card.externalId, "graded-options"],
+    enabled: !hasProvidedGraded && !!card.externalId,
+    queryFn: async () => {
+      const res = await fetch(`/api/cards/${encodeURIComponent(card.externalId)}/prices`);
+      if (!res.ok) return []; // RULE 7 safety net — fall back to Raw-only.
+      const json = await res.json().catch(() => null);
+      return gradedOptionsFromPrices(json?.prices);
+    },
+  });
+
   // Build the GRADER list from what the card actually has: "Raw" first (when a
   // raw price exists), then every company present in gradedPrices, uppercased
-  // and de-duplicated. graded[company][grade] = live price.
-  const graded = card.gradedPrices ?? [];
+  // and de-duplicated. graded[company][grade] = live price. A provided prop
+  // wins; otherwise use the self-fetched rows (empty until resolved → Raw-only).
+  const graded = card.gradedPrices ?? fetchedGraded ?? [];
   const byCompany = new Map<string, Map<string, number | null>>();
   for (const g of graded) {
     const co = (g.company ?? "").toUpperCase();

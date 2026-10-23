@@ -42,6 +42,7 @@ import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-p
 import { cardImgById, onePieceImageUrl, isOnePieceCode } from "@/lib/utils/card-image";
 import { printingVariantFromId, decodeRouteId } from "@/lib/utils/card-number";
 import { isTerminalEnrichResult } from "@/lib/utils/enrich-result";
+import { gradedOptionsFromPrices } from "@/lib/utils/graded-options";
 import {
   buildChips,
   buildChartMatrix,
@@ -575,14 +576,7 @@ function CardDetailInner() {
   // AddCardSheet so its single Grader dropdown lists only this card's graders
   // and shows the LIVE price per selection.
   const gradedPrices = useMemo(
-    () =>
-      (currentPrices as CurrentPriceRow[])
-        .filter((p) => (p.type ?? "raw") === "graded" && p.company && p.grade)
-        .map((p) => ({
-          company: (p.company as string).toUpperCase(),
-          grade: p.grade as string,
-          price: p.priceMarket ?? p.priceLow ?? null,
-        })),
+    () => gradedOptionsFromPrices(currentPrices as CurrentPriceRow[]),
     [currentPrices]
   );
 
