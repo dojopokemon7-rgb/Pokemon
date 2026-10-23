@@ -122,3 +122,20 @@ reports/
 # k6 load-test run artifacts (keep the reusable script, ignore the outputs)
 scripts/loadtest/k6-output.txt
 scripts/loadtest/summary.json
+
+# Local scratch logs (push/ingest run output — never commit)
+push-*.log
+ingest-run.log
+*.log
+
+# Internal review docs & analysis (not part of the shipped product)
+audit/
+CLIENT_FIXES_REPORT.md
+*.pdf
+
+# Stray local folders / test captures (never part of the app)
+Dojo_website/
+testcards/
+
+# Underscore-prefixed throwaway scripts (local one-offs: _check-admin, _fix-*, etc.)
+scripts/_*.ts
