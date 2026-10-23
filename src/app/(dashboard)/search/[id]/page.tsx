@@ -39,7 +39,7 @@ import { Skeleton } from "@/components/Skeleton";
 import { useWantToBuy } from "@/lib/hooks/useWantToBuy";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import { listVariants, pickBestRaw, pickDefaultVariant } from "@/lib/utils/raw-price";
-import { cardImgById, onePieceImageUrl, isOnePieceCode } from "@/lib/utils/card-image";
+import { isOnePieceCode, variantHeroSrc, HERO_PLACEHOLDER } from "@/lib/utils/card-image";
 import { printingVariantFromId, decodeRouteId } from "@/lib/utils/card-number";
 import { isTerminalEnrichResult } from "@/lib/utils/enrich-result";
 import { gradedOptionsFromPrices } from "@/lib/utils/graded-options";
@@ -352,17 +352,15 @@ function CardDetailInner() {
   // <id>, which resolves Card.imageUrl server-side (hides images.scrydex.com).
   // If the proxy 404s (live-search card with no stored row) the plain <img>'s
   // onError swaps in the local placeholder, so no raw url ever leaks.
-  const PLACEHOLDER = "/cards/card-front.webp";
-  // One Piece hero: FEAT-004 retired the per-variant `variantImages` art
-  // resolution — with per-printing rows each printing is its own card id
-  // (`...::alt-art`) carrying its own imageUrl, so the hero no longer needs to
-  // pick art out of a per-variant map. It resolves the base-art Bandai proxy
-  // for the route id (then PLACEHOLDER on 404). Pokémon branch (cardImgById)
-  // is unchanged.
-  const heroSrc =
-    game === "onepiece"
-      ? onePieceImageUrl(id) ?? PLACEHOLDER
-      : cardImgById(id);
+  const PLACEHOLDER = HERO_PLACEHOLDER;
+  // Bug #6: the hero image must FOLLOW the selected variant. Per-printing rows
+  // each carry their own imageUrl keyed by the composite id `${baseId}::${variant}`,
+  // so variantHeroSrc resolves a non-default variant through the game-agnostic
+  // id-proxy (serving THAT printing's art for BOTH games) and keeps the base-art
+  // behavior otherwise. The `useEffect` below resets heroError whenever heroSrc
+  // changes (variant switch), and the <img onError> degrades a printing with no
+  // distinct art to PLACEHOLDER — never a broken image (RULE 2).
+  const heroSrc = variantHeroSrc({ game, routeId: id, variant, defaultVariant });
   const [heroError, setHeroError] = useState(false);
   // Reset the single-hop onError flag whenever the resolved src changes (e.g.
   // the user switches variant) so a prior failed load re-attempts the new art.

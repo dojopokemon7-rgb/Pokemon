@@ -185,6 +185,52 @@ export function onePieceImageUrl(externalId: string): string | null {
   return ONE_PIECE_CODE.test(code) ? `/api/one-piece-img/${code}` : null;
 }
 
+// --- Card-detail HERO image (Bug #6: hero follows the selected variant) -----
+//
+// Local placeholder served when the proxy 404s (a live-search card with no
+// stored row, or a printing with no distinct art) — the <img onError> swaps
+// this in so no raw upstream url ever leaks and there is NEVER a broken image
+// (AGENTS.md RULE 2).
+export const HERO_PLACEHOLDER = "/cards/card-front.webp";
+
+/**
+ * Resolve the card-detail HERO image src for the SELECTED variant.
+ *
+ * Per the per-printing re-model (RULE 3), each printing is its own Card row
+ * keyed by the composite externalId `${baseId}::${variantName}`, carrying its
+ * OWN imageUrl. So when a NON-DEFAULT variant is selected we resolve the hero
+ * through the game-agnostic id-proxy `/api/card-img/<id>` with that composite
+ * id — the server resolves THAT printing row's imageUrl and never reveals the
+ * upstream CDN host to the browser. The `::` suffix is the verbatim Scrydex
+ * variant name; `baseId` is the route id with any `::<variant>` suffix stripped
+ * (so a composite ROUTE id re-selects correctly off its own base).
+ *
+ * Otherwise (default variant, or a null variant) we keep the existing base-art
+ * behavior: One Piece ids go through the Bandai proxy (then HERO_PLACEHOLDER on
+ * a non-Bandai code), Pokémon ids through the id-proxy. A printing with no
+ * distinct stored image 404s and the caller's onError degrades to the
+ * placeholder — never a broken image (RULE 2).
+ */
+export function variantHeroSrc({
+  game,
+  routeId,
+  variant,
+  defaultVariant,
+}: {
+  game: "pokemon" | "onepiece";
+  routeId: string;
+  variant: string | null;
+  defaultVariant: string | null;
+}): string {
+  const baseId = routeId.split("::")[0];
+  if (typeof variant === "string" && variant.length > 0 && variant !== defaultVariant) {
+    // The id-proxy is game-agnostic: it serves the composite printing row's own
+    // imageUrl for BOTH Pokémon and One Piece, hiding the upstream CDN host.
+    return cardImgById(`${baseId}::${variant}`);
+  }
+  return game === "onepiece" ? onePieceImageUrl(routeId) ?? HERO_PLACEHOLDER : cardImgById(routeId);
+}
+
 /**
  * Ordered list of image URLs to try for a One Piece card, best first.
  * De-duplicated, empties removed. The UI steps through this on <img onError>;
