@@ -149,3 +149,22 @@ export function dashboardOverallChange(
 export function hasDashboardHistory(seriesList: readonly DashboardSeries[]): boolean {
   return drawableSeries(seriesList).length > 0;
 }
+
+/**
+ * Scope the drawable series to the focused collection (Bug #5). When a focus
+ * pill is active AND still selected (`isActive(focusedId)`), the chart, headline
+ * change and range-tab gate all narrow to that ONE collection's series; a null
+ * or no-longer-active focus falls back to ALL series. This is the EXACT rule
+ * `headlineChange` already inlined — sharing it here keeps the DRAWN lines, the
+ * "+$X · +Y%" badge and the range gate from ever disagreeing. Pure; fabricates
+ * nothing (RULE 2) — it only filters an existing honest series list.
+ */
+export function scopeSeriesToFocus(
+  seriesList: readonly DashboardSeries[],
+  focusedId: string | null,
+  isActive: (id: string) => boolean
+): DashboardSeries[] {
+  return focusedId && isActive(focusedId)
+    ? seriesList.filter((s) => s.id === focusedId)
+    : [...seriesList];
+}

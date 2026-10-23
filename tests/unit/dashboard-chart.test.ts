@@ -3,6 +3,7 @@ import {
   buildDashboardMatrix,
   dashboardOverallChange,
   hasDashboardHistory,
+  scopeSeriesToFocus,
   type DashboardSeries,
 } from "@/lib/utils/dashboard-chart";
 
@@ -112,6 +113,50 @@ describe("dashboardOverallChange — baseline excludes not-yet-owned series", ()
     ]);
     expect(change.delta).toBe(25);
     expect(change.pct).toBeNull();
+  });
+});
+
+describe("scopeSeriesToFocus — chart follows the focused collection (Bug #5)", () => {
+  const list = [
+    s("A", [
+      { date: "2026-01-01", value: 100 },
+      { date: "2026-01-02", value: 110 },
+    ]),
+    s("B", [
+      { date: "2026-01-01", value: 10 },
+      { date: "2026-01-02", value: 40 },
+    ]),
+    s("C", [
+      { date: "2026-01-01", value: 1 },
+      { date: "2026-01-02", value: 2 },
+    ]),
+  ];
+
+  it("focusedId=null returns all series", () => {
+    const scoped = scopeSeriesToFocus(list, null, () => true);
+    expect(scoped.map((x) => x.id)).toEqual(["A", "B", "C"]);
+  });
+
+  it("focusedId='B' with an active focus returns only series B", () => {
+    const scoped = scopeSeriesToFocus(list, "B", (id) => id === "B");
+    expect(scoped.map((x) => x.id)).toEqual(["B"]);
+  });
+
+  it("an inactive focus is ignored → all series returned", () => {
+    const scoped = scopeSeriesToFocus(list, "B", () => false);
+    expect(scoped.map((x) => x.id)).toEqual(["A", "B", "C"]);
+  });
+
+  it("the scoped single-series result drives its OWN curve, not the combined one", () => {
+    const scoped = scopeSeriesToFocus(list, "B", (id) => id === "B");
+    // B alone: 10 → 40. Combined would be 111 → 152 (delta 41) — this proves the
+    // chart/headline draw the focused collection, not the aggregate.
+    const matrix = buildDashboardMatrix(scoped);
+    expect(matrix.series.map((x) => x.valueKey)).toEqual(["B"]);
+    expect(matrix.data.map((d) => d.B)).toEqual([10, 40]);
+    const change = dashboardOverallChange(scoped);
+    expect(change.delta).toBe(30);
+    expect(change.pct).toBeCloseTo(300, 6);
   });
 });
 

@@ -31,6 +31,7 @@ import {
   buildDashboardMatrix,
   dashboardOverallChange,
   hasDashboardHistory,
+  scopeSeriesToFocus,
   type DashboardSeries,
 } from "@/lib/utils/dashboard-chart";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
@@ -784,29 +785,37 @@ export default function DashboardClient({
     });
   }, [activeSelectedOptions, realHistoriesData]);
 
+  // Bug #5: the chart, headline change and range-tab gate must all follow the
+  // focused collection. Clicking a focus pill sets `focusedId`; this narrows the
+  // drawn series to that ONE collection (when it's still selected) via the SAME
+  // shared rule the headline uses — so focusing a collection changes the LINES,
+  // not just the numbers. Null / inactive focus → all selected series.
+  const scopedChartSeries = useMemo(
+    () => scopeSeriesToFocus(chartSeriesList, focusedId, (id) => activeSelectedIds.has(id)),
+    [chartSeriesList, focusedId, activeSelectedIds],
+  );
+
   // REAL headline overall change (AGENTS.md RULE 2 — replaces the old hardcoded
-  // OVERALL_PCT_BY_RANGE). Derived from the SAME chart series the user sees:
+  // OVERALL_PCT_BY_RANGE). Derived from the SAME focus-scoped chart series the
+  // user sees:
   //  - combined headline → aggregate of ALL selected collections' series,
   //  - focused-collection stat → that one collection's series only,
   // so the "+$X · +Y%" badge agrees with the drawn curve. When the scope has
   // fewer than 2 real valued points (not enough history), delta/pct are null →
   // the badge renders "—", never a fabricated number or a misleading 0%.
-  const headlineChange = useMemo(() => {
-    const scoped =
-      focusedId && activeSelectedIds.has(focusedId)
-        ? chartSeriesList.filter((s) => s.id === focusedId)
-        : chartSeriesList;
-    return dashboardOverallChange(scoped);
-  }, [chartSeriesList, focusedId, activeSelectedIds]);
+  const headlineChange = useMemo(
+    () => dashboardOverallChange(scopedChartSeries),
+    [scopedChartSeries],
+  );
 
   // Whether the chart draws a line (≥1 drawable series) vs its honest empty
-  // state. Reuses the SAME `drawable` rule the chart uses so the range tabs and
-  // the chart can never disagree. False → the 1D-MAX timeframe selector has
-  // nothing to filter, so we hide it rather than show clickable tabs over an
-  // empty chart (QA #7).
+  // state. Reuses the SAME `drawable` rule the chart uses — over the SAME
+  // focus-scoped series — so the range tabs and the chart can never disagree.
+  // False → the 1D-MAX timeframe selector has nothing to filter, so we hide it
+  // rather than show clickable tabs over an empty chart (QA #7).
   const hasChartableHistory_ = useMemo(
-    () => hasDashboardHistory(chartSeriesList),
-    [chartSeriesList],
+    () => hasDashboardHistory(scopedChartSeries),
+    [scopedChartSeries],
   );
 
   // Active tab card rows
@@ -1074,7 +1083,7 @@ export default function DashboardClient({
             ) : (
               <div className="dojo-fade-in-fast" style={{ height: "100%" }}>
                 <MultiLineComparisonChart
-                  seriesList={chartSeriesList}
+                  seriesList={scopedChartSeries}
                   hidden={hidden}
                 />
               </div>
