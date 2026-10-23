@@ -33,8 +33,10 @@
  * the enrich route: when OFF it is an honest no-op (`{ pulled:false }`,
  * NO call to pullAndStoreSoldListings) so the UI shows "No recent sales found"
  * — never an error. When ON, it runs the credit-gated single writer fail-open
- * (a throw → `{ pulled:false }`, never a 5xx). The writer best-effort busts the
- * soldRows cache so the subsequent GET re-reads the fresh set.
+ * with `creditAuth:"onview"` so the ON-VIEW allowance ALONE authorizes the
+ * spend (mirroring the enrich route) — the big-bulk gate is NOT required and
+ * NOT widened (a throw → `{ pulled:false }`, never a 5xx). The writer
+ * best-effort busts the soldRows cache so the subsequent GET re-reads the fresh set.
  */
 
 import { NextResponse } from "next/server";
@@ -170,8 +172,14 @@ export async function POST(
 
   // Allowance ON → run the credit-gated single writer fail-open: a thrown
   // ScrydexCreditsNotApproved / transient fault must NOT 5xx (AGENTS.md rule 7).
+  // Pass creditAuth:"onview" so the ON-VIEW allowance (SCRYDEX_ONVIEW_ENABLED)
+  // ALONE authorizes the spend — mirroring the enrich route's pulls. Without it
+  // the writer's assertScrydexEnrichApproved would require the big-bulk gate
+  // (SCRYDEX_LIVE_CREDITS_APPROVED), which staging/prod don't set, so the button
+  // would store nothing. The bulk gate is NOT widened by this (the on-view flag
+  // is a SEPARATE authorizer — see scrydex-credit-gate.ts).
   try {
-    const { stored } = await pullAndStoreSoldListings(id);
+    const { stored } = await pullAndStoreSoldListings(id, { creditAuth: "onview" });
     return NextResponse.json({ pulled: true, stored }, { status: 200 });
   } catch {
     return NextResponse.json({ pulled: false, reason: "unavailable" }, { status: 200 });

@@ -45,9 +45,10 @@ vi.mock("@/lib/db", () => ({ prisma: prismaMock }));
 const pricingMock = vi.hoisted(() => ({
   pullAndStoreScrydexHistory: vi.fn(),
   pullAndStorePopulation: vi.fn(),
-  // The enrich route now also pulls recent eBay SOLD listings (the third pull,
-  // same on-view auth + 24h marker cadence). Mock it so the test observes the
-  // call and the sales.stored passthrough — ZERO network, ZERO credits.
+  // The enrich route no longer pulls recent eBay SOLD listings — those are
+  // button-gated via POST /api/cards/[id]/ebay-sold. We still mock the symbol
+  // so a regression (enrich re-importing/calling it) is caught by the
+  // not.toHaveBeenCalled assertions below — ZERO network, ZERO credits.
   pullAndStoreSoldListings: vi.fn(),
   // The per-printing weekly-delta side-write (search-grid ▲/▼ for `::` rows),
   // same on-view auth + fail-open contract. Mock it so the route wiring is
@@ -100,7 +101,6 @@ beforeEach(() => {
   // Default pull results so the route's `r.stored` reads are well-defined.
   pricingMock.pullAndStoreScrydexHistory.mockResolvedValue({ stored: 0, credits: 0 });
   pricingMock.pullAndStorePopulation.mockResolvedValue({ stored: false, credits: 0 });
-  pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 0, credits: 0 });
   pricingMock.pullAndStoreScrydexWeeklyDelta.mockResolvedValue({ written: true, credits: 1 });
   // Clear the Scrydex flags BEFORE each test so the suite is deterministic
   // regardless of ambient env. The project's .env now sets
@@ -129,8 +129,8 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(body.enriched).toBe(false);
     expect(pricingMock.pullAndStoreScrydexHistory).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStorePopulation).not.toHaveBeenCalled();
-    // TASK 1 (b): BOTH gate flags off ⇒ the sold-listings pull is NOT called
-    // either — no credits spent on any of the three pulls.
+    // Enrich never pulls sold listings (reverted to button-gated), and the
+    // short-circuit calls no Scrydex service at all.
     expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStoreScrydexWeeklyDelta).not.toHaveBeenCalled();
     // Short-circuit happens before any freshness query (the SyncLog marker read).
@@ -177,6 +177,11 @@ describe("POST /api/cards/[id]/enrich", () => {
 
     expect(res.status).toBe(200);
     expect(body.enriched).toBe(true);
+    // Enrich pulls ONLY history + population now — the response carries no
+    // `sales` field and no sold-listings pull is ever invoked.
+    expect(body).toEqual({ enriched: true, history: { stored: 0 }, population: { stored: false } });
+    expect(body.sales).toBeUndefined();
+    expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStoreScrydexHistory).toHaveBeenCalledTimes(1);
     expect(pricingMock.pullAndStorePopulation).toHaveBeenCalledTimes(1);
     // The per-printing weekly-delta side-write runs on the stale path too, with
@@ -233,6 +238,9 @@ describe("POST /api/cards/[id]/enrich", () => {
 
     expect(res.status).toBe(200);
     expect(body.enriched).toBe(true);
+    // Only history + population; no sales field, no sold-listings pull.
+    expect(body.sales).toBeUndefined();
+    expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStoreScrydexHistory).toHaveBeenCalledTimes(1);
     expect(pricingMock.pullAndStorePopulation).toHaveBeenCalledTimes(1);
     expect(pricingMock.pullAndStoreScrydexWeeklyDelta).toHaveBeenCalledTimes(1);
@@ -253,16 +261,15 @@ describe("POST /api/cards/[id]/enrich", () => {
 
   it("(weekly-delta fail-open) a thrown weekly-delta side-write does NOT 5xx; marker + other pulls still run", async () => {
     // RULE 7: a ScrydexCreditsNotApproved / transient throw from the delta
-    // side-write must be swallowed — the route always returns 200, the other
+    // side-write must be swallowed — the route always returns 200, the two
     // pulls ran, and the 24h marker is still written. The delta is NOT in the
-    // body, so a swallowed throw leaves the {enriched,history,population,sales}
-    // shape intact.
+    // body, so a swallowed throw leaves the {enriched,history,population} shape
+    // intact.
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
     prismaMock.syncLog.findFirst.mockResolvedValue(null);
     pricingMock.pullAndStoreScrydexHistory.mockResolvedValue({ stored: 5, credits: 3 });
     pricingMock.pullAndStorePopulation.mockResolvedValue({ stored: true, credits: 1 });
-    pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 2, credits: 1 });
     pricingMock.pullAndStoreScrydexWeeklyDelta.mockRejectedValue(new Error("boom"));
 
     const [req, ctx] = enrichRequest("base1-4");
@@ -271,10 +278,11 @@ describe("POST /api/cards/[id]/enrich", () => {
 
     expect(res.status).toBe(200);
     expect(body.enriched).toBe(true);
-    // The other three pulls still surfaced their stored counts.
+    // The two pulls still surfaced their stored counts; no sales field.
     expect(body.history).toEqual({ stored: 5 });
     expect(body.population).toEqual({ stored: true });
-    expect(body.sales).toEqual({ stored: 2 });
+    expect(body.sales).toBeUndefined();
+    expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
     expect(pricingMock.pullAndStoreScrydexWeeklyDelta).toHaveBeenCalledTimes(1);
     // The 24h marker is still written despite the thrown side-write.
     expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
@@ -318,78 +326,28 @@ describe("POST /api/cards/[id]/enrich", () => {
     expect(pricingMock.pullAndStoreScrydexWeeklyDelta).not.toHaveBeenCalled();
   });
 
-  // ── TASK 1: recent eBay SOLD listings ride the same on-view enrich pull ──
-
-  it("(TASK 1a) allowance ON, stale → pulls sold listings with creditAuth:onview, returns sales.stored>0", async () => {
-    // With the on-view allowance ON and the card stale (no marker), the third
-    // pull runs alongside history + population, authorized BY the on-view flag
-    // (creditAuth:"onview"). The externalId ([id]) is passed straight through
-    // (RULE 3). A stored count surfaces in the 200 body as sales.stored.
+  it("enrich NEVER pulls sold listings (that is the button-gated ebay-sold POST)", async () => {
+    // The sales pull was reverted OUT of enrich: opening a card auto-loads only
+    // history + population (+ the weekly-delta side-write). The sold-listings
+    // writer must not be invoked on ANY enrich path, and the 200 body carries
+    // no `sales` field (shape = {enriched,history,population}).
     process.env.SCRYDEX_ONVIEW_ENABLED = "true";
     prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
     prismaMock.syncLog.findFirst.mockResolvedValue(null); // never enriched → stale
-    pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 3, credits: 1 });
+    pricingMock.pullAndStoreScrydexHistory.mockResolvedValue({ stored: 5, credits: 3 });
+    pricingMock.pullAndStorePopulation.mockResolvedValue({ stored: true, credits: 1 });
 
     const [req, ctx] = enrichRequest("base1-4");
     const res = await POST(req, ctx);
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.enriched).toBe(true);
-    expect(body.sales).toEqual({ stored: 3 });
-    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledTimes(1);
-    // [id] (externalId) passed directly, authorized by the on-view allowance.
-    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledWith("base1-4", {
-      creditAuth: "onview",
+    expect(body).toEqual({
+      enriched: true,
+      history: { stored: 5 },
+      population: { stored: true },
     });
-    // The single 24h marker still covers all three pulls (one enrich attempt).
-    expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ job: "scrydex_onview_enrich", cardId: "card_1" }),
-      })
-    );
-  });
-
-  it("(TASK 1c) card with NO Scrydex sold records stores nothing → sales.stored:0 (no fabrication)", async () => {
-    // A card Scrydex has no sold records for: the writer honestly returns
-    // stored:0 (empty/null fetch). The route surfaces sales.stored:0 — never a
-    // fabricated row — and the read route (pure Postgres) then renders the
-    // "No recent sales found" empty state (RULE 2).
-    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
-    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
-    prismaMock.syncLog.findFirst.mockResolvedValue(null);
-    pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 0, credits: 1 });
-
-    const [req, ctx] = enrichRequest("base1-4");
-    const res = await POST(req, ctx);
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.enriched).toBe(true);
-    expect(body.sales).toEqual({ stored: 0 });
-    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledTimes(1);
-  });
-
-  it("(TASK 1 fail-open) a thrown sold-listings pull does NOT 5xx; sales.stored:0, marker still written", async () => {
-    // RULE 7: a ScrydexCreditsNotApproved / transient throw from any pull must
-    // be swallowed — the route always returns 200. The 24h marker is still
-    // written so the attempt throttles the card for 24h regardless.
-    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
-    prismaMock.card.findUnique.mockResolvedValue(KNOWN_CARD);
-    prismaMock.syncLog.findFirst.mockResolvedValue(null);
-    pricingMock.pullAndStoreSoldListings.mockRejectedValue(new Error("boom"));
-
-    const [req, ctx] = enrichRequest("base1-4");
-    const res = await POST(req, ctx);
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.enriched).toBe(true);
-    expect(body.sales).toEqual({ stored: 0 });
-    expect(prismaMock.syncLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ job: "scrydex_onview_enrich", cardId: "card_1" }),
-      })
-    );
+    expect(body.sales).toBeUndefined();
+    expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
   });
 });

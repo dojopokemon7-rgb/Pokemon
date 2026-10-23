@@ -80,6 +80,25 @@ describe("POST /api/cards/[id]/ebay-sold", () => {
     expect(pricingMock.pullAndStoreSoldListings).not.toHaveBeenCalled();
   });
 
+  it("allowance ON → pulls with creditAuth:onview, returns {pulled:true,stored}", async () => {
+    // The button works on staging/prod where ONLY the on-view flag is set: the
+    // writer is invoked with creditAuth:"onview" so the ON-VIEW allowance ALONE
+    // authorizes the spend (the big-bulk gate is NOT required and NOT widened).
+    process.env.SCRYDEX_ONVIEW_ENABLED = "true";
+    prismaMock.card.findFirst.mockResolvedValue({ id: "card_1" });
+    pricingMock.pullAndStoreSoldListings.mockResolvedValue({ stored: 2, credits: 1 });
+
+    const [req, ctx] = soldRequest("base1-4");
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ pulled: true, stored: 2 });
+    expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledWith("base1-4", {
+      creditAuth: "onview",
+    });
+  });
+
   it("SECURITY: unauthenticated POST → 401, NO pullAndStoreSoldListings call", async () => {
     // The POST can trigger a ~5cr sold-listings pull; an anonymous caller must
     // be rejected before any allowance check or writer call.

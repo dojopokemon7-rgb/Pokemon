@@ -1,7 +1,8 @@
 /**
  * POST /api/cards/[id]/enrich — ON-VIEW, store-once enrichment of a card's
- * price history + PSA population + recent eBay SOLD listings, called ONCE by
- * the card-detail page on mount.
+ * price history + PSA population, called ONCE by the card-detail page on mount.
+ * Recent eBay SOLD listings are NOT pulled here — they are button-gated via the
+ * dedicated POST /api/cards/[id]/ebay-sold ("Load recent sales" button).
  *
  * `[id]` is the EXTERNAL card id (same convention as the sibling prices/history
  * routes). The route is deliberately CHEAP and idempotent:
@@ -11,9 +12,9 @@
  *     called at all, so dev/verification never spends a credit.
  *   - Short-circuits to `{ enriched:false, reason:"fresh" }` when the card
  *     already has stored history AND a stored population — store-once, no spend.
- *   - Otherwise pulls all three together: history (365d, limited to the card's
- *     actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades), population, and
- *     recent eBay SOLD listings. All three pulls are invoked with
+ *   - Otherwise pulls both together: history (365d, limited to the card's
+ *     actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades) and population
+ *     (plus a weekly-delta side-write). Both pulls are invoked with
  *     `creditAuth:"onview"` so the ON-VIEW allowance (SCRYDEX_ONVIEW_ENABLED)
  *     ALONE authorizes the spend — the big-bulk gate
  *     (SCRYDEX_LIVE_CREDITS_APPROVED) is NOT required and NOT widened (see
@@ -35,7 +36,6 @@ import { isScrydexOnViewApproved } from "@/lib/services/scrydex-credit-gate";
 import {
   pullAndStoreScrydexHistory,
   pullAndStorePopulation,
-  pullAndStoreSoldListings,
   pullAndStoreScrydexWeeklyDelta,
 } from "@/lib/services/scrydex-pricing.service";
 
@@ -134,7 +134,6 @@ export async function POST(
   // instead of being masked by a bare `enriched:true` (fail-open contract kept).
   let historyStored = 0;
   let populationStored = false;
-  let salesStored = 0;
   if (card.scrydexId) {
     // Only the card's actually-present raw + PSA 10/9 + BGS 10 + CGC 10 grades.
     const gradedRows = await prisma.currentPrice.findMany({
@@ -181,31 +180,21 @@ export async function POST(
     }
   }
 
-  // Third pull: recent eBay SOLD listings. The enrich route's [id] IS the
-  // externalId (RULE 3) — pass it directly to the single writer. Same on-view
-  // authorization + fail-open contract as the two pulls above; a thrown
-  // ScrydexCreditsNotApproved (neither gate authorizes) or any error must NOT
-  // 5xx (RULE 7). stored stays 0 on a swallowed/empty write (RULE 2 — a card
-  // Scrydex has no sold records for honestly stores nothing).
-  {
-    try {
-      const r = await pullAndStoreSoldListings(id, { creditAuth: "onview" });
-      salesStored = r.stored;
-    } catch {
-      // fail-open — never a 5xx. stored stays 0.
-    }
-  }
+  // Recent eBay SOLD listings are NO LONGER pulled on-view — they are
+  // button-gated (the card-detail page's "Load recent sales" button fires the
+  // dedicated POST /api/cards/[id]/ebay-sold, which runs the same on-view-
+  // authorized single writer). Opening a card spends nothing on sales.
 
-  // Fourth side-write: populate THIS printing's 7-day delta
+  // Side-write: populate THIS printing's 7-day delta
   // (Card.weeklyChangePct/weeklyChangeAbs) so the search grid + card header
   // render ▲/▼ for per-printing (`::`) rows too — today those rows show no delta
   // because pullAndStoreScrydexPrice (the base-row writer) never runs here and
   // the per-printing re-ingest never backfilled them. Printing-scoped (RULE 3)
   // and never fabricated (RULE 2) inside the writer. NOT added to the 200 body —
   // it is a side-write on the Card row the grid/header read later. Same on-view
-  // auth + fail-open contract as the three pulls above: a thrown
+  // auth + fail-open contract as the two pulls above: a thrown
   // ScrydexCreditsNotApproved (dev DENY) or any fault is swallowed, never a 5xx,
-  // and never blocks the history/population/sales pulls or the marker write.
+  // and never blocks the history/population pulls or the marker write.
   if (card.scrydexId) {
     try {
       await pullAndStoreScrydexWeeklyDelta(
@@ -218,10 +207,10 @@ export async function POST(
   }
 
   // Write the per-card freshness marker (the 24h clock) — ALWAYS when we reach
-  // the pull branch, even if all three pulls stored 0 or threw. The whole point is
+  // the pull branch, even if both pulls stored 0 or threw. The whole point is
   // to throttle pop-less / history-less cards: the credit spend already happened
   // (or was denied) on this attempt, so the 24h window starts now. credits:0 —
-  // the marker is NOT itself a Scrydex call (history/population/listings meter their own
+  // the marker is NOT itself a Scrydex call (history/population meter their own
   // SyncLog rows with the real credit cost). Fail-open (try/catch) so a marker-
   // write fault never 5xx (RULE 7).
   try {
@@ -245,7 +234,6 @@ export async function POST(
       enriched: true,
       history: { stored: historyStored },
       population: { stored: populationStored },
-      sales: { stored: salesStored },
     },
     { status: 200 }
   );

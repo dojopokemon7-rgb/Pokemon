@@ -8,6 +8,13 @@ import { useQuery } from "@tanstack/react-query";
 // never fall back to active listings. Empty / unavailable / pending-approval →
 // "No recent sales found" (plan §4).
 //
+// BUTTON-GATED: this component is MOUNTED BY THE PAGE ONLY AFTER the user
+// clicks "Load recent sales" (which first fires the credit-spending POST, then
+// invalidates ["ebay-sold", id]). It is NOT auto-displayed on card open, so its
+// pure-Postgres GET on mount runs only post-click — opening a card spends
+// nothing on sales. The component itself is a pure presentational+read fetch;
+// the page owns the click gating.
+//
 // NOTE: this lives in its OWN component file (not inline in the card-detail
 // page) because Next's App Router forbids a page.tsx from exporting anything
 // other than the default + known route exports — a named export there fails

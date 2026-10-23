@@ -381,6 +381,10 @@ function CardDetailInner() {
   // follows the data (the largest ENABLED range once history loads). Once the
   // user taps a tab, their choice sticks and the auto-default stops overriding.
   const [rangeTouched, setRangeTouched] = useState(false);
+  // Recent Sales is button-gated now (no auto fetch on mount) — this flips true
+  // once the user clicks "Load recent sales", which fires the gated POST pull
+  // and then mounts <RecentSales> (its own GET renders the stored rows).
+  const [salesRequested, setSalesRequested] = useState(false);
   const queryClient = useQueryClient();
   // ADD TO COLLECTION opens the shared AddCardSheet (same flow as Explore).
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -473,8 +477,10 @@ function CardDetailInner() {
   });
 
   // ON-VIEW enrichment: fire the enrich POST on mount to pull+store this card's
-  // history / population / recent-sold once per 24h (the server throttles via a
-  // per-card marker). Keyed ["enrich", id] so the query cache dedupes concurrent
+  // history + population once per 24h (the server throttles via a per-card
+  // marker). Recent SOLD listings are NO LONGER pulled here — they are button-
+  // gated (the "Load recent sales" button fires the dedicated ebay-sold POST).
+  // Keyed ["enrich", id] so the query cache dedupes concurrent
   // mounts. The route is a no-op {enriched:false,reason:"disabled"} unless
   // SCRYDEX_ONVIEW_ENABLED is on, so this costs nothing in dev.
   //
@@ -511,18 +517,16 @@ function CardDetailInner() {
         throw new Error(`enrich transient: status ${res.status}`);
       }
 
-      // Terminal (route actually ran). Re-read history + population + recent
-      // sales regardless of the specific terminal reason — even a card that was
-      // already "fresh" may have had its first on-mount read race AHEAD of the
-      // stored data (or cache an early null), so invalidate so the panels
-      // repaint from the DB. Cheap DB reads (Redis-cached server-side). This
-      // runs ONLY after a settled enrich, NEVER after a thrown transient failure.
+      // Terminal (route actually ran). Re-read history + population regardless
+      // of the specific terminal reason — even a card that was already "fresh"
+      // may have had its first on-mount read race AHEAD of the stored data (or
+      // cache an early null), so invalidate so the panels repaint from the DB.
+      // Enrich no longer pulls sales (that is the button-gated ebay-sold POST),
+      // so ["ebay-sold", id] is NOT invalidated here. Cheap DB reads (Redis-
+      // cached server-side). This runs ONLY after a settled enrich, NEVER after
+      // a thrown transient failure.
       queryClient.invalidateQueries({ queryKey: ["card-history", id] });
       queryClient.invalidateQueries({ queryKey: ["population", id] });
-      // The enrich POST also stores recent eBay SOLD rows (the third pull), so
-      // re-read them too — RecentSales auto-fetches the GET on mount and this
-      // repaints it with the freshly-stored sales.
-      queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });
       return body;
     },
     // Bounded retry so a session that hydrates a beat late is picked up, while a
@@ -1003,16 +1007,33 @@ function CardDetailInner() {
             threading it here would be wrong; graded sold-record labelling is
             unresolved (Audit L2). RecentSales keeps optional grade?/variant?
             params for a future single-grade filter, left unused for now. */}
-        {/* Auto-displayed: the on-mount enrich POST now stores recent SOLD rows
-            (the third pull, same 24h cadence as history/population), so the
-            section shows the stored sales on first render WITHOUT a button
-            press. RecentSales auto-fetches the pure-Postgres GET on mount and
-            the enrich query invalidates ["ebay-sold", id] once it settles so
-            freshly-stored rows repaint. We NEVER fire a credit-spending POST
-            from the client — the enrich POST is the only pull. A card Scrydex
-            has no sold records for keeps the honest "No recent sales found"
-            empty state (RULE 2). */}
-        <RecentSales id={id} setName={setName} rarity={rarity} />
+        {/* Button-gated: no sold-record fetch happens until the user clicks.
+            The POST runs the on-view-allowance-gated pull (a no-op when the
+            flag is off), then invalidates ["ebay-sold", id] so RecentSales'
+            GET re-reads the stored rows. Once requested, RecentSales mounts and
+            renders exactly as before ("No recent sales found" when empty). We
+            NEVER fire the credit-spending POST on mount — only on this click. */}
+        {salesRequested ? (
+          <RecentSales id={id} setName={setName} rarity={rarity} />
+        ) : (
+          <button
+            className="dojo-btn dojo-btn-outline"
+            style={{ width: "100%", marginTop: "22px", height: "44px" }}
+            onClick={() => {
+              setSalesRequested(true);
+              fetch(`/api/cards/${encodeURIComponent(id)}/ebay-sold`, {
+                method: "POST",
+                credentials: "include",
+              })
+                .catch(() => {})
+                .finally(() => {
+                  queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });
+                });
+            }}
+          >
+            Load recent sales
+          </button>
+        )}
 
         {/* Accessories block REMOVED — it was dummy/hardcoded data (plan §4). */}
       </div>
