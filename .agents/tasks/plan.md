@@ -1,195 +1,161 @@
-# Implementation Plan — three chart/UI bugs (users #4, #5, #6)
+# Implementation Plan — Revert eBay SOLD sales from AUTO-LOAD back to LOAD-ON-CLICK
 
-Worktree (ALL work here): `d:\Pokemon\Pokemon\.worktrees\fix-chart-ui`.
-Do NOT touch the main worktree, `prisma/schema.prisma`, or `src/lib/auth.ts`.
+Goal: reverse commit c71ff2b's auto-load of recent eBay SOLD sales. After this change, opening a
+card detail page auto-loads ONLY history + population (unchanged). The Recent Sales section shows a
+"Load recent sales" button; clicking it fires the existing `POST /api/cards/[id]/ebay-sold` (1 Scrydex
+credit), then reads + displays stored rows via `GET /api/cards/[id]/ebay-sold`. Not clicking spends
+nothing on sales.
 
-Load-bearing rules honored throughout: RULE 2 (never fabricate — `null` → "—", no
-synthetic series), RULE 3 (two card ids + per-printing composite `${baseId}::${variant}`,
-each printing row carries its own `imageUrl`), RULE 10 (design tokens only), RULE 14
-(preserve load-bearing comments), and the PAGE-EXPORT GUARD (a `page.tsx` may export ONLY
-a default — extracted pure helpers go to `src/lib`, never a named export in `page.tsx`;
-a named export passes `tsc` but FAILS `next build`'s Page-type phase).
+All work is in the worktree `d:\Pokemon\Pokemon\.worktrees\fix-sales-on-click`. Do NOT touch
+`prisma/schema.prisma` or `src/lib/auth.ts`. Pre-existing `src/lib/auth.ts` type errors (H-2) are not ours.
 
-Each bug is its OWN commit tagged with its user-bug id (#4 / #5 / #6) plus verification
-counts in the trailer. Known flake: `add-invalidates-chart.test.tsx` passes when run alone.
-Pre-existing `src/lib/auth.ts` (H-2) type errors are NOT ours.
+## Key findings from investigation (cite before editing)
 
-Investigation findings (grounding):
-- Bug #4 (range tabs): `src/app/(dashboard)/search/[id]/page.tsx` maps `RANGE_TABS`
-  (`[["1M","1M"],…,["MAX","ALL"]]`) and renders every tab, DISABLING (opacity 0.4,
-  `disabled`) the ones where `rangeAvailability(spanDays)[key]` is false. The pure
-  availability/default helpers already exist in `price-history-chart.ts`
-  (`rangeAvailability`, `maxAvailableSpanDays`, `largestEnabledRange`, `seriesSpanDays`,
-  `RangeKey`). `effRange` already falls back to `largestEnabledRange` when the picked
-  range is disabled. The honest span label (`history-span` testid) is separate and stays.
-- Bug #5 (dashboard chart vs collection switch): the selector dropdown IS wired correctly
-  end-to-end (`toggleId` → `setSelectedIds` → `activeSelectedIds` → `collectionIdsQuery`
-  via `toHistoryToken` → query key `["portfolio-history", collectionIdsQuery, activeRange]`
-  → fetch `?collectionIds=…` → `buildCollectionHistories` which DOES scope
-  `where.collectionId = collId` per bucket). The genuine code bug is the FOCUS PILLS:
-  when >1 collection is selected, clicking a focus pill calls `setFocusedId(id)`, which
-  re-scopes `headlineChange` (`chartSeriesList.filter(s => s.id === focusedId)`) and the
-  stat card, but `MultiLineComparisonChart seriesList={chartSeriesList}` is NEVER scoped
-  by `focusedId` — so focusing a single collection changes the numbers but not the drawn
-  lines. That is the "chart does not change when I switch collection" report. Fix =
-  scope the chart's series by focus with the SAME rule `headlineChange` already uses.
-- Bug #6 (hero image vs variant): `heroSrc` in `page.tsx` resolves from the ROUTE `id`
-  only (`game === "onepiece" ? onePieceImageUrl(id) ?? PLACEHOLDER : cardImgById(id)`),
-  so switching variant updates prices/chips but not the hero. Per-printing rows each
-  carry their own `imageUrl`, resolvable by composite externalId `${baseId}::${variant}`
-  through `/api/card-img/[id]` (the route resolves ITS OWN printing row, suffix intact —
-  verified in `tests/integration/card-img-by-id.test.ts`). `cardImgById(id)` already
-  builds that id-proxy URL and works for ANY game's row (the route is game-agnostic;
-  it looks up `Card.imageUrl` by externalId). The `onError` → PLACEHOLDER fallback and
-  the `useEffect(... [heroSrc])` reset already exist and must keep firing on the new src.
-
-Build/test commands (from `package.json`): `npm run type-check` (tsc --noEmit),
-`npm run lint` (eslint), `npm run test:unit` (vitest run tests/unit src),
-`npm run build` (prisma generate && next build — the Page-type guard runs here).
-Vitest alias `@/…` → `src/…` (vite-tsconfig-paths). Run a single file with
-`npx vitest run <path>`.
+- **`POST /api/cards/[id]/ebay-sold` already exists** and already top-gates on `isScrydexOnViewApproved()`
+  (`SCRYDEX_ONVIEW_ENABLED`). BUT at `src/app/api/cards/[id]/ebay-sold/route.ts:174` it calls
+  `pullAndStoreSoldListings(id)` WITHOUT `{ creditAuth: "onview" }`. Inside the writer that becomes
+  `assertScrydexEnrichApproved("listings", 1, undefined)`, which authorizes ONLY under the BULK gate.
+  So on staging/prod (only ONVIEW set) the route passes its top check but the writer throws
+  `ScrydexCreditsNotApproved` → caught → `{ pulled:false }`, storing nothing. The button would never work.
+  FIX: pass `{ creditAuth: "onview" }` to the writer. The writer already accepts
+  `opts?: { creditAuth?: "onview" }` and `assertScrydexEnrichApproved` authorizes on the onview flag
+  alone WITHOUT widening the bulk gate (see `src/lib/services/scrydex-credit-gate.ts`). This is the ONLY
+  edit this route needs — do NOT widen the bulk gate; do NOT change the GET.
+- **Old button UX is recoverable from `git show c71ff2b`**: the page used to hold a `salesRequested`
+  boolean state; render was `salesRequested ? <RecentSales .../> : <button className="dojo-btn dojo-btn-outline">Load recent sales</button>`. The button `onClick` set `salesRequested=true`, fired
+  `fetch(POST /api/cards/[id]/ebay-sold, {credentials:"include"})`, then in `.finally()` invalidated
+  `["ebay-sold", id]`. The `.dojo-btn-outline` class exists in `src/app/globals.css`.
+- **Enrich route** (`src/app/api/cards/[id]/enrich/route.ts`) currently has the SALES pull as the third
+  pull (`pullAndStoreSoldListings(id, { creditAuth: "onview" })` → `salesStored`), surfaced as
+  `sales:{stored}` in the 200 body. History + population (pulls 1–2) and the weekly-delta side-write
+  (pull 4) stay as-is.
+- **`RecentSales`** (`src/components/RecentSales.tsx`) currently auto-fetches the GET on mount via
+  `useQuery` (no `enabled` guard). It must NOT auto-fetch; the GET fires only after the button click.
+- **Tests present**: `tests/integration/enrich-route.test.ts` (asserts the sales pull — TASK 1a/1c/fail-open),
+  `tests/integration/ebay-sold-post.test.ts` (POST gating), and the known-flake `tests/unit/add-invalidates-chart.test.tsx` (passes alone). There is NO `tests/unit/recent-sales.test.tsx` in THIS worktree yet.
 
 ---
 
-- [ ] 1. (Bug #4) Add a pure `visibleRanges` helper and render ONLY enabled range tabs.
-      In `src/app/(dashboard)/search/[id]/price-history-chart.ts` add
-      `export function visibleRanges(spanDays: number): RangeKey[]` returning
-      `RANGE_ORDER.filter(k => rangeAvailability(spanDays)[k])` (so a ~6-month/100-day
-      card yields `["1M","3M","6M"]` — no `1Y`/`ALL`). Keep it pure, keep the existing
-      doc-comments. In `page.tsx`, replace the `RANGE_TABS.map(...)` block that renders
-      every tab + `disabled`/`opacity` with a render over the ENABLED ranges only:
-      derive the visible set from `visibleRanges(spanDays)` and map each enabled
-      `RangeKey` to its display label (1M/3M/6M/1Y and `ALL`→"MAX") — drop the
-      `enabled`/`disabled`/`aria-disabled`/`title`/`opacity` branching entirely since
-      only enabled tabs render now. `effRange` + the `largestEnabledRange` default-range
-      effect + the honest `history-span` label stay unchanged, so the largest ENABLED
-      range still shows the full available span. Keep the `RANGE_TABS`/`RANGE_DAYS`
-      consts (RANGE_DAYS is still used by `buildChartMatrix` via `RANGE_DAYS[effRange]`;
-      the MAX→ALL label mapping can reuse `RANGE_TABS` or an inline label map — do NOT
-      add a named export to `page.tsx`).
-      Files: `src/app/(dashboard)/search/[id]/price-history-chart.ts`,
-      `src/app/(dashboard)/search/[id]/page.tsx`
-      Verify: `npx vitest run tests/unit/card-detail-chips-matrix.test.ts` passes
-      (incl. the new `visibleRanges` cases from item 2); `npm run type-check` clean
-      (modulo the known `src/lib/auth.ts` H-2 errors).
+- [ ] 1. Fix the ebay-sold POST writer gating so the button works under the on-view allowance.
+      In `src/app/api/cards/[id]/ebay-sold/route.ts`, change the writer call (currently
+      `const { stored } = await pullAndStoreSoldListings(id);`) to
+      `const { stored } = await pullAndStoreSoldListings(id, { creditAuth: "onview" });`. Leave the
+      top-level `isScrydexOnViewApproved()` short-circuit, the `requireAuth` guard, the rate-limit, the
+      fail-open try/catch, and the entire GET handler untouched. Do NOT touch the bulk gate. Update the
+      route's header doc-comment line that says it "runs the credit-gated single writer" to note the
+      pull is authorized by the on-view allowance (`creditAuth:"onview"`), mirroring the enrich route.
+      Files: `src/app/api/cards/[id]/ebay-sold/route.ts`
+      Verify: `npm run test:integration -- ebay-sold-post` passes (and later the new assertion in step 6).
 
-- [ ] 2. (Bug #4) Unit-test `visibleRanges`.
-      In `tests/unit/card-detail-chips-matrix.test.ts` add a `describe("visibleRanges …")`
-      block asserting: span 0/10 → `["1M"]`; span 40 → `["1M","3M"]`; span 100 →
-      `["1M","3M","6M"]` (the ~6-month case — NO `1Y`/`ALL`); span 200 →
-      `["1M","3M","6M","1Y"]`; span 400 → all five; and that `visibleRanges(d).pop()`
-      equals `largestEnabledRange(rangeAvailability(d))` for those spans (the largest
-      visible tab is the default/largest-enabled range). Import `visibleRanges` from
-      `@/app/(dashboard)/search/[id]/price-history-chart`.
-      Files: `tests/unit/card-detail-chips-matrix.test.ts`
-      Verify: `npx vitest run tests/unit/card-detail-chips-matrix.test.ts` — all pass.
-      Commit items 1–2 as ONE commit: `fix(card-detail): user#4 hide 1Y/MAX range tabs
-      beyond stored span` with a verification-count trailer.
+- [ ] 2. Remove the SALES pull from the on-view enrich route; keep history + population + weekly-delta.
+      In `src/app/api/cards/[id]/enrich/route.ts`: (a) remove `pullAndStoreSoldListings` from the import
+      block `import { pullAndStoreScrydexHistory, pullAndStorePopulation, pullAndStoreSoldListings, pullAndStoreScrydexWeeklyDelta } from "@/lib/services/scrydex-pricing.service";`; (b) delete the
+      `let salesStored = 0;` declaration; (c) delete the entire "Third pull: recent eBay SOLD listings"
+      block (the `{ try { const r = await pullAndStoreSoldListings(id, { creditAuth: "onview" }); salesStored = r.stored; } catch {} }` block and its comment); (d) remove the `sales: { stored: salesStored }`
+      field from the final `NextResponse.json(...)` body so it returns
+      `{ enriched: true, history: { stored: historyStored }, population: { stored: populationStored } }`.
+      Keep history (pull 1), population (pull 2), the weekly-delta side-write (pull 4), the 24h freshness
+      marker covering the whole attempt, the fail-open contracts, and the cache busting exactly as-is.
+      Update the module doc-comment (top of file) and the marker comment that currently reads
+      "all three pulls" / "history/population/listings" back to history + population (+ weekly-delta
+      side-write) so the doc chain (RULE 14) is honest.
+      Files: `src/app/api/cards/[id]/enrich/route.ts`
+      Verify: `npm run type-check` passes (no unused-import / undefined-symbol error from the removed symbol);
+      `npm run test:integration -- enrich-route` after step 5's test edits.
 
-- [ ] 3. (Bug #5) Add a pure focus-scoping helper for the dashboard chart.
-      In `src/lib/utils/dashboard-chart.ts` add
-      `export function scopeSeriesToFocus(seriesList: readonly DashboardSeries[],
-      focusedId: string | null, isActive: (id: string) => boolean): DashboardSeries[]`
-      returning `focusedId && isActive(focusedId) ? seriesList.filter(s => s.id ===
-      focusedId) : [...seriesList]`. This is the EXACT rule `headlineChange` already
-      inlines (`focusedId && activeSelectedIds.has(focusedId) ? filter : all`), extracted
-      so the chart and the headline provably use one rule. Keep RULE 2 honesty (it only
-      filters existing real series — fabricates nothing).
-      Files: `src/lib/utils/dashboard-chart.ts`
-      Verify: `npx vitest run tests/unit/dashboard-chart.test.ts` still passes.
+- [ ] 3. Revert `RecentSales` so its GET does NOT fire on mount (button-triggered only).
+      In `src/components/RecentSales.tsx`, add an `enabled` gate to the `useQuery` so the pure-Postgres
+      GET fetch only runs when the parent has requested sales. Simplest: accept a new optional prop
+      `enabled?: boolean` (default `false` is WRONG for the isolated unit test — instead default it to
+      `true` and let the PAGE control mounting, OR gate internally). Chosen approach: keep `RecentSales`
+      a pure presentational+fetch component and let the PARENT control whether it is mounted at all (the
+      old UX mounted it only after the click). So `RecentSales` itself needs NO change to its fetch —
+      reverting the PAGE (step 4) to mount it only post-click restores on-click behavior, and the
+      component's on-mount GET then only runs after the click. Therefore: make NO functional change to
+      `RecentSales.tsx` except update its top doc-comment to state it is mounted by the page ONLY after
+      the user clicks "Load recent sales" (no longer auto-displayed), so the comment is not stale.
+      If review prefers an explicit internal guard instead of mount-gating, that is an acceptable
+      equivalent — but mount-gating is the smaller diff and matches the pre-c71ff2b design exactly.
+      Files: `src/components/RecentSales.tsx`
+      Verify: `npm run test:unit -- recent-sales` passes after step 7 adds the test.
 
-- [ ] 4. (Bug #5) Scope the dashboard chart (and headline) to the focused collection.
-      In `src/app/(dashboard)/dashboard/_components/DashboardClient.tsx` import
-      `scopeSeriesToFocus` and derive
-      `const scopedChartSeries = useMemo(() => scopeSeriesToFocus(chartSeriesList,
-      focusedId, (id) => activeSelectedIds.has(id)), [chartSeriesList, focusedId,
-      activeSelectedIds])`. Pass `scopedChartSeries` to `<MultiLineComparisonChart
-      seriesList={…}>` (replacing `chartSeriesList`), and refactor `headlineChange` and
-      `hasChartableHistory_` to consume `scopedChartSeries` (so chart, headline, and the
-      range-tab gate can never disagree — the comment already promises they share one
-      rule). Leave the selector-dropdown path untouched (it already works via the query
-      key). Preserve the load-bearing comments on `headlineChange`/`hasChartableHistory_`.
-      Files: `src/app/(dashboard)/dashboard/_components/DashboardClient.tsx`
-      Verify: `npm run type-check` clean (modulo H-2); `npx vitest run tests/unit` for
-      the dashboard-touching suites stays green.
-
-- [ ] 5. (Bug #5) Unit-test the focus-scoping behavior.
-      In `tests/unit/dashboard-chart.test.ts` add a `describe("scopeSeriesToFocus …")`
-      block: with a 3-series list, `focusedId=null` → all 3 returned; `focusedId="B"`
-      with `isActive("B")=true` → only series B; `focusedId="B"` with `isActive=()=>false`
-      → all 3 (an inactive focus is ignored, matching `activeSelectedIds.has`); and that
-      feeding the scoped result to `buildDashboardMatrix`/`dashboardOverallChange` yields
-      the focused series' own curve, not the combined one. No fabricated data.
-      Files: `tests/unit/dashboard-chart.test.ts`
-      Verify: `npx vitest run tests/unit/dashboard-chart.test.ts` — all pass.
-      Commit items 3–5 as ONE commit: `fix(dashboard): user#5 chart follows the focused
-      collection` with a verification-count trailer.
-
-- [ ] 6. (Bug #6) Add a pure hero-image-src helper keyed on the selected variant.
-      In `src/lib/utils/card-image.ts` (client-safe — no Prisma/secrets) add
-      `export function variantHeroSrc({ game, routeId, variant, defaultVariant }:
-      { game: "pokemon" | "onepiece"; routeId: string; variant: string | null;
-      defaultVariant: string | null }): string`. Logic: `const baseId =
-      routeId.split("::")[0];` — when `variant` is set AND `variant !== defaultVariant`
-      AND `variant` is non-empty, resolve the hero through the composite printing id
-      `cardImgById(`${baseId}::${variant}`)` (the id-proxy serves THAT printing row's
-      `imageUrl` for BOTH games — the route is game-agnostic). Otherwise keep the current
-      base behavior: `game === "onepiece" ? (onePieceImageUrl(routeId) ?? PLACEHOLDER)
-      : cardImgById(routeId)`. Export a `HERO_PLACEHOLDER = "/cards/card-front.webp"`
-      const (or accept a placeholder param) so the helper and the page agree on the
-      fallback. RULE 2: a printing with no distinct stored image just 404s the proxy →
-      the page's existing `onError` swaps in the placeholder (never a broken image). Keep
-      the load-bearing comments explaining the `::` suffix + proxy.
-      Files: `src/lib/utils/card-image.ts`
-      Verify: `npx vitest run tests/unit/card-image.test.ts` still passes.
-
-- [ ] 7. (Bug #6) Wire the hero image to the selected variant in the detail page.
-      In `src/app/(dashboard)/search/[id]/page.tsx` replace the inline `heroSrc`
-      computation with `const heroSrc = variantHeroSrc({ game, routeId: id, variant,
-      defaultVariant });` (import from `@/lib/utils/card-image`). `variant`,
-      `defaultVariant`, `game`, and `id` are already in scope. Keep `PLACEHOLDER`
-      (align it to the helper's constant or reuse the exported one). The existing
-      `useEffect(() => setHeroError(false), [heroSrc])` already resets the onError flag
-      on src change — confirm it still fires because `heroSrc` now changes on variant
-      switch. Do NOT add a named export to `page.tsx`. Preserve the load-bearing
-      hero/`img=`-removal + One-Piece-proxy comments.
+- [ ] 4. Revert the card-detail page to the button-gated Recent Sales UX (restore pre-c71ff2b wiring).
+      In `src/app/(dashboard)/search/[id]/page.tsx`: (a) re-add the state
+      `const [salesRequested, setSalesRequested] = useState(false);` near the other card-detail state
+      (next to `rangeTouched` / `queryClient`); (b) replace the current always-rendered
+      `<RecentSales id={id} setName={setName} rarity={rarity} />` and its "Auto-displayed" comment block
+      with the conditional: when `salesRequested`, render `<RecentSales .../>`; otherwise render a
+      `<button className="dojo-btn dojo-btn-outline" style={{ width:"100%", marginTop:"22px", height:"44px" }}>Load recent sales</button>` whose `onClick` sets `setSalesRequested(true)` then
+      `fetch(\`/api/cards/${encodeURIComponent(id)}/ebay-sold\`, { method:"POST", credentials:"include" }).catch(()=>{}).finally(()=>{ queryClient.invalidateQueries({ queryKey:["ebay-sold", id] }); })`
+      (restore the exact old block from `git show c71ff2b`, including its explanatory comment);
+      (c) in the enrich `useQuery` queryFn, remove the line
+      `queryClient.invalidateQueries({ queryKey: ["ebay-sold", id] });` and its 3-line comment, since
+      enrich no longer stores sales — KEEP the `["card-history", id]` and `["population", id]`
+      invalidations. Do NOT introduce any named export (PAGE-EXPORT GUARD: `page.tsx` exports ONLY the
+      default) — this change adds no helpers, so no relocation to `src/lib` is needed.
       Files: `src/app/(dashboard)/search/[id]/page.tsx`
-      Verify: `npm run type-check` clean (modulo H-2); the composite-id regression test
-      `npx vitest run tests/unit/composite-id-detail.test.ts` still passes.
+      Verify: `npm run type-check` passes; `npm run build` passes the Next Page-type phase (step 8).
 
-- [ ] 8. (Bug #6) Unit-test the variant→hero-src derivation.
-      In a new `tests/unit/variant-hero-src.test.ts` (or extend `card-image.test.ts`)
-      import `variantHeroSrc`, `cardImgById`, `onePieceImageUrl`, `HERO_PLACEHOLDER` and
-      assert: Pokémon base variant (`variant === defaultVariant`) → `cardImgById(routeId)`;
-      Pokémon non-default variant → `cardImgById("base1-4::reverse holofoil")` (composite,
-      suffix intact, url-encoded as `cardImgById` does); One Piece base variant →
-      `onePieceImageUrl(routeId)` (or PLACEHOLDER when the code isn't Bandai); One Piece
-      non-default variant → `cardImgById("OP01-120::alt-art")` (per-printing proxy, NOT
-      the base Bandai proxy); a composite ROUTE id (`base1-15::unlimitedShadowlessHolofoil`)
-      with the default variant equal to its suffix → base behavior, and selecting a
-      DIFFERENT variant → `${baseId}::${newVariant}`; `variant === null` → base behavior.
-      Files: `tests/unit/variant-hero-src.test.ts` (new)
-      Verify: `npx vitest run tests/unit/variant-hero-src.test.ts` — all pass.
-      Commit items 6–8 as ONE commit: `fix(card-detail): user#6 hero image follows the
-      selected variant` with a verification-count trailer.
+- [ ] 5. Update the enrich-route integration test to assert NO sales pull.
+      In `tests/integration/enrich-route.test.ts`: (a) remove `pullAndStoreSoldListings: vi.fn(),` from
+      the `pricingMock` hoisted object and its comment; (b) remove the per-test default
+      `pricingMock.pullAndStoreSoldListings.mockResolvedValue(...)` in `beforeEach`; (c) delete the three
+      TASK-1 sales tests ("(TASK 1a) ... creditAuth:onview", "(TASK 1c) ... sales.stored:0",
+      "(TASK 1 fail-open) ..."); (d) in the remaining stale/first-open tests, remove any
+      `expect(body.sales)...` assertion and any `expect(pricingMock.pullAndStoreSoldListings)...`; (e) ADD
+      one positive assertion to the "(c) stale > 24h" and/or "first-ever open" test that enrich does NOT
+      import/call a sales pull — simplest honest check: assert `body.sales` is `undefined` and that the
+      body shape is exactly `{ enriched, history, population }`. Keep the history/population/weekly-delta
+      assertions and the fail-open + 401 + unknown-card + freshness tests unchanged (drop their
+      `pullAndStoreSoldListings` references only).
+      Files: `tests/integration/enrich-route.test.ts`
+      Verify: `npm run test:integration -- enrich-route` — all enrich tests pass with no reference to a
+      sales pull.
 
-- [ ] 9. Integration verification across all three bugs.
-      Run `npm run lint`, `npm run type-check` (expect ONLY the known `src/lib/auth.ts`
-      H-2 errors — no new ones), and `npm run test:unit`. Then run `npm run build` to
-      confirm the Page-type guard passes (no named exports leaked into `page.tsx`).
-      Re-run `add-invalidates-chart.test.tsx` ALONE if it flaked in the full run.
+- [ ] 6. Extend the ebay-sold POST integration test to pin on-view authorization of the writer call.
+      In `tests/integration/ebay-sold-post.test.ts`, add a test: with
+      `process.env.SCRYDEX_ONVIEW_ENABLED = "true"`, a known card, `pullAndStoreSoldListings` mocked to
+      resolve `{ stored: 2, credits: 1 }`, the POST returns 200 `{ pulled:true, stored:2 }` AND
+      `expect(pricingMock.pullAndStoreSoldListings).toHaveBeenCalledWith("base1-4", { creditAuth: "onview" })`.
+      This pins the step-1 gating fix (button works under the on-view allowance, bulk gate not required).
+      Keep the existing "allowance OFF → {pulled:false}, no call", the 401, and the public-GET tests
+      as-is (they still hold). Ensure the `afterEach` env cleanup already present covers the new flag.
+      Files: `tests/integration/ebay-sold-post.test.ts`
+      Verify: `npm run test:integration -- ebay-sold-post` — all pass including the new on-view assertion.
+
+- [ ] 7. Add a `RecentSales` unit test asserting NO fetch on mount and a fetch after a button click.
+      Because the on-click wiring lives in the PAGE (step 4), test it at the smallest honest seam: render
+      a tiny harness that reproduces the page's `salesRequested` conditional — initially a "Load recent
+      sales" button (no `<RecentSales>` mounted, so the stubbed `fetch` is NOT called); after a
+      `fireEvent.click`, `<RecentSales>` mounts and the stubbed GET fetch fires and renders rows / the
+      "No recent sales found" empty state. Follow the existing component-test pattern
+      (`QueryClientProvider` wrapper + `vi.stubGlobal("fetch", ...)`, as in the main worktree's
+      `recent-sales.test.tsx`). Assertions: (1) before click, `fetch` has 0 calls and the button text is
+      present; (2) after click, `fetch` was called with the `ebay-sold` GET URL and a sold row (or the
+      empty state) renders. Keep the render of a populated `{ listings:[...] }` row (date, formatted
+      price, "PSA 10", View-sale link) to preserve the presentational coverage the main-worktree test had.
+      Files: `tests/unit/recent-sales.test.tsx` (new)
+      Verify: `npm run test:unit -- recent-sales` — new tests pass; no live Scrydex/network call.
+
+- [ ] 8. Full verification gate.
+      Run the project's real commands in order and confirm each passes. The known flake
+      `tests/unit/add-invalidates-chart.test.tsx` passes when run alone — if it flakes in the full unit
+      run, re-run it in isolation to confirm, do NOT "fix" it. `npm run build` is MANDATORY and must clear
+      the Next Page-type phase (proving `page.tsx` has no named export — PAGE-EXPORT GUARD).
       Files: none (verification only)
-      Verify: lint clean; type-check shows no NEW errors; `npm run test:unit` green;
-      `npm run build` completes the Page phase without error.
+      Verify, in order:
+      - `npm run type-check` — passes except the pre-existing `src/lib/auth.ts` (H-2) errors, which are not ours and must be unchanged in count/identity.
+      - `npm run lint` — passes (no unused imports from the removed sales symbol).
+      - `npm run test:unit` — passes (recent-sales new tests green; add-invalidates-chart caveat above).
+      - `npm run test:integration` — passes (enrich-route and ebay-sold-post updated; sold-listing.test.ts still green).
+      - `npm run build` — completes, clearing the Next Page-type phase (no named `page.tsx` export).
 
-## Notes / assumptions
-- The `variant` token stored in `CurrentPrice.variant` (what `listVariants` returns) is
-  the SAME verbatim Scrydex `variants[].name` used as the composite-id suffix
-  (`card-number.ts` `printingExternalId`/`printingVariantFromId`), so
-  `${baseId}::${variant}` is the correct per-printing externalId to resolve art.
-  If a selected variant has no distinct printing row/image, the proxy 404s and the
-  page's existing `onError` placeholder covers it (RULE 2 — never a broken image).
-- Bug #5 fix is deliberately client-side: the server history route already scopes by
-  `collectionId`, so no server change is needed and none is made (smallest correct diff).
-  The dropdown-selector path was verified already-correct; only the focus-pill path was
-  broken.
+## Net behavior after the change
+
+Open card → `POST /enrich` auto-loads history + population (+ weekly-delta side-write) once per 24h
+(unchanged). Recent Sales shows a "Load recent sales" button. Clicking it fires
+`POST /api/cards/[id]/ebay-sold` (authorized by `SCRYDEX_ONVIEW_ENABLED`, ~1 credit), invalidates
+`["ebay-sold", id]`, mounts `RecentSales` which reads stored rows via the pure-Postgres GET and renders
+them — or the honest "No recent sales found" empty state when Scrydex has none (RULE 2). Not clicking
+spends nothing on sales. No credit-spending POST ever fires on mount. Public routes stay 200/fail-open
+(RULE 7); the bulk gate is never widened.
