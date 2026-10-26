@@ -138,6 +138,26 @@ describe("enforceRateLimit — identity keying", () => {
 });
 
 describe("clientIp — proxy header resolution (audit 10 F2 / 12 F8)", () => {
+  it("uses CF-Connecting-IP when present (Cloudflare-set real visitor IP)", () => {
+    // Behind the Cloudflare-only firewall, this is the authoritative visitor IP.
+    expect(clientIp(req({ "cf-connecting-ip": "198.51.100.9" }))).toBe("198.51.100.9");
+  });
+
+  it("prefers CF-Connecting-IP even over x-real-ip, and even if CF-Connecting-IP is forged", () => {
+    // A forged CF-Connecting-IP still wins. This is SAFE ONLY because the Droplet
+    // firewall restricts 80/443 to Cloudflare's ranges (docs/CLOUDFLARE_SETUP.md):
+    // every request must transit Cloudflare, which sets this header to the real
+    // visitor IP. Without that firewall lock the header would be spoofable.
+    const res = clientIp(
+      req({ "cf-connecting-ip": "6.6.6.6", "x-real-ip": "198.51.100.2" })
+    );
+    expect(res).toBe("6.6.6.6");
+  });
+
+  it("falls back to x-real-ip when CF-Connecting-IP is absent (non-Cloudflare path)", () => {
+    expect(clientIp(req({ "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
+  });
+
   it("uses x-real-ip when present (Caddy-set, unspoofable)", () => {
     expect(clientIp(req({ "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
   });

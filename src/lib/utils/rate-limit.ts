@@ -69,31 +69,61 @@ export function searchTier(): RateLimitTier {
 }
 
 /**
- * Resolves the real client IP. The app sits behind a SINGLE Caddy reverse proxy
- * (no CDN) that terminates every connection, so the socket IP is always Caddy
- * and the App Router `Request` has no reliable socket IP anyway.
+ * Resolves the real client IP. The app sits behind Cloudflare (proxied DNS) in
+ * front of a Caddy reverse proxy; Caddy terminates every connection, so the
+ * socket IP is always Caddy/Cloudflare and the App Router `Request` has no
+ * reliable socket IP anyway.
  *
- * We trust `x-real-ip` FIRST because Caddy sets it from `{remote_host}` — the
- * real TCP peer IP Caddy itself observes — and OVERWRITES any client-supplied
- * value, so it CANNOT be spoofed. We must NOT trust the first hop of
- * `x-forwarded-for`: Caddy forwards XFF by default, APPENDING the real peer to
- * whatever the client sent, so the FIRST XFF hop is the attacker-CONTROLLED
- * value. Keying the rate limiter on it let an attacker rotate a forged XFF to
- * get a fresh per-IP bucket on every request and brute-force past the cap on
- * sign-in / email-OTP / admin-auth (audit 10 F2, 12 F8).
+ * We trust `CF-Connecting-IP` FIRST. Once Cloudflare proxies the domain, the
+ * TCP peer Caddy observes — and therefore the `x-real-ip` Caddy sets from
+ * `{remote_host}` — is a CLOUDFLARE EDGE IP, not the visitor. That would
+ * collapse every visitor into ONE per-IP rate-limit bucket. Cloudflare carries
+ * the true visitor IP in `CF-Connecting-IP`, so that header is now the real
+ * client key.
+ *
+ * SECURITY (AGENTS.md RULE 14 — load-bearing, do NOT strip): `CF-Connecting-IP`
+ * is trustworthy ONLY because the Droplet firewall is locked so 80/443 accept
+ * connections ONLY from Cloudflare's published IP ranges (the ufw step in
+ * docs/CLOUDFLARE_SETUP.md). WITHOUT that firewall lock an attacker could reach
+ * the origin IP directly and forge `CF-Connecting-IP` to rotate per-IP buckets
+ * and brute-force past the cap on sign-in / email-OTP / admin-auth. WITH it,
+ * every request is guaranteed to have transited Cloudflare, so Cloudflare sets
+ * `CF-Connecting-IP` to the real visitor IP and it is authoritative. The
+ * firewall range-lock is an OUT-OF-REPO operator step; it is what makes this
+ * header safe to trust.
+ *
+ * When `CF-Connecting-IP` is ABSENT (local dev, tests, CI, or a non-Cloudflare
+ * path) we keep the EXISTING chain unchanged: trust `x-real-ip` NEXT because
+ * Caddy sets it from `{remote_host}` — the real TCP peer IP Caddy itself
+ * observes — and OVERWRITES any client-supplied value, so it CANNOT be spoofed.
+ * We must NOT trust the first hop of `x-forwarded-for`: Caddy forwards XFF by
+ * default, APPENDING the real peer to whatever the client sent, so the FIRST
+ * XFF hop is the attacker-CONTROLLED value. Keying the rate limiter on it let
+ * an attacker rotate a forged XFF to get a fresh per-IP bucket on every request
+ * and brute-force past the cap on sign-in / email-OTP / admin-auth
+ * (audit 10 F2, 12 F8).
  *
  * Fallback chain for environments WITHOUT the proxy (local dev, tests, CI where
- * `x-real-ip` is absent): fall back to the first `x-forwarded-for` hop, then a
- * literal `"unknown"` so those setups still get a stable key. This degrades,
- * never hard-fails (defense-in-depth; the Redis layer is fail-open per RULE 1).
+ * neither `CF-Connecting-IP` nor `x-real-ip` is set): fall back to the first
+ * `x-forwarded-for` hop, then a literal `"unknown"` so those setups still get a
+ * stable key. This degrades, never hard-fails (defense-in-depth; the Redis
+ * layer is fail-open per RULE 1).
  *
  * ponytail: when NO proxy header is present (bare local/test setup) every
  * unauthenticated caller shares the single `"unknown"` bucket. Accepted —
- * production always sets `x-real-ip`, and the authed routes key by user id.
+ * production always sets `CF-Connecting-IP` (Cloudflare), and the authed routes
+ * key by user id.
  */
 export function clientIp(request: Request): string {
-  // TRUSTED first: Caddy's `header_up X-Real-IP {remote_host}` overwrites any
-  // client value with the real peer IP — unspoofable in this single-proxy topology.
+  // TRUSTED first: Cloudflare sets `CF-Connecting-IP` to the real visitor IP.
+  // Safe ONLY because the Droplet firewall restricts 80/443 to Cloudflare's
+  // published ranges (docs/CLOUDFLARE_SETUP.md) — without that lock the header
+  // is spoofable; with it, every request transited Cloudflare so it's authoritative.
+  const cf = request.headers.get("cf-connecting-ip");
+  if (cf && cf.trim()) return cf.trim();
+  // TRUSTED next (no Cloudflare header — local/dev/test/CI or direct Caddy):
+  // Caddy's `header_up X-Real-IP {remote_host}` overwrites any client value with
+  // the real peer IP — unspoofable in this single-proxy topology.
   const real = request.headers.get("x-real-ip");
   if (real && real.trim()) return real.trim();
   // UNTRUSTED fallback (no proxy): the first XFF hop is client-appended by Caddy,
