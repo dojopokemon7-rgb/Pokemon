@@ -94,7 +94,8 @@ services:
       start_period: 40s
 
   # -----------------------------------------------------------
-  # Caddy 2 — Automatic HTTPS, reverse proxy
+  # Caddy 2 — reverse proxy, TLS via Cloudflare Origin Certificate
+  # (behind Cloudflare; ACME/Let's Encrypt not used — see Caddyfile).
   # -----------------------------------------------------------
   caddy:
     image: caddy:2-alpine
@@ -113,6 +114,13 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Cloudflare Origin Certificate (cert.pem + key.pem). The operator pastes
+      # the Cloudflare-issued cert+key into ./infra/cloudflare-origin on the
+      # Droplet (see docs/CLOUDFLARE_SETUP.md); the Caddyfile serves them via
+      # `tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem`. The files
+      # MUST be in place BEFORE `docker compose up caddy`. The directory + the
+      # private key are git-ignored (.gitignore) — never commit the key.
+      - ./infra/cloudflare-origin:/etc/caddy/origin:ro
       - caddy_data:/data
       - caddy_config:/config
 

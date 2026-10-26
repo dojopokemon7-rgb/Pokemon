@@ -8,9 +8,10 @@
 #   - DOMAIN UNSET  (local dev / CI): the address resolves to `:80` → plain
 #     HTTP on port 80, no TLS. (The empty default after the first `:` is the
 #     port-only form `:80`.)
-#   - DOMAIN=your-domain.com (production): the address is the hostname →
-#     Caddy's automatic HTTPS provisions + renews a Let's Encrypt cert and
-#     serves on 443.
+#   - DOMAIN=your-domain.com (production): the address is the hostname → Caddy
+#     serves HTTPS on 443 using the Cloudflare ORIGIN CERTIFICATE (see the prod
+#     block's ORIGIN TLS note). Automatic Let's Encrypt HTTPS is intentionally
+#     NOT used because the Cloudflare-only firewall blocks ACME HTTP-01.
 #
 # WHY ONE BLOCK: a previous two-block layout had a second site block written as
 # `{$DOMAIN} { ... }`. When DOMAIN was empty that rendered as a block with NO
@@ -21,7 +22,66 @@
 # idiomatic fix: it is always a valid site address, empty DOMAIN or not.
 # =============================================================
 
+# =============================================================
+# GLOBAL OPTIONS — must be the FIRST block in the file (key-less blocks are
+# parsed as global config; see the WHY-ONE-BLOCK note above).
+# =============================================================
+# CLOUDFLARE TRUSTED PROXIES (AGENTS.md RULE 14 — load-bearing, do NOT strip).
+# Cloudflare now fronts this origin (proxied DNS). Caddy must know that the
+# connecting peer is a trusted Cloudflare edge, otherwise it will NOT honour the
+# forwarded client-IP headers and every visitor collapses to one edge IP.
+# `trusted_proxies static` lists Cloudflare's PUBLISHED ranges; Caddy derives the
+# real client IP from the forwarded headers only when the peer is in this list.
+#
+# These ranges are Cloudflare's current published set, fetched from:
+#   IPv4: https://www.cloudflare.com/ips-v4
+#   IPv6: https://www.cloudflare.com/ips-v6
+# REFRESH PERIODICALLY: keep this list in sync with the ufw allow-rules in
+# docs/CLOUDFLARE_SETUP.md (step 6). Stale ranges here break client-IP
+# resolution; stale ranges in ufw break reachability.
+{
+    servers {
+        trusted_proxies static \
+            173.245.48.0/20 \
+            103.21.244.0/22 \
+            103.22.200.0/22 \
+            103.31.4.0/22 \
+            141.101.64.0/18 \
+            108.162.192.0/18 \
+            190.93.240.0/20 \
+            188.114.96.0/20 \
+            197.234.240.0/22 \
+            198.41.128.0/17 \
+            162.158.0.0/15 \
+            104.16.0.0/13 \
+            104.24.0.0/14 \
+            172.64.0.0/13 \
+            131.0.72.0/22 \
+            2400:cb00::/32 \
+            2606:4700::/32 \
+            2803:f800::/32 \
+            2405:b500::/32 \
+            2405:8100::/32 \
+            2a06:98c0::/29 \
+            2c0f:f248::/32
+    }
+}
+
 {$DOMAIN::80} {
+    # ORIGIN TLS (AGENTS.md RULE 14 — load-bearing, do NOT strip).
+    # Cloudflare fronts this origin with SSL/TLS mode = Full (strict), so the
+    # origin serves a Cloudflare ORIGIN CERTIFICATE rather than Let's Encrypt.
+    # WHY NOT ACME: once the Droplet firewall restricts 80/443 to Cloudflare's
+    # ranges (docs/CLOUDFLARE_SETUP.md), Let's Encrypt's HTTP-01 challenge can no
+    # longer reach the origin, so automatic HTTPS would fail. The operator pastes
+    # the Cloudflare-issued cert+key into ./infra/cloudflare-origin (mounted
+    # read-only at /etc/caddy/origin; see docker-compose.yml) and they MUST exist
+    # BEFORE `docker compose up caddy`.
+    # NOTE: with DOMAIN UNSET (local dev) this block's address is `:80` (plain
+    # HTTP), and the `tls` directive below is a no-op for port 80 — local dev is
+    # unaffected. Once DOMAIN is set, the origin cert is served on 443. The site
+    # address stays the real domain; we NEVER hardcode the origin IP.
+    tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
     # Proxy all requests to the Next.js app container.
     reverse_proxy app:3000 {
         # Forward the original host so Next.js sees the real host. (Caddy
@@ -29,6 +89,17 @@
         # only the host override is needed here.)
         header_up Host {host}
         header_up X-Real-IP {remote_host}
+        # CF-Connecting-IP (the real-visitor-IP header the rate limiter reads in
+        # src/lib/utils/rate-limit.ts clientIp()) is passed to the app
+        # AUTOMATICALLY: Caddy forwards all incoming request headers to the
+        # backend unchanged except the X-Forwarded-* family, and CF-Connecting-IP
+        # is not in that family. We deliberately do NOT re-set it with a
+        # `header_up` placeholder — the {http.request.header.*} form is unreliable
+        # with header_up and setting it to an empty value would BLANK the real
+        # Cloudflare header and break per-visitor rate limiting. It is
+        # authoritative ONLY because the Droplet firewall restricts 80/443 to
+        # Cloudflare ranges (docs/CLOUDFLARE_SETUP.md) — without that lock a
+        # direct-to-origin attacker could forge it.
     }
 
     # Compress responses.
@@ -53,12 +124,21 @@
 # STAGING — staging.dojocollect.com
 # =============================================================
 # A SECOND site on the SAME Droplet, reverse-proxying to the `app-staging`
-# container. Same automatic HTTPS + the same three security headers + gzip as
-# the prod block above (which is UNCHANGED), PLUS HTTP basic auth so the
-# pre-release environment is never publicly reachable.
+# container. Same security headers + gzip as the prod block above, PLUS HTTP
+# basic auth so the pre-release environment is never publicly reachable.
 #
 # Unlike prod, staging uses a HARDCODED hostname (not the {$DOMAIN::80} env
 # indirection) — staging is always HTTPS and never shares the DOMAIN var.
+#
+# ORIGIN TLS (AGENTS.md RULE 14 — load-bearing, do NOT strip): staging is ALSO
+# proxied by Cloudflare (the runbook adds a proxied `staging` A record), so it
+# has the IDENTICAL ACME-behind-firewall problem as prod — Let's Encrypt HTTP-01
+# cannot reach the origin once the firewall is locked to Cloudflare ranges. So
+# staging ALSO serves the Cloudflare Origin Certificate. ONE origin cert covering
+# `dojocollect.com` + `*.dojocollect.com` serves both prod and staging; if the
+# operator prefers a separate staging cert, point the `tls` paths at a second
+# file pair (noted in docs/CLOUDFLARE_SETUP.md). The cert files MUST exist in
+# ./infra/cloudflare-origin BEFORE `docker compose up caddy`.
 #
 # Replace the bcrypt placeholder below with the output of:
 #   docker run --rm caddy:2-alpine caddy hash-password --plaintext '<password>'
@@ -70,10 +150,15 @@ staging.dojocollect.com {
         staging $2a$14$REPLACE_WITH_BCRYPT_HASH
     }
 
+    # Cloudflare Origin Certificate (see the ORIGIN TLS note above).
+    tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+
     # Proxy all requests to the STAGING Next.js app container.
     reverse_proxy app-staging:3000 {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
+        # CF-Connecting-IP reaches the app automatically (Caddy forwards it
+        # unchanged) — same reasoning as the prod block above; do NOT re-set it.
     }
 
     # Compress responses.
