@@ -34,12 +34,18 @@
 
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emailOTP } from "better-auth/plugins";
 import { prisma } from "@/lib/db";
 import { isSignupAllowed } from "@/lib/utils/signup-allowlist";
 import { chooseResetDelivery } from "@/lib/utils/reset-email";
 import { sendOtpEmail } from "@/lib/utils/ses-email";
+import {
+  LOCKOUT_MESSAGE,
+  isLocked,
+  nextFailureState,
+  resetState,
+} from "@/lib/utils/lockout";
 
 // =============================================================
 // SMS Dispatch Function (plug-and-play)
@@ -120,6 +126,109 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
+
+  // --------------------------------------------------------
+  // Request Hooks — H-2 per-account brute-force lockout (OWASP A07/A04)
+  // --------------------------------------------------------
+  // These before/after middlewares are the SINGLE writer of the two `User`
+  // lockout columns (`failedLoginAttempts`, `lockedUntil`); the schema comment
+  // on those fields says so. We use the top-level `hooks` option (NOT
+  // `databaseHooks`) because databaseHooks only fire on a SUCCESSFUL sign-in and
+  // so can never observe a FAILED attempt — which is the whole point of a
+  // lockout. The `hooks.before`/`hooks.after` middleware runs on EVERY endpoint
+  // and branches on `ctx.path`; critically the `after` middleware runs even when
+  // the endpoint threw, with `ctx.context.returned` holding the APIError — that
+  // is how we detect a failed sign-in.
+  //
+  // All decisions live in the pure `@/lib/utils/lockout` helper (unit-tested in
+  // isolation); the hook only does I/O. The two columns are consulted/updated
+  // ONLY on the `/sign-in/email` path, so OTP, the signup allowlist, Google
+  // OAuth, admin auth, session, and reset-password are all untouched.
+  //
+  // FAIL-SAFE (AGENTS.md RULE 1 spirit for auth): every DB read/write below is
+  // wrapped so a counter-update failure LOGS and CONTINUES — it must never block
+  // a legitimate login or turn a sign-in into a 500. The ONE deliberate throw is
+  // the FORBIDDEN in the `before` hook when the account is genuinely locked —
+  // that throw IS the feature, not an error to swallow.
+  hooks: {
+    // BEFORE a credential sign-in is processed: reject if the account is locked.
+    before: createAuthMiddleware(async (ctx) => {
+      if (ctx.path !== "/sign-in/email") return;
+
+      const email = ctx.body?.email;
+      if (typeof email !== "string" || email.length === 0) return;
+
+      let lockedUntil: Date | null = null;
+      try {
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: { lockedUntil: true },
+        });
+        // No such user → let the normal INVALID_EMAIL_OR_PASSWORD flow run so we
+        // don't leak which emails exist (no enumeration).
+        if (!user) return;
+        lockedUntil = user.lockedUntil;
+      } catch (err) {
+        // Fail-safe: a lookup failure must not block a legitimate login. Skip
+        // the lock check and let the normal sign-in flow proceed.
+        console.error("[auth] lockout before-hook lookup failed:", err);
+        return;
+      }
+
+      if (isLocked(lockedUntil, new Date())) {
+        // Deliberate throw — the lockout itself. Generic message: it never
+        // reveals whether the submitted password was correct.
+        throw new APIError("FORBIDDEN", { message: LOCKOUT_MESSAGE });
+      }
+    }),
+
+    // AFTER a credential sign-in: on success reset the counter; on an
+    // invalid-credentials failure increment it (and lock at the threshold).
+    after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path !== "/sign-in/email") return;
+
+      const email = ctx.body?.email;
+      if (typeof email !== "string" || email.length === 0) return;
+
+      // SUCCESS: a session was created on this request → clear any stale counter.
+      if (ctx.context.newSession) {
+        try {
+          // updateMany (not update) so a missing row is a 0-row no-op, never a
+          // throw — no enumeration, and resilient if the row vanished mid-flow.
+          await prisma.user.updateMany({ where: { email }, data: resetState() });
+        } catch (err) {
+          console.error("[auth] lockout success-reset failed:", err);
+        }
+        return;
+      }
+
+      // FAILURE: only an invalid-credentials (wrong password / unknown email)
+      // result counts. An unverified-email 403 (EMAIL_NOT_VERIFIED) means the
+      // password WAS correct, so it must NOT increment; any other outcome on a
+      // non-sign-in path already returned above.
+      const returned = ctx.context.returned as
+        | { body?: { code?: string } }
+        | undefined;
+      if (returned?.body?.code !== "INVALID_EMAIL_OR_PASSWORD") return;
+
+      try {
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: { failedLoginAttempts: true, lockedUntil: true },
+        });
+        // Unknown email → the invalid-credentials error is the same, but there's
+        // no row to count against. Skip (no enumeration, no phantom row).
+        if (!user) return;
+
+        const next = nextFailureState(user, new Date());
+        await prisma.user.updateMany({ where: { email }, data: next });
+      } catch (err) {
+        // Fail-safe: a counter update failure must not surface as a 500. The
+        // sign-in already failed with the correct error; just log and continue.
+        console.error("[auth] lockout failure-increment failed:", err);
+      }
+    }),
+  },
 
   // --------------------------------------------------------
   // Database Hooks — post-signup side effects

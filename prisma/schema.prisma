@@ -44,6 +44,15 @@ model User {
   // Grants access to the internal Admin Panel.
   isAdmin Boolean @default(false)
 
+  // H-2: per-account brute-force lockout (OWASP A07/A04). Count of CONSECUTIVE
+  // failed email/password sign-ins, and the timestamp the account is locked
+  // until (null = not locked). Managed SOLELY by the sign-in hooks in
+  // src/lib/auth.ts (the single writer); nothing else reads or writes them.
+  // Both are additive/safe on existing rows — see the surviving migration
+  // 20250113000000_add_account_lockout.
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+
   // Scanner lifetime allowance (plan: 10 SUCCESSFUL matches total, not per month).
   // Incremented ONLY on a successful Scrydex Vision identification, via an atomic
   // conditional update so concurrent scans can never overrun the limit. Configurable
