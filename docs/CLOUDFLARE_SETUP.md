@@ -143,6 +143,35 @@ curl -k --resolve dojocollect.com:443:<DROPLET_IP> https://dojocollect.com
 Staging is reached the same way (`https://staging.dojocollect.com`) and additionally
 prompts for Caddy `basic_auth`.
 
+### Staging basic-auth password (env var, survives deploys)
+
+The staging `basic_auth` hash is read from the `STAGING_BASICAUTH_HASH` env var — it is
+NO LONGER hand-edited into the Caddyfile. (Previously the Caddyfile carried a hardcoded
+placeholder hash that the operator replaced by hand; every `git reset --hard origin/staging`
+deploy overwrote it back to the placeholder and broke staging basic-auth.) Set it ONCE in
+the gitignored root `.env` and deploys no longer clobber it:
+
+```bash
+# 1. Generate the bcrypt hash (quote the password so the shell leaves it intact):
+docker run --rm caddy:2-alpine caddy hash-password --plaintext '<password>'
+#    → prints a $2a$... hash.
+
+# 2. Put it in the gitignored ROOT .env (the SAME file docker-compose reads DOMAIN
+#    from — the shared caddy service has no env_file, so compose interpolates both
+#    from the root .env, NOT from .env.staging). Paste the full hash UNQUOTED:
+#        STAGING_BASICAUTH_HASH=$2a$14$...
+#    (template entry lives in .env.example).
+
+# 3. Recreate caddy so it picks up the new container env:
+cd /srv/dojo
+docker compose up -d --force-recreate caddy
+```
+
+The Caddyfile reads it via `basic_auth { staging {$STAGING_BASICAUTH_HASH} }` — the same
+`{$ENV_VAR}` substitution as the prod block's `{$DOMAIN::80}`. Log in with username
+`staging` and the plaintext password you hashed. If the var is empty/unset, there is no
+valid credential and staging basic-auth fails closed.
+
 ## 6. Maintenance — keep the Cloudflare ranges fresh
 
 Cloudflare occasionally changes its published IP ranges. When it does, BOTH of these

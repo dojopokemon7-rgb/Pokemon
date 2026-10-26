@@ -140,14 +140,26 @@
 # file pair (noted in docs/CLOUDFLARE_SETUP.md). The cert files MUST exist in
 # ./infra/cloudflare-origin BEFORE `docker compose up caddy`.
 #
-# Replace the bcrypt placeholder below with the output of:
+# BASIC-AUTH HASH comes from an ENV VAR, not a hardcoded hash (AGENTS.md RULE 14 —
+# load-bearing, do NOT strip). The real bcrypt hash lives in the gitignored env
+# file as STAGING_BASICAUTH_HASH and is read here via Caddy's `{$ENV_VAR}`
+# substitution — the SAME mechanism proven by `{$DOMAIN::80}` in the prod block.
+# WHY: the hash used to be hardcoded here, so every `git reset --hard origin/staging`
+# deploy clobbered the operator's hand-edited hash back to the placeholder and broke
+# staging basic-auth. Sourcing it from the env file keeps the secret OUT of git and
+# UNTOUCHED by deploys. Generate the hash with:
 #   docker run --rm caddy:2-alpine caddy hash-password --plaintext '<password>'
+# then put it in the gitignored env file as  STAGING_BASICAUTH_HASH=<hash>  (root
+# .env — the same file docker-compose interpolates DOMAIN from; see .env.example and
+# docs/CLOUDFLARE_SETUP.md). docker-compose.yml passes it into the caddy container.
 # =============================================================
 staging.dojocollect.com {
     # HTTP basic auth gate. Format:  <user>  <bcrypt-hash>
-    # Default username is `staging`; replace the placeholder hash (see above).
+    # Username is `staging`; the hash is injected from the container env var
+    # STAGING_BASICAUTH_HASH (empty var → no valid credential, auth always fails
+    # closed — set it in the gitignored env file as described above).
     basic_auth {
-        staging $2a$14$REPLACE_WITH_BCRYPT_HASH
+        staging {$STAGING_BASICAUTH_HASH}
     }
 
     # Cloudflare Origin Certificate (see the ORIGIN TLS note above).

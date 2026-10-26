@@ -107,8 +107,18 @@ services:
     # from the container env, not from the host .env. Without this, DOMAIN is
     # empty, Caddy serves plain HTTP on :80 only, and never issues a TLS cert
     # (443 refuses). Keep DOMAIN unquoted in .env so the value isn't literal.
+    #
+    # Both values use compose variable-substitution (${VAR}), which compose
+    # resolves from the project's default env file (.env in this directory) or
+    # the shell — NOT from any service's `env_file`. The shared caddy service has
+    # no `env_file`, so ${DOMAIN} and ${STAGING_BASICAUTH_HASH} BOTH come from the
+    # root .env the same proven way. STAGING_BASICAUTH_HASH carries the staging
+    # basic-auth bcrypt hash the Caddyfile reads as {$STAGING_BASICAUTH_HASH};
+    # keeping it in the gitignored .env means `git reset --hard` deploys no longer
+    # clobber it. (See .env.example + docs/CLOUDFLARE_SETUP.md.)
     environment:
       - DOMAIN=${DOMAIN}
+      - STAGING_BASICAUTH_HASH=${STAGING_BASICAUTH_HASH}
     ports:
       - "80:80"
       - "443:443"
