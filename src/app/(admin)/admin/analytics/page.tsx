@@ -25,6 +25,7 @@ import {
   AnalyticsDetail,
   type AnalyticsPayload,
 } from "../_components/AnalyticsDetail";
+import { ExternalAnalyticsLinks } from "../_components/ExternalAnalyticsLinks";
 import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 // Live, per-request authed read — never statically cached (fresh SSR initialData).
@@ -81,6 +82,10 @@ export default async function AdminAnalyticsPage() {
       </header>
 
       <AnalyticsDetail initialData={initialData} />
+
+      <div style={{ marginTop: "32px" }}>
+        <ExternalAnalyticsLinks />
+      </div>
     </div>
   );
 }

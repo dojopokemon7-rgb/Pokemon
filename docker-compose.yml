@@ -32,6 +32,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # NEXT_PUBLIC_* are INLINED at `next build` (see Dockerfile), so they must
+      # be passed as build args — the runtime env_file is too late for them.
+      # Sourced from the root .env via compose ${VAR} substitution at --build time.
+      args:
+        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
+        NEXT_PUBLIC_POSTHOG_DASHBOARD_URL: ${NEXT_PUBLIC_POSTHOG_DASHBOARD_URL:-}
+        NEXT_PUBLIC_CLARITY_PROJECT_ID: ${NEXT_PUBLIC_CLARITY_PROJECT_ID:-}
     container_name: tcg_app
     restart: unless-stopped
     depends_on:
@@ -69,6 +77,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Same build-time inlining as prod `app` — staging reads the same root .env
+      # ${VAR} interpolation at --build time (its runtime .env.staging is too late
+      # for NEXT_PUBLIC_*). Keeps the two images consistent.
+      args:
+        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
+        NEXT_PUBLIC_POSTHOG_DASHBOARD_URL: ${NEXT_PUBLIC_POSTHOG_DASHBOARD_URL:-}
+        NEXT_PUBLIC_CLARITY_PROJECT_ID: ${NEXT_PUBLIC_CLARITY_PROJECT_ID:-}
     container_name: tcg_app_staging
     restart: unless-stopped
     depends_on:

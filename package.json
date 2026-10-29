@@ -42,6 +42,7 @@
     "dotenv": "^18.0.5",
     "ioredis": "^5.11.1",
     "next": "^15.3.5",
+    "posthog-js": "1.258.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tesseract.js": "^5.1.1",
