@@ -105,6 +105,10 @@ export default function SignUpPage() {
 
     setLoading(true);
 
+    // Funnel start: fired on a valid submit so OTP-stage drop-off is visible
+    // (signup_completed only fires after the verified session exists).
+    track("signup_started", { method: "email" });
+
     const { error: authError } = await authClient.signUp.email({
       name: username,
       email,
