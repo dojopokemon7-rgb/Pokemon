@@ -141,6 +141,26 @@ PostHog in a new tab: `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` if set, else
 
 ---
 
+## 7b. In-app admin dashboard (server key)
+
+`/admin/analytics` now shows PostHog metrics in-app (visitors, pageviews, signups, logins,
+cards added + USD value, searches/zero-result, wishlist, scans, errors, top events, daily
+trend, funnel) via the admin-only `GET /api/admin/analytics` -> HogQL Query API
+(`src/lib/services/posthog-query.service.ts`). The External Analytics card stays as a secondary
+'Open in PostHog' link.
+
+1. PostHog -> Settings -> Personal API keys -> create a key with the **Query read** scope.
+2. Set `POSTHOG_PERSONAL_API_KEY` (server secret, never `NEXT_PUBLIC_`), optional `POSTHOG_PROJECT_ID` (default 333915) and `POSTHOG_API_HOST` (default https://eu.posthog.com).
+3. Add the key to **BOTH** `.env` (prod) and `.env.staging` (compose `env_file` for `app` / `app-staging`), then recreate the containers (`docker compose up -d app app-staging`).
+   It is runtime server env: no rebuild needed.
+
+Unset key -> 'Analytics not configured'; PostHog error -> 'PostHog unavailable'; no value -> '—'.
+Results are cached ~90s in Redis (optional). The funnel counts unique users per step in the
+window (not strictly ordered). Events predating the `environment` super-property are excluded
+from production/staging filters (use 'all').
+
+---
+
 ## 8. What gets tracked
 
 Autocapture (clicks, form submits), manual `$pageview`s, session replay,

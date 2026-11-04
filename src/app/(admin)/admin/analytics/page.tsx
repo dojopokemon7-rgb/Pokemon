@@ -25,6 +25,7 @@ import {
   AnalyticsDetail,
   type AnalyticsPayload,
 } from "../_components/AnalyticsDetail";
+import { PostHogDashboard } from "../_components/PostHogDashboard";
 import { ExternalAnalyticsLinks } from "../_components/ExternalAnalyticsLinks";
 import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
@@ -77,11 +78,14 @@ export default async function AdminAnalyticsPage() {
           Analytics
         </h1>
         <p className="dojo-body" style={{ marginTop: "6px" }}>
-          Scan usage, portfolio totals, per-game split, and top cards. Auto-refreshes.
+          PostHog product analytics, scan usage, portfolio totals, per-game split, and top cards. Auto-refreshes.
         </p>
       </header>
 
-      <AnalyticsDetail initialData={initialData} />
+      <PostHogDashboard />
+      <div style={{ marginTop: "32px" }}>
+        <AnalyticsDetail initialData={initialData} />
+      </div>
 
       <div style={{ marginTop: "32px" }}>
         <ExternalAnalyticsLinks />

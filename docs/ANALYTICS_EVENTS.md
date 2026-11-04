@@ -86,6 +86,10 @@ Verifying the email in a different browser/tab session means no completion event
 
 Each `scan_started` is followed by exactly one `scan_succeeded` or `scan_failed`.
 
+## Where to see them in-app
+
+Admin -> Analytics shows these events via the PostHog Query API (see ANALYTICS_SETUP.md 7b).
+
 ## BACKLOG (not built, not instrumented)
 
 These features do not exist in the codebase. **Wire when the flow ships**, and no

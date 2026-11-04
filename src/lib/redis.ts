@@ -361,6 +361,14 @@ export const RedisKeys = {
    * a store so a refresh shows before the 120s TTL expires).
    */
   soldRows: (cardId: string): string => `card:soldrows:${cardId}`,
+  /**
+   * Admin PostHog analytics result (posthog-query.service.ts) for one
+   * range+environment. USER-AGNOSTIC, admin-only. TTL: 90s
+   * (CACHE_TTL.posthogAnalytics). Only successful results are cached; Redis is
+   * optional (RULE 1).
+   */
+  posthogAnalytics: (range: string, environment: string): string =>
+    `posthog:analytics:${range}:${environment}`,
 } as const;
 
 /**
@@ -379,4 +387,5 @@ export const CACHE_TTL = {
   cardHistory: 600, // 10 min
   cardPopulation: 86400, // 24h — matches the route's existing max-age=86400
   soldRows: 120, // 2 min — short read-through; Postgres (SoldListing) is truth
+  posthogAnalytics: 90, // admin PostHog dashboard — avoids hammering the Query API
 } as const;

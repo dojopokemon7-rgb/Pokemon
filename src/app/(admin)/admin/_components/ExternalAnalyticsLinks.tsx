@@ -56,7 +56,7 @@ function ProviderRow({
             className="dojo-btn dojo-btn-outline-sm"
             style={{ display: "inline-flex" }}
           >
-            Open dashboard ↗
+            Open in PostHog ↗
           </a>
         ) : (
           <div className="dojo-faint">Configure analytics keys to enable</div>
