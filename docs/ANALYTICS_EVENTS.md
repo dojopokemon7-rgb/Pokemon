@@ -106,16 +106,28 @@ counts:
 - **Auth & activation**: signups/logins by method, onboarding, resets, funnel.
 - **Engagement & quality**: `$exception` count + recent errors, daily trend.
 
-**Drill-down (in-app):** the Recent-activity feed's User cell links to
+**Drill-down (in-app):** every overview COUNT CARD is clickable — it re-loads
+the Recent-activity feed scoped to just the rows behind that number (Logins →
+`login_completed`, Cards added → `card_added`, Searches → `search_performed`,
+Zero-result → `search_performed`+`results_count=0`, Wishlist adds →
+`wishlist_added`, Scans, Signups → `signup_completed`, Errors → `$exception`)
+via the `event` filter param (FIXED allowlist + `zero_result` pseudo + `$exception`,
+mapped to a constant HogQL predicate, never free text), with an active-filter
+chip + "Show all" and a heading that reflects the filter. Unique Visitors drills
+into the DISTINCT persons behind it (`view=persons`): identified by email +
+an honest "anonymous (N)" remainder, never a fabricated identity. Everywhere a
+`card_id` appears (feed Detail cell + most-added/-viewed/-wishlisted lists +
+the card popover header) the human-readable card NAME leads (catalog
+`externalId`→`Card.name`, resolved server-side in one batched Prisma query; raw
+id kept as tooltip/secondary, unknown → raw id). The feed's User cell links to
 `/admin/users/[id]` (email→user-id resolved server-side; anonymous/deleted →
-no link), and that user-detail page now shows the user's REAL recent per-user
+no link), and that user-detail page shows the user's REAL recent per-user
 behaviour (`getUserActivity`, this same taxonomy, filtered to the person via a
 HogQL `{email}` placeholder) merged with DB account facts — honest fallback to
-facts-only when PostHog is unavailable. Clicking a `card_id` (feed cells +
-most-added/-viewed/-wishlisted lists) opens a popover with that card's
-viewed/added/wishlisted aggregate over the selected range+environment
-(`getCardActivity`, `{card_id}` placeholder). Session replay and ad-hoc chart
-building stay in PostHog (the "Open in PostHog" link), by design.
+facts-only when PostHog is unavailable. Clicking a `card_id` opens a popover
+with that card's viewed/added/wishlisted aggregate over the selected
+range+environment (`getCardActivity`, `{card_id}` placeholder). Session replay
+and ad-hoc chart building stay in PostHog (the "Open in PostHog" link), by design.
 
 ### Privacy — email in the admin feed
 

@@ -378,6 +378,22 @@ export const RedisKeys = {
    */
   posthogCardActivity: (externalId: string, range: string, environment: string): string =>
     `posthog:cardactivity:${externalId.toLowerCase().trim()}:${range}:${environment}`,
+  /**
+   * Admin analytics drill-down FEED, scoped to one count-card metric
+   * (posthog-query.service.ts getFilteredFeed) for one event filter + range +
+   * environment. USER-AGNOSTIC, admin-only. TTL: 90s
+   * (CACHE_TTL.posthogAnalytics). `filter` is one of the FIXED allowlist values
+   * (not free text), so keys stay bounded; Redis is optional (RULE 1).
+   */
+  posthogFeed: (filter: string, range: string, environment: string): string =>
+    `posthog:feed:${filter}:${range}:${environment}`,
+  /**
+   * Admin analytics distinct-persons drill-down behind Unique Visitors
+   * (posthog-query.service.ts getDistinctPersons) for one range+environment.
+   * USER-AGNOSTIC, admin-only. TTL: 90s. Redis optional (RULE 1).
+   */
+  posthogPersons: (range: string, environment: string): string =>
+    `posthog:persons:${range}:${environment}`,
 } as const;
 
 /**

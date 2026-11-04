@@ -46,11 +46,13 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 export function CardActivityPopover({
   cardId,
+  cardName,
   range,
   environment,
   onClose,
 }: {
   cardId: string;
+  cardName?: string | null;
   range: AnalyticsRange;
   environment: AnalyticsEnvironment;
   onClose: () => void;
@@ -119,7 +121,7 @@ export function CardActivityPopover({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Card analytics for ${cardId}`}
+        aria-label={`Card analytics for ${cardName ?? cardId}`}
         style={{
           position: "fixed",
           inset: 0,
@@ -154,12 +156,19 @@ export function CardActivityPopover({
               <div className="dojo-step-label" style={{ fontSize: "9px" }}>
                 Card analytics · {range} · {environment}
               </div>
+              {/* Name leads (human-readable); the raw catalog id stays visible
+                  as a secondary line. Unknown card → id only (RULE 2). */}
               <h2
                 className="dojo-heading"
                 style={{ fontSize: "18px", margin: "4px 0 0", wordBreak: "break-word" }}
               >
-                {cardId}
+                {cardName ?? cardId}
               </h2>
+              {cardName && (
+                <div className="dojo-faint" style={{ fontSize: "11px", marginTop: "2px", wordBreak: "break-word" }}>
+                  {cardId}
+                </div>
+              )}
             </div>
             <button
               ref={closeRef}

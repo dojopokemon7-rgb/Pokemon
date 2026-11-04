@@ -7,14 +7,27 @@
  * never sees it). Range + environment selectors. Honest states (RULE 2):
  * "Analytics not configured" / "PostHog unavailable" / "—" for null metrics.
  * Admin panel = Tailwind utilities allowed (AGENTS.md §10).
+ *
+ * WHO / WHAT BEHIND EVERY COUNT: the overview count cards are clickable. Clicking
+ * one drills the Recent-activity feed down to just the rows behind that number
+ * (via the `event` filter param → the server re-queries the TRUE rows for that
+ * metric, not just whatever the default feed held) and scrolls to the feed. An
+ * active-filter chip + the feed heading reflect the current drill-down, with a
+ * one-click "Show all". Unique Visitors drills into the DISTINCT persons behind
+ * the number (identified by email + an honest "anonymous (N)" remainder). Card
+ * ids everywhere lead with the human-readable card NAME (id kept as a tooltip).
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import type {
   AnalyticsResult,
   AnalyticsRange,
   AnalyticsEnvironment,
+  AnalyticsEventFilter,
+  FilteredFeedResult,
+  DistinctPersonsResult,
+  ActivityRow,
 } from "@/lib/services/posthog-query.service";
 import { CardActivityPopover } from "./CardActivityPopover";
 
@@ -66,6 +79,72 @@ const fmtValue = (usd: number | null, inr: number | null) => {
   return parts.join(" · ") || "—";
 };
 
+// ── Count-card drill-down wiring ───────────────────────────────────────────
+// A drill-down filter is either one of the server's allowlisted event filters
+// or the special "persons" view behind Unique Visitors. `null` = show all.
+type Drill = AnalyticsEventFilter | "persons" | null;
+
+// Human labels for the active-filter chip + feed heading, per drill value.
+const DRILL_LABELS: Record<AnalyticsEventFilter | "persons", string> = {
+  persons: "Unique visitors",
+  signup_completed: "Signups",
+  login_completed: "Logins",
+  card_added: "Cards added",
+  search_performed: "Searches",
+  zero_result: "Zero-result searches",
+  wishlist_added: "Wishlist adds",
+  scan_started: "Scans started",
+  scan_succeeded: "Scans succeeded",
+  $exception: "Errors",
+};
+
+// Feed events whose salient detail IS a card id (so the Detail cell is a
+// clickable card drill-down). Mirrors the server's CARD_DETAIL_EVENTS
+// (posthog-query.service.ts) — kept as a client-local literal so this client
+// component never value-imports the server-only (ioredis) service module.
+const CARD_DETAIL_EVENT_SET = new Set<string>([
+  "card_added",
+  "card_removed",
+  "card_viewed",
+  "wishlist_added",
+  "scan_started",
+  "scan_succeeded",
+  "scan_failed",
+]);
+
+/** Clickable value for a card drill-down: name leads, raw id in the tooltip. */
+function CardCell({
+  cardId,
+  cardName,
+  onClick,
+}: {
+  cardId: string;
+  cardName?: string | null;
+  onClick: (id: string, name?: string | null) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(cardId, cardName)}
+      title={cardName ? `${cardName} (${cardId}) — view card analytics` : `${cardId} — view card analytics`}
+      className="dojo-link"
+      style={{
+        background: "none",
+        border: "none",
+        padding: 0,
+        margin: 0,
+        font: "inherit",
+        color: "var(--color-dojo-gold)",
+        cursor: "pointer",
+        textAlign: "left",
+        wordBreak: "break-word",
+      }}
+    >
+      {cardName ?? cardId}
+    </button>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <article style={CARD_STYLE}>
@@ -76,6 +155,53 @@ function Stat({ label, value }: { label: string; value: string }) {
         {value}
       </div>
     </article>
+  );
+}
+
+/**
+ * Clickable overview count card — looks and behaves like a button (hover lift,
+ * pointer, focus ring, aria-pressed) and drills the feed to the rows behind the
+ * number. Keyboard-accessible (real <button>). `active` highlights the current
+ * drill-down.
+ */
+function StatButton({
+  label,
+  value,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={`Show the ${label.toLowerCase()} behind this number`}
+      style={{
+        ...CARD_STYLE,
+        textAlign: "left",
+        cursor: "pointer",
+        width: "100%",
+        outline: active ? "2px solid var(--color-dojo-gold)" : undefined,
+        outlineOffset: active ? "-2px" : undefined,
+      }}
+      className="dojo-stat-button"
+    >
+      <div
+        className="dojo-step-label"
+        style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "6px" }}
+      >
+        {label}
+        <span aria-hidden style={{ color: "var(--color-dojo-gold)", fontSize: "11px" }}>↓</span>
+      </div>
+      <div className="dojo-heading" style={{ fontSize: "26px", marginTop: "8px" }}>
+        {value}
+      </div>
+    </button>
   );
 }
 
@@ -138,35 +264,7 @@ function CountTable({
   );
 }
 
-/**
- * Clickable card id — opens the analytics drill-down popover. Styled as a link
- * (gold, underline-on-hover) but is a real button for a11y. Breaks long ids.
- */
-function CardCell({ cardId, onClick }: { cardId: string; onClick: (id: string) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onClick(cardId)}
-      title="View card analytics"
-      className="dojo-link"
-      style={{
-        background: "none",
-        border: "none",
-        padding: 0,
-        margin: 0,
-        font: "inherit",
-        color: "var(--color-dojo-gold)",
-        cursor: "pointer",
-        textAlign: "left",
-        wordBreak: "break-word",
-      }}
-    >
-      {cardId}
-    </button>
-  );
-}
-
-/** Ranked card table: card id + count (+ value when present). */
+/** Ranked card table: card name (id tooltip) + count (+ value when present). */
 function CardTable({
   rows,
   countHead,
@@ -174,11 +272,11 @@ function CardTable({
   empty = "No data in this range.",
   onCardClick,
 }: {
-  rows: { cardId: string; count: number; valueUsd: number | null }[];
+  rows: { cardId: string; count: number; valueUsd: number | null; cardName?: string | null }[];
   countHead: string;
   showValue?: boolean;
   empty?: string;
-  onCardClick: (cardId: string) => void;
+  onCardClick: (cardId: string, cardName?: string | null) => void;
 }) {
   return (
     <div style={CARD_STYLE}>
@@ -197,12 +295,76 @@ function CardTable({
             {rows.map((r) => (
               <tr key={r.cardId}>
                 <td className="py-1" style={{ wordBreak: "break-word" }}>
-                  <CardCell cardId={r.cardId} onClick={onCardClick} />
+                  <CardCell cardId={r.cardId} cardName={r.cardName} onClick={onCardClick} />
                 </td>
                 <td className="py-1 text-right">{fmt(r.count)}</td>
                 {showValue && (
                   <td className="py-1 text-right">{fmt(r.valueUsd, "$")}</td>
                 )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/** The activity-feed table (shared by the default feed and the drill-down). */
+function ActivityTable({
+  rows,
+  onCardClick,
+}: {
+  rows: ActivityRow[];
+  onCardClick: (cardId: string, cardName?: string | null) => void;
+}) {
+  return (
+    <div style={{ ...CARD_STYLE, overflowX: "auto" }}>
+      {rows.length === 0 ? (
+        <div className="dojo-faint">No activity in this range.</div>
+      ) : (
+        <table className="w-full dojo-body" style={{ fontSize: "13px" }}>
+          <thead>
+            <tr className="dojo-faint text-left">
+              <th className="py-1 pr-3 font-normal">Time</th>
+              <th className="py-1 pr-3 font-normal">User</th>
+              <th className="py-1 pr-3 font-normal">Action</th>
+              <th className="py-1 pr-3 font-normal">Detail</th>
+              <th className="py-1 pr-3 text-right font-normal">Value</th>
+              <th className="py-1 font-normal">Env</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.time}-${r.event}-${i}`}>
+                <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{fmtTime(r.time)}</td>
+                <td className="py-1 pr-3">
+                  {r.email == null ? (
+                    "anonymous"
+                  ) : r.userId ? (
+                    // Resolved email→user id server-side → drill into the user.
+                    // No id (anonymous / deleted) → plain text.
+                    <Link href={`/admin/users/${r.userId}`} className="dojo-link">
+                      {r.email}
+                    </Link>
+                  ) : (
+                    r.email
+                  )}
+                </td>
+                <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{eventLabel(r.event)}</td>
+                <td className="py-1 pr-3" style={{ wordBreak: "break-word" }}>
+                  {r.detail == null ? (
+                    "—"
+                  ) : CARD_DETAIL_EVENT_SET.has(r.event) ? (
+                    <CardCell cardId={r.detail} cardName={r.cardName} onClick={onCardClick} />
+                  ) : (
+                    r.detail
+                  )}
+                </td>
+                <td className="py-1 pr-3 text-right" style={{ whiteSpace: "nowrap" }}>
+                  {fmtValue(r.valueUsd, r.valueInr)}
+                </td>
+                <td className="py-1">{r.environment ?? "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -241,23 +403,29 @@ function Segmented<T extends string>({
   );
 }
 
-// Feed events whose salient detail IS a card id (so the Detail cell is a
-// clickable card drill-down). Mirrors activityDetail's default branch.
-const CARD_DETAIL_EVENTS = new Set([
-  "card_added",
-  "card_removed",
-  "card_viewed",
-  "wishlist_added",
-  "scan_started",
-  "scan_succeeded",
-  "scan_failed",
-]);
-
 export function PostHogDashboard() {
   const [range, setRange] = useState<AnalyticsRange>("7d");
   const [environment, setEnvironment] = useState<AnalyticsEnvironment>("production");
-  // Card drill-down popover: the externalId currently open, or null.
-  const [openCard, setOpenCard] = useState<string | null>(null);
+  // Active count-card drill-down (null = show the full default feed).
+  const [drill, setDrill] = useState<Drill>(null);
+  // Card drill-down popover: the open card, or null.
+  const [openCard, setOpenCard] = useState<{ id: string; name?: string | null } | null>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
+
+  // Changing range/env clears any active drill-down (the old filter may not
+  // apply to the new window; keeps the view honest and tidy).
+  useEffect(() => {
+    setDrill(null);
+  }, [range, environment]);
+
+  const openCardPopover = (id: string, name?: string | null) => setOpenCard({ id, name });
+
+  // Click a count card: set the drill-down and scroll the feed into view.
+  const onCountClick = (d: Drill) => {
+    setDrill(d);
+    // Scroll after the state-driven re-render paints the feed section.
+    requestAnimationFrame(() => feedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
 
   const { data, isLoading, isError } = useQuery<AnalyticsResult>({
     queryKey: ["admin-posthog", range, environment],
@@ -268,6 +436,37 @@ export function PostHogDashboard() {
       );
       if (!res.ok) throw new Error(`analytics ${res.status}`);
       return (await res.json()) as AnalyticsResult;
+    },
+    staleTime: 60_000,
+  });
+
+  // Drill-down feed (event filter) — only fetched when an event drill is active.
+  const eventDrill = drill && drill !== "persons" ? drill : null;
+  const feedQuery = useQuery<FilteredFeedResult>({
+    queryKey: ["admin-posthog-feed", eventDrill, range, environment],
+    enabled: eventDrill !== null,
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/admin/analytics?event=${encodeURIComponent(eventDrill as string)}&range=${range}&environment=${environment}`,
+        { credentials: "include" }
+      );
+      if (!res.ok) throw new Error(`feed ${res.status}`);
+      return (await res.json()) as FilteredFeedResult;
+    },
+    staleTime: 60_000,
+  });
+
+  // Distinct-persons drill-down — only fetched for the Unique Visitors drill.
+  const personsQuery = useQuery<DistinctPersonsResult>({
+    queryKey: ["admin-posthog-persons", range, environment],
+    enabled: drill === "persons",
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/admin/analytics?view=persons&range=${range}&environment=${environment}`,
+        { credentials: "include" }
+      );
+      if (!res.ok) throw new Error(`persons ${res.status}`);
+      return (await res.json()) as DistinctPersonsResult;
     },
     staleTime: 60_000,
   });
@@ -288,80 +487,66 @@ export function PostHogDashboard() {
     const m = data.metrics;
     const d = data.detail;
     const maxFunnel = Math.max(1, ...data.funnel.map((f) => f.users ?? 0));
+
+    // ── The Recent-activity section, honouring the active drill-down ───────
+    let feedSection: React.ReactNode;
+    if (drill === "persons") {
+      feedSection = (
+        <PersonsPanel query={personsQuery} total={m.uniqueVisitors} onClear={() => setDrill(null)} />
+      );
+    } else if (eventDrill) {
+      const label = DRILL_LABELS[eventDrill];
+      const r = feedQuery.data;
+      const rows = r && r.status === "ok" ? r.rows : [];
+      feedSection = (
+        <>
+          <FilterChip label={label} onClear={() => setDrill(null)} />
+          <div className="dojo-faint" style={{ fontSize: "11px", margin: "0 0 8px" }}>
+            {feedQuery.isLoading
+              ? "Loading…"
+              : r && r.status !== "ok"
+                ? "PostHog unavailable."
+                : `${label} — ${rows.length} event${rows.length === 1 ? "" : "s"}, newest first.`}
+          </div>
+          <ActivityTable rows={rows} onCardClick={openCardPopover} />
+        </>
+      );
+    } else {
+      feedSection = (
+        <>
+          <div className="dojo-faint" style={{ fontSize: "11px", marginBottom: "8px" }}>
+            Latest {d.recentActivity.length} business events, newest first. Click any count
+            above to see just the rows behind it.
+          </div>
+          <ActivityTable rows={d.recentActivity} onCardClick={openCardPopover} />
+        </>
+      );
+    }
+
     body = (
       <>
-        {/* ── OVERVIEW ─────────────────────────────────────────────── */}
+        {/* ── OVERVIEW (clickable → drill the feed) ─────────────────── */}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <Stat label="Unique visitors" value={fmt(m.uniqueVisitors)} />
+          <StatButton label="Unique visitors" value={fmt(m.uniqueVisitors)} active={drill === "persons"} onClick={() => onCountClick("persons")} />
+          {/* Pageviews are $pageview (anonymous page loads), not a business
+              event — no honest per-row feed, so it stays a plain stat. */}
           <Stat label="Pageviews" value={fmt(m.pageviews)} />
-          <Stat label="Signups" value={fmt(m.signups)} />
-          <Stat label="Logins" value={fmt(m.logins)} />
-          <Stat label="Cards added" value={fmt(m.cardsAdded)} />
-          <Stat label="Cards added value (USD)" value={fmt(m.cardsAddedValueUsd, "$")} />
-          <Stat label="Searches" value={fmt(m.searches)} />
-          <Stat label="Zero-result searches" value={fmt(m.zeroResultSearches)} />
-          <Stat label="Wishlist adds" value={fmt(m.wishlistAdds)} />
-          <Stat label="Scans started" value={fmt(m.scansStarted)} />
-          <Stat label="Scans succeeded" value={fmt(m.scansSucceeded)} />
-          <Stat label="Errors ($exception)" value={fmt(m.errors)} />
+          <StatButton label="Signups" value={fmt(m.signups)} active={drill === "signup_completed"} onClick={() => onCountClick("signup_completed")} />
+          <StatButton label="Logins" value={fmt(m.logins)} active={drill === "login_completed"} onClick={() => onCountClick("login_completed")} />
+          <StatButton label="Cards added" value={fmt(m.cardsAdded)} active={drill === "card_added"} onClick={() => onCountClick("card_added")} />
+          <StatButton label="Cards added value (USD)" value={fmt(m.cardsAddedValueUsd, "$")} active={drill === "card_added"} onClick={() => onCountClick("card_added")} />
+          <StatButton label="Searches" value={fmt(m.searches)} active={drill === "search_performed"} onClick={() => onCountClick("search_performed")} />
+          <StatButton label="Zero-result searches" value={fmt(m.zeroResultSearches)} active={drill === "zero_result"} onClick={() => onCountClick("zero_result")} />
+          <StatButton label="Wishlist adds" value={fmt(m.wishlistAdds)} active={drill === "wishlist_added"} onClick={() => onCountClick("wishlist_added")} />
+          <StatButton label="Scans started" value={fmt(m.scansStarted)} active={drill === "scan_started"} onClick={() => onCountClick("scan_started")} />
+          <StatButton label="Scans succeeded" value={fmt(m.scansSucceeded)} active={drill === "scan_succeeded"} onClick={() => onCountClick("scan_succeeded")} />
+          <StatButton label="Errors ($exception)" value={fmt(m.errors)} active={drill === "$exception"} onClick={() => onCountClick("$exception")} />
         </div>
 
-        {/* ── 1. RECENT ACTIVITY ───────────────────────────────────── */}
-        <SectionHeading>Recent activity</SectionHeading>
-        <div className="dojo-faint" style={{ fontSize: "11px", marginBottom: "8px" }}>
-          Latest {d.recentActivity.length} business events, newest first.
-        </div>
-        <div style={{ ...CARD_STYLE, overflowX: "auto" }}>
-          {d.recentActivity.length === 0 ? (
-            <div className="dojo-faint">No activity in this range.</div>
-          ) : (
-            <table className="w-full dojo-body" style={{ fontSize: "13px" }}>
-              <thead>
-                <tr className="dojo-faint text-left">
-                  <th className="py-1 pr-3 font-normal">Time</th>
-                  <th className="py-1 pr-3 font-normal">User</th>
-                  <th className="py-1 pr-3 font-normal">Action</th>
-                  <th className="py-1 pr-3 font-normal">Detail</th>
-                  <th className="py-1 pr-3 text-right font-normal">Value</th>
-                  <th className="py-1 font-normal">Env</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.recentActivity.map((r, i) => (
-                  <tr key={`${r.time}-${r.event}-${i}`}>
-                    <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{fmtTime(r.time)}</td>
-                    <td className="py-1 pr-3">
-                      {r.email == null ? (
-                        "anonymous"
-                      ) : r.userId ? (
-                        // Resolved email→user id server-side → drill into the
-                        // user. No id (anonymous / deleted) → plain text.
-                        <Link href={`/admin/users/${r.userId}`} className="dojo-link">
-                          {r.email}
-                        </Link>
-                      ) : (
-                        r.email
-                      )}
-                    </td>
-                    <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{eventLabel(r.event)}</td>
-                    <td className="py-1 pr-3" style={{ wordBreak: "break-word" }}>
-                      {r.detail == null ? (
-                        "—"
-                      ) : CARD_DETAIL_EVENTS.has(r.event) ? (
-                        <CardCell cardId={r.detail} onClick={setOpenCard} />
-                      ) : (
-                        r.detail
-                      )}
-                    </td>
-                    <td className="py-1 pr-3 text-right" style={{ whiteSpace: "nowrap" }}>
-                      {fmtValue(r.valueUsd, r.valueInr)}
-                    </td>
-                    <td className="py-1">{r.environment ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+        {/* ── 1. RECENT ACTIVITY (drill-down target) ───────────────── */}
+        <div ref={feedRef}>
+          <SectionHeading>Recent activity</SectionHeading>
+          {feedSection}
         </div>
 
         {/* ── 2. SEARCH & DISCOVERY ────────────────────────────────── */}
@@ -377,7 +562,7 @@ export function PostHogDashboard() {
           </div>
           <div>
             <Heading>Most-viewed cards</Heading>
-            <CardTable rows={d.search.mostViewedCards} countHead="Views" empty="No card views." onCardClick={setOpenCard} />
+            <CardTable rows={d.search.mostViewedCards} countHead="Views" empty="No card views." onCardClick={openCardPopover} />
           </div>
           <div>
             <Heading>Filters applied</Heading>
@@ -399,7 +584,7 @@ export function PostHogDashboard() {
               countHead="Qty"
               showValue
               empty="No cards added in this range."
-              onCardClick={setOpenCard}
+              onCardClick={openCardPopover}
             />
           </div>
           <div>
@@ -425,7 +610,7 @@ export function PostHogDashboard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <Heading>Most-wishlisted cards</Heading>
-            <CardTable rows={d.wishlist.mostWishlisted} countHead="Adds" empty="No wishlist adds." onCardClick={setOpenCard} />
+            <CardTable rows={d.wishlist.mostWishlisted} countHead="Adds" empty="No wishlist adds." onCardClick={openCardPopover} />
           </div>
           <div>
             <Heading>Wishlist by game</Heading>
@@ -590,12 +775,107 @@ export function PostHogDashboard() {
       {body}
       {openCard !== null && (
         <CardActivityPopover
-          cardId={openCard}
+          cardId={openCard.id}
+          cardName={openCard.name}
           range={range}
           environment={environment}
           onClose={() => setOpenCard(null)}
         />
       )}
     </section>
+  );
+}
+
+/** Active-filter chip above the feed with a one-click "Show all". */
+function FilterChip({ label, onClear }: { label: string; onClear: () => void }) {
+  return (
+    <div
+      className="dojo-body"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "10px",
+        border: "1px solid var(--color-dojo-gold)",
+        padding: "5px 6px 5px 12px",
+        margin: "8px 0",
+        fontSize: "12px",
+      }}
+    >
+      <span>
+        Filtered to <strong>{label}</strong>
+      </span>
+      <button
+        type="button"
+        onClick={onClear}
+        className="dojo-btn dojo-btn-outline-sm"
+        style={{ padding: "3px 10px", fontSize: "11px" }}
+      >
+        Show all
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Unique-Visitors drill-down: the DISTINCT persons behind the number —
+ * identified ones by email (linking to their user page) + an honest
+ * "anonymous (N)" remainder. Never fabricates an identity.
+ */
+function PersonsPanel({
+  query,
+  total,
+  onClear,
+}: {
+  query: { data?: DistinctPersonsResult; isLoading: boolean };
+  total: number | null;
+  onClear: () => void;
+}) {
+  const r = query.data;
+  const identified = r && r.status === "ok" ? r.identified : [];
+  const anonymous = r && r.status === "ok" ? r.anonymous : 0;
+  return (
+    <>
+      <FilterChip label="Unique visitors" onClear={onClear} />
+      <div className="dojo-faint" style={{ fontSize: "11px", margin: "0 0 8px" }}>
+        {query.isLoading
+          ? "Loading…"
+          : r && r.status !== "ok"
+            ? "PostHog unavailable."
+            : `${fmt(total)} distinct visitor${total === 1 ? "" : "s"} · ${identified.length} identified · ${anonymous} anonymous`}
+      </div>
+      <div style={{ ...CARD_STYLE, overflowX: "auto" }}>
+        {!query.isLoading && identified.length === 0 && anonymous === 0 ? (
+          <div className="dojo-faint">No visitors in this range.</div>
+        ) : (
+          <table className="w-full dojo-body" style={{ fontSize: "13px" }}>
+            <thead>
+              <tr className="dojo-faint text-left">
+                <th className="py-1 font-normal">Visitor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {identified.map((p) => (
+                <tr key={p.email}>
+                  <td className="py-1" style={{ wordBreak: "break-word" }}>
+                    {p.userId ? (
+                      <Link href={`/admin/users/${p.userId}`} className="dojo-link">
+                        {p.email}
+                      </Link>
+                    ) : (
+                      p.email
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {anonymous > 0 && (
+                <tr>
+                  <td className="py-1 dojo-faint">anonymous ({anonymous})</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
   );
 }

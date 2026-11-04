@@ -67,9 +67,44 @@ const BUSINESS_EVENTS = [
 ] as const;
 const BUSINESS_EVENTS_SQL = `(${BUSINESS_EVENTS.map((e) => `'${e}'`).join(", ")})`;
 
+// Count-card → feed drill-down. Clicking an overview count card re-loads the
+// activity feed scoped to the rows BEHIND that number. The optional `event`
+// filter param maps a FIXED allowlist value to a CONSTANT HogQL predicate
+// fragment — never free text, never interpolated (RULE 4, HogQL safety). Each
+// value corresponds to one overview count card.
+export const ANALYTICS_EVENT_FILTERS = [
+  "signup_completed",
+  "login_completed",
+  "card_added",
+  "search_performed",
+  "zero_result", // pseudo-value: search_performed AND results_count = 0
+  "wishlist_added",
+  "scan_started",
+  "scan_succeeded",
+  "$exception",
+] as const;
+export type AnalyticsEventFilter = (typeof ANALYTICS_EVENT_FILTERS)[number];
+
+// allowlist value → constant HogQL predicate (the ONLY feed-filter text that
+// reaches HogQL). `zero_result` is the only non-event pseudo-value.
+const EVENT_FILTER_SQL: Record<AnalyticsEventFilter, string> = {
+  signup_completed: "event = 'signup_completed'",
+  login_completed: "event = 'login_completed'",
+  card_added: "event = 'card_added'",
+  search_performed: "event = 'search_performed'",
+  zero_result: "event = 'search_performed' AND toFloat(properties.results_count) = 0",
+  wishlist_added: "event = 'wishlist_added'",
+  scan_started: "event = 'scan_started'",
+  scan_succeeded: "event = 'scan_succeeded'",
+  $exception: "event = '$exception'",
+} as const;
+
 // Row caps — bound the PostHog Query API cost and keep the page scannable.
 const FEED_LIMIT = 100;
 const LIST_LIMIT = 10;
+// Distinct-persons drill-down (Unique Visitors): cap the identified list; the
+// anonymous remainder is reported as a single honest count.
+const PERSONS_LIMIT = 200;
 
 export type AnalyticsMetrics = {
   uniqueVisitors: number | null;
@@ -105,12 +140,20 @@ export type ActivityRow = {
   // anonymous / deleted users (email with no matching row) → no link. The email
   // itself still comes only from the PostHog person join.
   userId?: string | null;
+  // Human-readable catalog name for `detail` when it is a card_id, resolved
+  // SERVER-SIDE from Card.externalId → Card.name (Prisma batch, route). Absent
+  // when the row's detail is not a card id, or the id has no catalog match
+  // (then the UI falls back to the raw id — honest, never fabricated).
+  cardName?: string | null;
 };
 export type LabelCount = { label: string; count: number };
 export type CardAgg = {
   cardId: string;
   count: number; // event count (or total quantity for card_added)
   valueUsd: number | null; // summed value_usd when relevant, else null
+  // Catalog name (Card.externalId → Card.name), resolved server-side. Null when
+  // the card has no catalog match → UI falls back to the raw id (RULE 2).
+  cardName?: string | null;
 };
 export type SearchDetail = {
   topTerms: LabelCount[];
@@ -201,6 +244,42 @@ export type CardActivityResult =
   | ({ status: "ok"; cardId: string; range: AnalyticsRange; environment: AnalyticsEnvironment } & {
       activity: CardActivity;
     })
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
+/**
+ * Count-card drill-down feed: the activity rows BEHIND one overview count,
+ * re-queried scoped to that metric's event (so the feed shows the TRUE rows,
+ * not just whatever the default ~100-row feed happened to hold). Card names are
+ * attached server-side in the route (same batch as the main feed).
+ */
+export type FilteredFeedResult =
+  | {
+      status: "ok";
+      filter: AnalyticsEventFilter;
+      range: AnalyticsRange;
+      environment: AnalyticsEnvironment;
+      rows: ActivityRow[];
+    }
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
+/** One distinct identified person behind Unique Visitors (email + user link). */
+export type DistinctPerson = { email: string; userId?: string | null };
+/**
+ * Distinct persons behind the Unique Visitors count: the identified ones by
+ * email (linkable to their user page) plus the honest count of the anonymous
+ * remainder (persons with no profile email). NEVER fabricates an identity.
+ */
+export type DistinctPersonsResult =
+  | {
+      status: "ok";
+      range: AnalyticsRange;
+      environment: AnalyticsEnvironment;
+      identified: DistinctPerson[];
+      anonymous: number; // distinct persons with no email (count only)
+      total: number; // uniq(distinct_id) over the window
+    }
   | { status: "not_configured" }
   | { status: "unavailable" };
 
@@ -383,6 +462,60 @@ export function buildCardActivityQuery(range: AnalyticsRange, env: AnalyticsEnvi
   );
 }
 
+/**
+ * Count-card drill-down feed query: the same column layout as
+ * buildDetailQueries.recentActivity (so the SAME mappers/UI apply) but scoped
+ * to ONE metric via a FIXED allowlist predicate (`EVENT_FILTER_SQL[filter]`) —
+ * the filter is a compile-time constant fragment, never free text, never
+ * interpolated. range/environment stay the same fixed fragments. Capped at
+ * FEED_LIMIT rows.
+ */
+export function buildFilteredFeedQuery(
+  filter: AnalyticsEventFilter,
+  range: AnalyticsRange,
+  env: AnalyticsEnvironment
+) {
+  const w = where(range, env);
+  return (
+    `SELECT timestamp, person.properties.email, event, ` +
+    `properties.card_id, properties.query, properties.results_count, ` +
+    `properties.filter_type, properties.method, properties.reason, ` +
+    `properties.range, toFloat(properties.value_usd), toFloat(properties.value_inr), ` +
+    `properties.environment ` +
+    `FROM events ${w} AND ${EVENT_FILTER_SQL[filter]} ` +
+    `ORDER BY timestamp DESC LIMIT ${FEED_LIMIT}`
+  );
+}
+
+/**
+ * Distinct-persons drill-down behind Unique Visitors: one DISTINCT person per
+ * row with their profile email when known (null otherwise). range/environment
+ * are the fixed fragments; no user input is interpolated. Capped at
+ * PERSONS_LIMIT — the anonymous remainder is summed separately (see
+ * buildDistinctPersonsCountQuery) so the UI never fabricates an identity.
+ */
+export function buildDistinctPersonsQuery(range: AnalyticsRange, env: AnalyticsEnvironment) {
+  const w = where(range, env);
+  return (
+    `SELECT person.properties.email AS e, count() AS c FROM events ${w} ` +
+    `GROUP BY e ORDER BY c DESC LIMIT ${PERSONS_LIMIT}`
+  );
+}
+
+/**
+ * Totals behind Unique Visitors: [distinct persons overall, distinct persons
+ * with NO profile email]. Lets the UI show "identified (N) + anonymous (M)"
+ * honestly without listing every anonymous person. Fixed fragments only.
+ */
+export function buildDistinctPersonsCountQuery(range: AnalyticsRange, env: AnalyticsEnvironment) {
+  const w = where(range, env);
+  return (
+    `SELECT uniq(distinct_id), ` +
+    `uniqIf(distinct_id, empty(toString(person.properties.email))) ` +
+    `FROM events ${w}`
+  );
+}
+
 // ── Response → metrics mapping (pure) ────────────────────────────────────
 const RowsSchema = z.object({ results: z.array(z.array(z.unknown())) });
 
@@ -547,6 +680,69 @@ export function resolveFeedUserIds(
   }));
 }
 
+// Feed events whose `detail` IS a card id (so `detail` can be resolved to a
+// card name). Mirrors salientDetail's default branch. Exported so the client
+// knows which Detail cells are card drill-downs.
+export const CARD_DETAIL_EVENTS = [
+  "card_added",
+  "card_removed",
+  "card_viewed",
+  "wishlist_added",
+  "scan_started",
+  "scan_succeeded",
+  "scan_failed",
+] as const;
+const CARD_DETAIL_EVENT_SET: ReadonlySet<string> = new Set(CARD_DETAIL_EVENTS);
+
+/**
+ * Attach the human-readable catalog name to each feed row whose `detail` is a
+ * card id, from a pre-fetched externalId→name map (the Prisma batch lives in
+ * the route — this stays pure/testable). A row whose detail is not a card id,
+ * or whose id has no catalog match, gets `cardName: null` → the UI shows the
+ * raw id (honest, RULE 2). Pure.
+ */
+export function attachFeedCardNames(
+  rows: ActivityRow[],
+  nameByExternalId: Map<string, string>
+): ActivityRow[] {
+  return rows.map((r) => {
+    if (r.detail && CARD_DETAIL_EVENT_SET.has(r.event)) {
+      return { ...r, cardName: nameByExternalId.get(r.detail) ?? null };
+    }
+    return { ...r, cardName: null };
+  });
+}
+
+/** Attach catalog names to a CardAgg list (most-added/-viewed/-wishlisted). Pure. */
+export function attachCardAggNames(
+  rows: CardAgg[],
+  nameByExternalId: Map<string, string>
+): CardAgg[] {
+  return rows.map((r) => ({ ...r, cardName: nameByExternalId.get(r.cardId) ?? null }));
+}
+
+/**
+ * Collect every catalog externalId referenced by a feed + the card lists, so
+ * the route can resolve names in ONE batched Prisma query (no N+1). Card-detail
+ * feed rows contribute their `detail`; CardAgg rows contribute their `cardId`.
+ * Pure — returns a de-duplicated id list.
+ */
+export function collectCardExternalIds(
+  feeds: ActivityRow[][],
+  cardLists: CardAgg[][]
+): string[] {
+  const ids = new Set<string>();
+  for (const feed of feeds) {
+    for (const r of feed) {
+      if (r.detail && CARD_DETAIL_EVENT_SET.has(r.event)) ids.add(r.detail);
+    }
+  }
+  for (const list of cardLists) {
+    for (const r of list) ids.add(r.cardId);
+  }
+  return Array.from(ids);
+}
+
 export function mapRecentActivity(rows: unknown[][]): ActivityRow[] {
   const out: ActivityRow[] = [];
   for (const r of rows) {
@@ -640,6 +836,46 @@ export function mapCardActivity(rows: unknown[][]): CardActivity {
     addedValueUsd: num(r[3]),
     wishlisted: num(r[4]),
   };
+}
+
+// buildDistinctPersonsQuery rows: [email|null, count]; countRows[0]: [total, anonymous]
+/**
+ * Distinct-persons result behind Unique Visitors. Identified persons (non-blank
+ * email) are listed; the anonymous count comes from the authoritative
+ * count query (distinct persons with no email), NOT from len() of a capped list
+ * — so "anonymous (N)" stays honest even past PERSONS_LIMIT. Pure.
+ */
+export function mapDistinctPersons(
+  personRows: unknown[][],
+  countRows: unknown[][]
+): { identified: DistinctPerson[]; anonymous: number; total: number } {
+  const seen = new Set<string>();
+  const identified: DistinctPerson[] = [];
+  for (const r of personRows) {
+    const email = str(r[0]);
+    if (email !== null && !seen.has(email)) {
+      seen.add(email);
+      identified.push({ email });
+    }
+  }
+  const c = countRows[0] ?? [];
+  return {
+    total: num(c[0]) ?? 0,
+    anonymous: num(c[1]) ?? 0,
+    identified,
+  };
+}
+
+/**
+ * Attach the internal user id to each identified person from a pre-fetched
+ * email→id map (Prisma lookup in the route). No match (deleted) → userId null →
+ * UI renders plain text. Pure.
+ */
+export function resolvePersonUserIds(
+  persons: DistinctPerson[],
+  idByEmail: Map<string, string>
+): DistinctPerson[] {
+  return persons.map((p) => ({ ...p, userId: idByEmail.get(p.email) ?? null }));
 }
 
 /**
@@ -1036,6 +1272,130 @@ export async function getCardActivity(
     return result;
   } catch (err) {
     console.error("[posthog-query] card activity failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+}
+
+// Cached feed payload is re-parsed on read (RULE 4).
+const FeedRowSchema = z.object({
+  time: z.string(),
+  email: z.string().nullable(),
+  event: z.string(),
+  detail: z.string().nullable(),
+  valueUsd: z.number().nullable(),
+  valueInr: z.number().nullable(),
+  environment: z.string().nullable(),
+});
+const FeedCacheSchema = z.object({
+  status: z.literal("ok"),
+  filter: z.enum(ANALYTICS_EVENT_FILTERS),
+  range: z.enum(ANALYTICS_RANGES),
+  environment: z.enum(ANALYTICS_ENVIRONMENTS),
+  rows: z.array(FeedRowSchema),
+});
+
+/**
+ * Count-card drill-down feed: re-query the activity feed scoped to ONE overview
+ * metric's event (the rows behind that number), so the feed is COMPLETE for the
+ * metric rather than limited to whatever the default feed held. `filter` is a
+ * FIXED allowlist value mapped to a constant HogQL predicate (never free text,
+ * never interpolated). Row-capped (FEED_LIMIT) + Redis-cached ~90s (optional,
+ * RULE 1). Card names are attached later in the route (same batch as the main
+ * feed). Honest states: unset key → not_configured; PostHog error →
+ * unavailable. Never throws.
+ */
+export async function getFilteredFeed(
+  filter: AnalyticsEventFilter,
+  range: AnalyticsRange,
+  environment: AnalyticsEnvironment
+): Promise<FilteredFeedResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+
+  const cacheKey = RedisKeys.posthogFeed(filter, range, environment);
+  try {
+    const raw = await redis.get(cacheKey);
+    if (raw) {
+      const parsed = FeedCacheSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data as FilteredFeedResult;
+    }
+  } catch {
+    // Redis down / malformed → miss (RULE 1).
+  }
+
+  try {
+    const rows = mapRecentActivity(await hogql(cfg, buildFilteredFeedQuery(filter, range, environment)));
+    const result: FilteredFeedResult = { status: "ok", filter, range, environment, rows };
+    try {
+      await redis.set(cacheKey, JSON.stringify(result), "EX", CACHE_TTL.posthogAnalytics);
+    } catch {
+      // cache-only (RULE 1)
+    }
+    return result;
+  } catch (err) {
+    console.error("[posthog-query] filtered feed failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+}
+
+// Cached distinct-persons payload is re-parsed on read (RULE 4).
+const PersonsCacheSchema = z.object({
+  status: z.literal("ok"),
+  range: z.enum(ANALYTICS_RANGES),
+  environment: z.enum(ANALYTICS_ENVIRONMENTS),
+  identified: z.array(z.object({ email: z.string() })),
+  anonymous: z.number(),
+  total: z.number(),
+});
+
+/**
+ * Distinct-persons drill-down behind Unique Visitors: the identified persons by
+ * email plus the honest anonymous remainder count (NEVER a fabricated
+ * identity). Two fixed-fragment queries (the ranked list + the authoritative
+ * total/anonymous counts). Row-capped (PERSONS_LIMIT) + Redis-cached ~90s
+ * (optional, RULE 1). The email → user id resolution happens in the route
+ * (Prisma batch). Honest states as elsewhere. Never throws.
+ */
+export async function getDistinctPersons(
+  range: AnalyticsRange,
+  environment: AnalyticsEnvironment
+): Promise<DistinctPersonsResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+
+  const cacheKey = RedisKeys.posthogPersons(range, environment);
+  try {
+    const raw = await redis.get(cacheKey);
+    if (raw) {
+      const parsed = PersonsCacheSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data as DistinctPersonsResult;
+    }
+  } catch {
+    // Redis down / malformed → miss (RULE 1).
+  }
+
+  try {
+    const [personRows, countRows] = await Promise.all([
+      hogql(cfg, buildDistinctPersonsQuery(range, environment)),
+      hogql(cfg, buildDistinctPersonsCountQuery(range, environment)),
+    ]);
+    const mapped = mapDistinctPersons(personRows, countRows);
+    const result: DistinctPersonsResult = {
+      status: "ok",
+      range,
+      environment,
+      identified: mapped.identified,
+      anonymous: mapped.anonymous,
+      total: mapped.total,
+    };
+    try {
+      await redis.set(cacheKey, JSON.stringify(result), "EX", CACHE_TTL.posthogAnalytics);
+    } catch {
+      // cache-only (RULE 1)
+    }
+    return result;
+  } catch (err) {
+    console.error("[posthog-query] distinct persons failed:", err instanceof Error ? err.message : err);
     return { status: "unavailable" };
   }
 }

@@ -160,9 +160,11 @@ Sections (top to bottom):
 - **Recent activity** — the latest ~100 BUSINESS events (named taxonomy events +
   `$exception`; autocapture / `$pageview` / `$pageleave` / web-vitals noise is
   excluded), newest first. Columns: Time, User (person email, "anonymous" when
-  none), Action (friendly label), Detail (the one salient prop — card id,
-  search query + result count, filter type, auth method, scan-fail reason, or
-  chart range), Value (USD, plus INR when present), Env.
+  none), Action (friendly label), Detail (the one salient prop — card NAME
+  (raw id as tooltip), search query + result count, filter type, auth method,
+  scan-fail reason, or chart range), Value (USD, plus INR when present), Env.
+  Click any overview count card to drill this feed down to just the rows behind
+  that number (see Drill-down below).
 - **Search & discovery** — top search terms, top zero-result searches (unmet
   demand), most-viewed cards, filter breakdown, searches by game.
 - **Portfolio & collection** — most-added cards (qty + summed USD), cards
@@ -180,6 +182,36 @@ Sections (top to bottom):
 The dashboard is clickable — you go from an aggregate into the specific people
 and cards behind it, without leaving the admin panel:
 
+- **Clickable count cards → the rows behind the number.** Every overview count
+  card is a button (hover/pointer/focus-ring, `aria-pressed`). Clicking one
+  re-loads the Recent-activity feed scoped to just the rows behind that number
+  and scrolls to it — Logins → `login_completed` rows, Cards added →
+  `card_added`, Searches → `search_performed`, Zero-result searches →
+  `search_performed` with `results_count = 0`, Wishlist adds → `wishlist_added`,
+  Scans started/succeeded, Signups → `signup_completed`, Errors → `$exception`.
+  The feed is RE-QUERIED server-side (not just a client slice of the ~100-row
+  default feed) so it shows the TRUE rows for the metric; an active-filter chip
+  with a one-click "Show all" sits above the feed and the heading reflects the
+  filter ("Logins — 2 events"). The filter param is Zod-validated against a
+  FIXED allowlist (the taxonomy event names + a `zero_result` pseudo-value +
+  `$exception`) and mapped to a constant HogQL predicate — never free text,
+  never interpolated. Pageviews stays a plain stat (anonymous `$pageview` loads
+  have no honest per-row business feed). Changing range/environment clears the
+  drill-down.
+- **Unique Visitors → the distinct persons behind it.** Clicking Unique Visitors
+  shows the DISTINCT persons in the window: identified ones by email (linking to
+  their user page via the same server-side email→user-id resolution) plus an
+  honest "anonymous (N)" remainder for persons with no profile email. The
+  anonymous count is the authoritative distinct-persons-with-no-email total, not
+  a list-length guess, and NO identity is ever fabricated (`view=persons`,
+  allowlist-safe, Redis-cached ~90s).
+- **Card NAMES everywhere a card id appears.** The feed Detail cell, the
+  most-added / most-viewed / most-wishlisted lists, and the card popover header
+  lead with the human-readable card name (catalog `externalId` → `Card.name`,
+  resolved SERVER-SIDE in one batched Prisma query — no N+1, RULE 3 on the
+  catalog id, composite `base::variant` ids split to the base). The raw id stays
+  available as a tooltip / secondary line. Unknown / missing card → the raw id
+  (honest, never a fabricated name).
 - **Clickable user → live per-user activity.** In the Recent-activity feed the
   User cell links to `/admin/users/[id]`. The email still comes ONLY from the
   PostHog person join; the internal user id is resolved SERVER-SIDE by a Prisma
@@ -215,7 +247,10 @@ tool.
 **Cost:** every section is a row-capped HogQL query (recent activity ≤100 rows,
 ranked lists ≤10) batched into one round-trip per page load, and the whole result
 is Redis-cached ~90s (optional; a cache miss/outage just re-queries). This keeps
-a page load from hammering the PostHog query quota.
+a page load from hammering the PostHog query quota. The count-card drill-downs
+are lazy — the scoped feed (`event=…`, one capped query) and distinct-persons
+(`view=persons`, two capped queries) only fire when a count card is clicked, and
+each is Redis-cached ~90s under its own key.
 
 1. PostHog -> Settings -> Personal API keys -> create a key with the **Query read** scope.
 2. Set `POSTHOG_PERSONAL_API_KEY` (server secret, never `NEXT_PUBLIC_`), optional `POSTHOG_PROJECT_ID` (default 333915) and `POSTHOG_API_HOST` (default https://eu.posthog.com).

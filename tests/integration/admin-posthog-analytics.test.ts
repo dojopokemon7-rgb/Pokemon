@@ -17,6 +17,9 @@ import {
   buildDetailQueries,
   buildUserActivityQuery,
   buildCardActivityQuery,
+  buildFilteredFeedQuery,
+  buildDistinctPersonsQuery,
+  buildDistinctPersonsCountQuery,
   mapTotals,
   mapTopEvents,
   mapDaily,
@@ -26,9 +29,14 @@ import {
   activityDetail,
   salientDetail,
   resolveFeedUserIds,
+  resolvePersonUserIds,
+  attachFeedCardNames,
+  attachCardAggNames,
+  collectCardExternalIds,
   mapRecentActivity,
   mapUserActivity,
   mapCardActivity,
+  mapDistinctPersons,
   mapScanner,
   mapRecentErrors,
   mapDetail,
@@ -36,7 +44,12 @@ import {
   getPosthogAnalytics,
   getUserActivity,
   getCardActivity,
+  getFilteredFeed,
+  getDistinctPersons,
+  ANALYTICS_EVENT_FILTERS,
   type ActivityRow,
+  type CardAgg,
+  type DistinctPerson,
 } from "@/lib/services/posthog-query.service";
 import { GET } from "@/app/api/admin/analytics/route";
 import { GET as GET_CARD } from "@/app/api/admin/analytics/card/route";
@@ -430,6 +443,165 @@ describe("getPosthogAnalytics", () => {
   });
 });
 
+describe("count-card drill-down: event filter → constant HogQL fragment", () => {
+  it("maps each allowlisted filter to a CONSTANT event predicate (no interpolation)", () => {
+    // Every allowlisted value yields a fixed predicate + fixed range/env frags.
+    for (const f of ANALYTICS_EVENT_FILTERS) {
+      const sql = buildFilteredFeedQuery(f, "7d", "production");
+      expect(sql).toContain("INTERVAL 7 DAY");
+      expect(sql).toContain("properties.environment = 'production'");
+      expect(sql).toContain("LIMIT 100");
+      // Same person-join + column layout as the main feed (shared mapper).
+      expect(sql).toContain("person.properties.email");
+    }
+    // Each filter's predicate is its own event name (or the zero_result pseudo).
+    expect(buildFilteredFeedQuery("login_completed", "24h", "all")).toContain("event = 'login_completed'");
+    expect(buildFilteredFeedQuery("$exception", "24h", "all")).toContain("event = '$exception'");
+    expect(buildFilteredFeedQuery("zero_result", "24h", "all")).toContain(
+      "event = 'search_performed' AND toFloat(properties.results_count) = 0"
+    );
+    // 'all' env drops the environment predicate.
+    expect(buildFilteredFeedQuery("card_added", "30d", "all")).not.toContain("properties.environment =");
+  });
+  it("allowlist is a fixed taxonomy set + zero_result + $exception (no free text)", () => {
+    expect([...ANALYTICS_EVENT_FILTERS].sort()).toEqual(
+      [
+        "$exception",
+        "card_added",
+        "login_completed",
+        "scan_started",
+        "scan_succeeded",
+        "search_performed",
+        "signup_completed",
+        "wishlist_added",
+        "zero_result",
+      ].sort()
+    );
+  });
+});
+
+describe("unique-visitors drill-down: distinct persons", () => {
+  it("person queries use fixed range/env fragments and cap the list", () => {
+    const q = buildDistinctPersonsQuery("24h", "staging");
+    expect(q).toContain("INTERVAL 24 HOUR");
+    expect(q).toContain("properties.environment = 'staging'");
+    expect(q).toContain("person.properties.email");
+    expect(q).toContain("LIMIT 200");
+    const c = buildDistinctPersonsCountQuery("7d", "all");
+    expect(c).toContain("uniq(distinct_id)");
+    expect(c).toContain("empty(toString(person.properties.email))");
+    expect(c).not.toContain("properties.environment ="); // 'all' drops it
+  });
+  it("mapDistinctPersons lists identified + honest anonymous/total from the count row", () => {
+    const persons: unknown[][] = [["a@b.com", 10], ["", 5], ["c@d.com", 3], ["a@b.com", 1]];
+    const counts: unknown[][] = [[9, 4]]; // total 9, anonymous 4 (authoritative)
+    const out = mapDistinctPersons(persons, counts);
+    // De-duped identified list, blank email dropped, never fabricates identity.
+    expect(out.identified).toEqual([{ email: "a@b.com" }, { email: "c@d.com" }]);
+    // anonymous comes from the count query, NOT the capped list length.
+    expect(out.anonymous).toBe(4);
+    expect(out.total).toBe(9);
+    // Empty input → zeros, never nulls that would render as a fabricated row.
+    expect(mapDistinctPersons([], [])).toEqual({ identified: [], anonymous: 0, total: 0 });
+  });
+  it("resolvePersonUserIds links matched emails, leaves unmatched unlinked", () => {
+    const persons: DistinctPerson[] = [{ email: "a@b.com" }, { email: "gone@x.com" }];
+    const out = resolvePersonUserIds(persons, new Map([["a@b.com", "user_1"]]));
+    expect(out[0].userId).toBe("user_1");
+    expect(out[1].userId).toBeNull();
+  });
+});
+
+describe("card name resolution (externalId → name, batch, no N+1)", () => {
+  const feedRow = (event: string, detail: string | null): ActivityRow => ({
+    time: "t",
+    email: null,
+    event,
+    detail,
+    valueUsd: null,
+    valueInr: null,
+    environment: "production",
+  });
+  it("collectCardExternalIds de-dupes across feeds + card lists, card-detail rows only", () => {
+    const feed = [
+      feedRow("card_added", "base1-4"),
+      feedRow("search_performed", "charizard"), // NOT a card id → excluded
+      feedRow("card_viewed", "base1-4"), // dup
+      feedRow("login_completed", null),
+    ];
+    const lists: CardAgg[][] = [
+      [{ cardId: "OP01-064", count: 2, valueUsd: null }],
+      [{ cardId: "base1-4", count: 1, valueUsd: null }], // dup across sources
+    ];
+    expect(collectCardExternalIds([feed], lists).sort()).toEqual(["OP01-064", "base1-4"]);
+  });
+  it("attachFeedCardNames: match → name, miss → null (raw id in UI), non-card → null", () => {
+    const rows = [feedRow("card_added", "base1-4"), feedRow("card_viewed", "unknown-9"), feedRow("search_performed", "pika")];
+    const names = new Map([["base1-4", "Mew"]]);
+    const out = attachFeedCardNames(rows, names);
+    expect(out[0].cardName).toBe("Mew"); // match
+    expect(out[1].cardName).toBeNull(); // miss → fall back to raw id
+    expect(out[2].cardName).toBeNull(); // not a card-detail event
+  });
+  it("attachCardAggNames: match → name, miss → null", () => {
+    const out = attachCardAggNames(
+      [
+        { cardId: "base1-4", count: 3, valueUsd: 9 },
+        { cardId: "ME55-B", count: 1, valueUsd: null },
+      ],
+      new Map([["base1-4", "Pikachu"]])
+    );
+    expect(out[0].cardName).toBe("Pikachu");
+    expect(out[1].cardName).toBeNull();
+  });
+});
+
+describe("getFilteredFeed / getDistinctPersons services", () => {
+  it("getFilteredFeed: not_configured without a key, no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getFilteredFeed("login_completed", "7d", "production")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("getFilteredFeed: maps the scoped rows and keeps the filter", async () => {
+    fetchMock.mockResolvedValue(
+      okJson([["2026-01-01T00:00:00Z", "a@b.com", "login_completed", null, null, null, null, "google", null, null, null, null, "production"]])
+    );
+    const r = await getFilteredFeed("login_completed", "7d", "production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.filter).toBe("login_completed");
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]).toMatchObject({ email: "a@b.com", event: "login_completed", detail: "google" });
+    }
+  });
+  it("getFilteredFeed: unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getFilteredFeed("card_added", "7d", "production")).status).toBe("unavailable");
+  });
+  it("getDistinctPersons: not_configured without a key, no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getDistinctPersons("7d", "production")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("getDistinctPersons: identified + anonymous remainder, never fabricated", async () => {
+    // Two queries in order: ranked persons, then the total/anonymous counts.
+    fetchMock
+      .mockResolvedValueOnce(okJson([["a@b.com", 5], ["", 2]]))
+      .mockResolvedValueOnce(okJson([[7, 3]]));
+    const r = await getDistinctPersons("7d", "production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.identified).toEqual([{ email: "a@b.com" }]);
+      expect(r.anonymous).toBe(3);
+      expect(r.total).toBe(7);
+    }
+  });
+  it("getDistinctPersons: unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getDistinctPersons("7d", "production")).status).toBe("unavailable");
+  });
+});
+
 describe("GET /api/admin/analytics", () => {
   const req = (qs = "", cookie?: string) =>
     new Request(`http://localhost/api/admin/analytics${qs}`, cookie ? { headers: { cookie } } : undefined);
@@ -443,9 +615,30 @@ describe("GET /api/admin/analytics", () => {
   it("400 on an invalid range", async () => {
     expect((await GET(req("?range=1y", cookie()))).status).toBe(400);
   });
-  it("200 not_configured for an admin when the key is unset", async () => {
+  it("400 on a free-text / out-of-allowlist event filter (never interpolated)", async () => {
+    // Anything outside the fixed allowlist is rejected at the Zod boundary.
+    expect((await GET(req("?event=DROP TABLE", cookie()))).status).toBe(400);
+    expect((await GET(req("?event=card_viewed", cookie()))).status).toBe(400); // real event, not an allowed FILTER
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("400 on an unknown view value", async () => {
+    expect((await GET(req("?view=everything", cookie()))).status).toBe(400);
+  });
+  it("200 not_configured for an admin when the key is unset (default view)", async () => {
     delete process.env.POSTHOG_PERSONAL_API_KEY;
     const res = await GET(req("", cookie()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "not_configured" });
+  });
+  it("200 not_configured for the event-filter drill-down when the key is unset", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    const res = await GET(req("?event=login_completed", cookie()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "not_configured" });
+  });
+  it("200 not_configured for the persons drill-down when the key is unset", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    const res = await GET(req("?view=persons", cookie()));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "not_configured" });
   });
