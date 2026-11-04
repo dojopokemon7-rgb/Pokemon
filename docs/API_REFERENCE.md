@@ -38,7 +38,7 @@
 | `/users/me/collection/[id]` | DELETE | `requireAuth` | — | — | No |
 | `/want-list` | GET, POST | `requireAuth` | `AddWantListSchema` (in service) | — | GET → `[]` |
 | `/want-list/[id]` | PATCH, DELETE | `requireAuth` | `WantIntentEnum` | — | No |
-| `/admin/analytics` | GET | `requireAdmin` (admin session) | `range` 24h/7d/30d (def 7d), `environment` production/staging/all (def production) | — | 400 invalid params; **200** `{status:'not_configured'\|'unavailable'}` when key unset / PostHog fails; `{status:'ok', metrics, topEvents, daily, funnel, fetchedAt}` (Redis ~90s) |
+| `/admin/analytics` | GET | `requireAdmin` (admin session) | `range` 24h/7d/30d (def 7d), `environment` production/staging/all (def production) | — | 400 invalid params; **200** `{status:'not_configured'\|'unavailable'}` when key unset / PostHog fails; `{status:'ok', metrics, topEvents, daily, funnel, detail, fetchedAt}` (Redis ~90s). `detail` = `{ recentActivity:[{time,email\|null,event,detail\|null,valueUsd\|null,valueInr\|null,environment\|null}] (≤100 business events, email via server-side person join only), search, portfolio, wishlist, scanner, auth, engagement }` — per-feature detail aggregates, all row-capped (lists ≤10), honest nulls/empties. No new query params. |
 | `/admin/cards/[id]` | PATCH | `requireAdmin` (admin session) | inline body schema | — | No |
 | `/admin-auth/login` | POST | public (verifies ENV creds) | `{email,password}` | rate-limited (authTier/IP) | No (401 generic) |
 | `/admin-auth/verify-otp` | POST | login-nonce cookie | `{code}` (6 digits) | rate-limited (authTier/IP) | No (401) |

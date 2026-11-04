@@ -143,11 +143,47 @@ PostHog in a new tab: `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` if set, else
 
 ## 7b. In-app admin dashboard (server key)
 
-`/admin/analytics` now shows PostHog metrics in-app (visitors, pageviews, signups, logins,
-cards added + USD value, searches/zero-result, wishlist, scans, errors, top events, daily
-trend, funnel) via the admin-only `GET /api/admin/analytics` -> HogQL Query API
-(`src/lib/services/posthog-query.service.ts`). The External Analytics card stays as a secondary
-'Open in PostHog' link.
+`/admin/analytics` shows PostHog analytics in-app via the admin-only
+`GET /api/admin/analytics` -> HogQL Query API
+(`src/lib/services/posthog-query.service.ts`). It is manager-oriented and
+read-only — NOT a PostHog clone. One page, grouped by client feature area, all
+honoring the range (24h/7d/30d) + environment (production/staging/all)
+selectors, all honest ("Analytics not configured" / "PostHog unavailable" /
+empty-state rows / "—", never fabricated numbers). The External Analytics card
+stays as a secondary 'Open in PostHog' link.
+
+Sections (top to bottom):
+
+- **Overview cards** — visitors, pageviews, signups, logins, cards added + USD
+  value, searches, zero-result searches, wishlist adds, scans started/succeeded,
+  errors.
+- **Recent activity** — the latest ~100 BUSINESS events (named taxonomy events +
+  `$exception`; autocapture / `$pageview` / `$pageleave` / web-vitals noise is
+  excluded), newest first. Columns: Time, User (person email, "anonymous" when
+  none), Action (friendly label), Detail (the one salient prop — card id,
+  search query + result count, filter type, auth method, scan-fail reason, or
+  chart range), Value (USD, plus INR when present), Env.
+- **Search & discovery** — top search terms, top zero-result searches (unmet
+  demand), most-viewed cards, filter breakdown, searches by game.
+- **Portfolio & collection** — most-added cards (qty + summed USD), cards
+  removed, raw-vs-graded split, adds by game, chart-range popularity.
+- **Wishlist** — most-wishlisted cards, wishlist by game.
+- **Scanner** — started/succeeded/failed counts, success rate %, failure-reason
+  breakdown, scans by game.
+- **Auth & activation** — signups by method, logins by method, onboarding
+  completed, password resets, and the visit->signup->card-added funnel.
+- **Engagement & quality** — `$exception` count + a recent-errors list
+  (type/message when PostHog captured them), top events, daily trend.
+
+**What stays in PostHog (the "Open in PostHog" link), by design:** per-user full
+history drill-down, in-app session replay, and interactive/ad-hoc chart builders.
+This page is a readable summary + the salient detail per feature, not a query
+tool.
+
+**Cost:** every section is a row-capped HogQL query (recent activity ≤100 rows,
+ranked lists ≤10) batched into one round-trip per page load, and the whole result
+is Redis-cached ~90s (optional; a cache miss/outage just re-queries). This keeps
+a page load from hammering the PostHog query quota.
 
 1. PostHog -> Settings -> Personal API keys -> create a key with the **Query read** scope.
 2. Set `POSTHOG_PERSONAL_API_KEY` (server secret, never `NEXT_PUBLIC_`), optional `POSTHOG_PROJECT_ID` (default 333915) and `POSTHOG_API_HOST` (default https://eu.posthog.com).

@@ -88,7 +88,36 @@ Each `scan_started` is followed by exactly one `scan_succeeded` or `scan_failed`
 
 ## Where to see them in-app
 
-Admin -> Analytics shows these events via the PostHog Query API (see ANALYTICS_SETUP.md 7b).
+**Admin -> Analytics** (`/admin/analytics`) shows these events via the PostHog
+Query API (see ANALYTICS_SETUP.md §7b) — a manager-oriented, read-only summary
+with per-feature DETAIL (who / when / which card / value / context), not just
+counts:
+
+- **Recent activity** feed: the latest ~100 business events (every named event
+  above + `$exception`; autocapture/pageview/web-vitals noise excluded), with
+  the acting user's email, a friendly action label, the one salient prop, and
+  value.
+- **Search & discovery**: top terms, top zero-result searches (unmet demand),
+  most-viewed cards, filter breakdown.
+- **Portfolio**: most-added cards (qty + value), removals, raw-vs-graded,
+  per-game, chart-range popularity.
+- **Wishlist**: most-wishlisted cards, per-game.
+- **Scanner**: started/succeeded/failed + success rate + failure reasons.
+- **Auth & activation**: signups/logins by method, onboarding, resets, funnel.
+- **Engagement & quality**: `$exception` count + recent errors, daily trend.
+
+Deep per-user history drill-down, session replay, and ad-hoc chart building stay
+in PostHog (the "Open in PostHog" link on the page), by design.
+
+### Privacy — email in the admin feed
+
+Showing the acting user's email in the admin Recent-activity feed is acceptable:
+the page is admin-only and OTP-gated. The email is fetched **server-side via the
+PostHog person join** (`person.properties.email` in the HogQL query) — it is
+**NEVER** read from event properties, because `track()` strips `email` from
+props and email lives only on the person profile via `identify()` (the rule
+above). A person with no profile email renders as "anonymous". No raw event ever
+carries an email.
 
 ## BACKLOG (not built, not instrumented)
 
