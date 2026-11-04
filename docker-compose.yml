@@ -76,13 +76,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # Same build-time inlining as prod `app` — staging reads the same root .env
-      # ${VAR} interpolation at --build time (its runtime .env.staging is too late
-      # for NEXT_PUBLIC_*). Keeps the two images consistent.
+      # Same build-time inlining as prod `app`, but staging gets its OWN PostHog
+      # project via STAGING_* vars so tester traffic never pollutes prod metrics.
+      # Compose ${VAR} interpolation reads the ROOT .env only (not .env.staging,
+      # and a runtime env_file is too late for NEXT_PUBLIC_* anyway), so the
+      # STAGING_* vars live in the root .env. Unset = PostHog is a no-op on staging.
       args:
-        NEXT_PUBLIC_POSTHOG_KEY: ${NEXT_PUBLIC_POSTHOG_KEY:-}
-        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
-        NEXT_PUBLIC_POSTHOG_DASHBOARD_URL: ${NEXT_PUBLIC_POSTHOG_DASHBOARD_URL:-}
+        NEXT_PUBLIC_POSTHOG_KEY: ${STAGING_NEXT_PUBLIC_POSTHOG_KEY:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${STAGING_NEXT_PUBLIC_POSTHOG_HOST:-}
+        NEXT_PUBLIC_POSTHOG_DASHBOARD_URL: ${STAGING_NEXT_PUBLIC_POSTHOG_DASHBOARD_URL:-}
     container_name: tcg_app_staging
     restart: unless-stopped
     depends_on:

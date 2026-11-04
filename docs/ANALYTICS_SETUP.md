@@ -19,11 +19,20 @@ Dojo's PostHog project is on the **EU cloud**.
 2. **Project Settings → Project API Key** — copy the project token (`phc_...`).
 3. Ingestion host: `https://eu.i.posthog.com`.
 
-**Dev vs prod projects.** Use a separate PostHog project for testing so tester
-traffic never pollutes real metrics. Production uses the prod project key in the
-root `.env`. If you want analytics on staging, put a *different* project's key
-in the staging build env (`.env.staging` / the compose build arg) — otherwise
-leave it unset and staging stays a no-op.
+**Dev vs prod projects.** Create a second PostHog project (e.g. "Dojo Dev") so
+tester traffic never pollutes real metrics. Production uses the prod project key
+in the root `.env` (`NEXT_PUBLIC_POSTHOG_*`). Staging has its own build vars
+`STAGING_NEXT_PUBLIC_POSTHOG_KEY` / `_HOST` / `_DASHBOARD_URL`, which
+`docker-compose.yml` feeds to the `app-staging` build. They go in the **root
+`.env`**, not `.env.staging`: `NEXT_PUBLIC_*` is inlined at build time and compose
+only interpolates the root `.env`. Leave them unset and staging analytics is a
+no-op (staging no longer reuses the production key). Local dev: set
+`NEXT_PUBLIC_POSTHOG_KEY` to the dev project key in your own `.env`.
+
+**Session replay.** The SDK records with every input masked
+(`maskAllInputs`), but replay must also be switched on in PostHog
+(Project Settings -> Session replay). Error tracking uses `capture_exceptions`
+and shows up under Error tracking.
 
 ---
 
@@ -71,7 +80,7 @@ in the runtime `.env`.
   substitution at `--build` time.
 
 The same build-time values also drive the Content-Security-Policy in
-`next.config.ts` (see §5).
+`next.config.ts` (see §6).
 
 ### Operator sequence (prod)
 
@@ -92,7 +101,26 @@ Changing any `NEXT_PUBLIC_*` value later requires a **rebuild** (`--build`).
 
 ---
 
-## 5. Content-Security-Policy
+## 5. INR values (`value_inr`)
+
+Every money event carries `value_usd` (the real stored USD price, source of
+truth) and `currency: "USD"`. `value_inr` is added **only when a real USD->INR
+rate exists**; otherwise it is omitted (never 0, never a guess). The rate comes
+from `GET /api/fx/usd-inr` (built on `fx.service`, Redis-cached 24h), which the
+browser calls once per session.
+
+exchangerate.host-style providers now **require an API key** (the old keyless
+call returns HTTP 401). Set the server-side, non-public env var
+`EXCHANGE_RATE_API_KEY` (see `.env.example`) and restart the app (no rebuild
+needed; it is not `NEXT_PUBLIC_*`). **Until a working FX provider key is set,
+events carry `value_usd` only and no INR.** The provider payload shape
+(`quotes.USDINR`) follows its published contract but has not been verified
+against a live key; a mismatch degrades to "no INR", never to wrong numbers.
+Check with `curl https://<host>/api/fx/usd-inr` -> `{"rate":<number>,"asOf":...}`.
+
+---
+
+## 6. Content-Security-Policy
 
 `next.config.ts` ships an enforcing CSP. PostHog is allowlisted minimally,
 derived from `NEXT_PUBLIC_POSTHOG_HOST` (EU: `eu.i.posthog.com` for ingestion and
@@ -103,10 +131,20 @@ ships, these can shrink to `'self'`.
 
 ---
 
-## 6. Admin dashboard link
+## 7. Admin dashboard link
 
 `/admin/analytics` has an **External Analytics** card
 (`src/app/(admin)/admin/_components/ExternalAnalyticsLinks.tsx`) linking to
 PostHog in a new tab: `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` if set, else
 `NEXT_PUBLIC_POSTHOG_HOST`. When neither is set it shows a muted
 "Configure analytics keys to enable" state instead of a broken link.
+
+---
+
+## 8. What gets tracked
+
+Autocapture (clicks, form submits), manual `$pageview`s, session replay,
+exceptions, and the custom events in `docs/ANALYTICS_EVENTS.md`. The signed-in
+user is `identify()`d with their Dojo user id; email and name live on the person
+profile only. Not-yet-built flows (stores, trading floor, events, price
+triggers, CGC) are listed there as backlog.
