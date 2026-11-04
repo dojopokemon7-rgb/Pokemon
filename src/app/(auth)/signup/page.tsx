@@ -15,6 +15,8 @@ import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
 import { Toast, useTimeoutToast } from "@/components/Toast";
 import { ArrowRight } from "@/components/ArrowRight";
+import { track } from "@/lib/analytics/track";
+import { setAuthIntent } from "@/lib/analytics/auth-intent";
 
 // ── SVG icons ──────────────────────────────────────────────────
 // ArrowRight is imported above — the single shared CTA arrow used
@@ -119,6 +121,8 @@ export default function SignUpPage() {
     // CREATED but UNVERIFIED (signUp.email returns NO session, so we do no
     // session-dependent work here). Better Auth already dispatched the 6-digit
     // verification code (sendVerificationOnSignUp) before this redirect fires.
+    // signup_completed fires from AnalyticsProvider once the verified session exists.
+    setAuthIntent("signup", "email");
     // Send the user to /verify-otp to enter it; verifying logs them in and
     // continues to /profile → /search.
     router.push(`/verify-otp?email=${encodeURIComponent(email)}`);

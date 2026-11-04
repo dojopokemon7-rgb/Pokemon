@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useState, useMemo, Suspense } from "react";
 import { setPendingCollectionCards } from "@/lib/utils/pending-collection";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
+import { trackCardsAdded } from "@/lib/analytics/card-events";
 
 interface CardResult {
   id: string;
@@ -178,6 +179,7 @@ function SearchMultiInner() {
       queryClient.invalidateQueries({ queryKey: ["collection"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       queryClient.invalidateQueries({ queryKey: ["collections"] });
+      trackCardsAdded(selectedCards.map(toPayload), json);
       setStatus(`${added} added, ${alreadyPresent} already in collection, ${json.invalid ?? 0} invalid`);
       // Keep only the items that failed selected; clear the rest.
       const failed = (json.results ?? []).filter((r: { ok: boolean }) => !r.ok).map((r: { externalId: string }) => r.externalId);

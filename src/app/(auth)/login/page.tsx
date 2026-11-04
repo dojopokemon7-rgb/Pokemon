@@ -15,6 +15,7 @@ import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
 import { Toast, useTimeoutToast } from "@/components/Toast";
 import { ArrowRight } from "@/components/ArrowRight";
+import { setAuthIntent } from "@/lib/analytics/auth-intent";
 
 // ── SVG icons ──────────────────────────────────────────────────
 // Note: ArrowRight is imported above from @/components/ArrowRight, the
@@ -101,6 +102,9 @@ function LoginContent() {
   // with an `?error=` param (surfaced via `oauthError` above).
   async function handleGoogleSignIn() {
     setError(null);
+    // The session (and signup_completed vs login_completed) is resolved by
+    // AnalyticsProvider after the OAuth round-trip returns.
+    setAuthIntent("oauth", "google");
     const { data, error: authError } = await authClient.signIn.social({
       provider: "google",
       callbackURL: "/dashboard",
@@ -141,6 +145,7 @@ function LoginContent() {
       return;
     }
 
+    setAuthIntent("login", "email"); // login_completed fires once the session is live
     // Successful sign-in — always route to the dashboard. The admin world is
     // a SEPARATE surface reached only at /admin (env creds + mandatory OTP);
     // public /login never grants admin and never routes anyone there.

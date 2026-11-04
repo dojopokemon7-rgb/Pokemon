@@ -38,6 +38,8 @@ import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@t
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState, useRef, useEffect, useCallback, Suspense } from "react";
+import { track } from "@/lib/analytics/track";
+import { changedFilterTypes, gameFromSearchState } from "@/lib/analytics/card-event-props";
 import { DojoSelect } from "@/components/DojoSelect";
 import { AddCardSheet } from "@/components/AddCardSheet";
 import { hasActiveFilter as anyFilterActive } from "@/lib/utils/search-query";
@@ -830,6 +832,27 @@ function SearchPageInner() {
   const cards = applyReprice(rawCards);
   const trendingCards = applyReprice(rawTrendingCards);
 
+  // Analytics: search_performed once per distinct TEXT query (+game+filters)
+  // when its first page has really resolved, so a zero-result search shows up
+  // with results_count 0 (catalogue gaps). The key de-dupes re-renders,
+  // StrictMode and paging; results_count is the first page (not the full total).
+  // Card names are not sensitive, so the query string is sent.
+  const lastSearchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const q = initialQ.trim();
+    if (!browseMode || !q || searchLoading || isFetching || isError || !searchPages) return;
+    const key = [game, q, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter, languageFilter].join("|");
+    if (lastSearchKeyRef.current === key) return;
+    lastSearchKeyRef.current = key;
+    track("search_performed", {
+      query: q.slice(0, 100),
+      game: gameFromSearchState(game),
+      results_count: rawCards.length,
+    });
+    // rawCards/filters are captured via `key`; fire-once guard makes the rest irrelevant.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browseMode, initialQ, game, searchLoading, isFetching, isError, searchPages]);
+
   // F-06: options for the "Filter by set" dropdown. When no set filter is
   // active the current results span every set, so we remember that full set
   // list in state; while a filter IS active the API returns only that set,
@@ -885,6 +908,14 @@ function SearchPageInner() {
     // audit 02 F-A: delegate to the shared buildSearchUrl so the URL shape has
     // ONE source of truth. Preserves q+game+every filter and (BUG 2) the active
     // sort, dropping it only when default — identical behavior to before.
+    // Analytics: one filter_applied per dimension set to a NEW non-empty value.
+    const previous = {
+      set: setFilter, rarity: rarityFilter, graded: gradedFilter, minPrice: minPriceFilter,
+      maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter,
+    };
+    for (const filter_type of changedFilterTypes(previous, overrides)) {
+      track("filter_applied", { filter_type, game: gameFromSearchState(game) });
+    }
     router.replace(buildSearchUrl({ q: initialQ, game, ...current, sort }));
   };
   const applySetFilter = (nextSet: string) => applyFilters({ set: nextSet });
@@ -894,6 +925,7 @@ function SearchPageInner() {
   // filter + the query/game are preserved; drops ?sort= when it is the default.
   const changeSort = (next: SortKey) => {
     setSort(next);
+    if (next !== sort) track("filter_applied", { filter_type: "sort", game: gameFromSearchState(game) });
     // audit 02 F-A: rebuild via the shared buildSearchUrl so every active
     // filter + the query/game are preserved; it drops ?sort= when default.
     router.replace(

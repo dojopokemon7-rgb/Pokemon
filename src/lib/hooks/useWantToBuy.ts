@@ -16,6 +16,8 @@
 
 import { useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { track } from "@/lib/analytics/track";
+import { cardBaseProps } from "@/lib/analytics/card-event-props";
 
 export interface WantCard {
   externalId: string;
@@ -72,6 +74,10 @@ export function useWantToBuy() {
         return { data: [...existing, { id: `optimistic-${externalId}`, cardId: externalId, intent: "BUY" }] };
       });
       return { previous };
+    },
+    // Analytics: fires once, only after the server accepted the add.
+    onSuccess: (_data, externalId) => {
+      track("wishlist_added", { card_id: externalId, game: cardBaseProps(externalId).game });
     },
     onError: (_e, _externalId, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(["want-list", "BUY"], ctx.previous);

@@ -20,6 +20,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
 import { ArrowRight } from "@/components/ArrowRight";
+import { track } from "@/lib/analytics/track";
 
 function ChevronLeft() {
   return (
@@ -60,6 +61,7 @@ export default function ForgotPasswordPage() {
       return;
     }
 
+    track("password_reset_requested");
     // Better Auth returns success even if the email doesn't exist
     // (prevents account enumeration) — always show the same confirmation.
     setSent(true);

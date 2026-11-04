@@ -26,6 +26,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { CardImage, cardInitials } from "@/components/CardImage";
+import { track } from "@/lib/analytics/track";
+import { cardBaseProps } from "@/lib/analytics/card-event-props";
 
 export interface CardDetailsData {
   /** External card id (e.g. "base1-4", "OP01-001"). */
@@ -69,6 +71,7 @@ export function CardDetailsPopup({
         body: JSON.stringify({ cardId: card.externalId, intent: "BUY" }),
       });
       if (!res.ok) throw new Error("want-list add failed");
+      track("wishlist_added", { card_id: card.externalId, game: cardBaseProps(card.externalId).game });
     } catch {
       setWantToBuy(false);
     }

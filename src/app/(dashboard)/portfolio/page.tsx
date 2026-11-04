@@ -15,7 +15,7 @@
  *   - Grid/list toggle, bulk selection mode for deletion.
  */
 
-import { useState, useMemo, useEffect, useCallback, Suspense } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
@@ -28,6 +28,8 @@ import { statsFromLots, isSellQtyValid } from "@/lib/utils/portfolio-accounting"
 import { allocateSell } from "@/lib/utils/portfolio-sell-allocation";
 import { isGraded, displayPrice } from "@/lib/utils/graded-price";
 import { paramOrDefault } from "@/lib/utils/list-controls";
+import { track } from "@/lib/analytics/track";
+import { cardBaseProps } from "@/lib/analytics/card-event-props";
 
 // ── Real collection item shape ──
 export interface CollectionItem {
@@ -827,7 +829,24 @@ function PortfolioPageInner() {
       });
       return { removed: ids.length - failedIds.length, failedIds };
     },
-    onSuccess: ({ removed, failedIds }) => {
+    onSuccess: ({ removed, failedIds }, ids) => {
+      // Analytics: one card_removed per row the server really deleted.
+      const failed = new Set(failedIds);
+      for (const id of ids) {
+        if (failed.has(id)) continue;
+        const row = rawItems.find((i) => i.id === id);
+        if (!row) continue;
+        const per = displayPrice(row);
+        const graded = isGraded(row.condition);
+        track("card_removed", {
+          card_id: row.card.externalId || row.cardId,
+          ...cardBaseProps(row.card.externalId || row.cardId),
+          condition: graded ? "graded" : "raw",
+          grade: graded ? (row.condition ?? "").match(/\d+(?:\.\d+)?/)?.[0] : undefined,
+          quantity: row.quantity,
+          value_usd: per != null ? per * row.quantity : undefined,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       queryClient.invalidateQueries({ queryKey: ["collection"] });
       queryClient.invalidateQueries({ queryKey: ["collections"] });
@@ -941,6 +960,22 @@ function PortfolioPageInner() {
       ),
     [rawItems]
   );
+
+  // Analytics: portfolio_viewed ONCE per page mount, after the real collection
+  // has loaded (ref guard = no double fire on re-render / StrictMode). item_count
+  // = active (unsold) cards counting quantity; value_usd = the same graded-aware
+  // market value the Market Value stat shows. Empty portfolio reports honest 0.
+  const portfolioViewedRef = useRef(false);
+  useEffect(() => {
+    if (portfolioViewedRef.current || isLoading || isError || !data) return;
+    portfolioViewedRef.current = true;
+    track("portfolio_viewed", {
+      item_count: rawItems.reduce((n, i) => n + (i.isSold ? 0 : i.quantity), 0),
+      value_usd: portfolioStats.marketValue,
+    });
+    // Fire-once guard above makes the remaining deps irrelevant.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, isLoading, isError]);
 
   // Portfolio value chart points — real stored history only (null gaps dropped,
   // never a fabricated 0). Needs >=2 real points to draw an honest line.

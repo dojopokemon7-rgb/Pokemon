@@ -21,11 +21,14 @@ import {
   clearPendingCollectionCards,
   type PendingCollectionCard,
 } from "@/lib/utils/pending-collection";
+import { trackCardsAdded } from "@/lib/analytics/card-events";
 
 interface AddCollectionResult {
   added: number;
   total: number;
-  results: Array<{ externalId: string; ok: boolean; error?: string }>;
+  /** Server-computed: this request created the user's first-ever card. */
+  firstCard?: boolean;
+  results: Array<{ externalId: string; ok: boolean; alreadyPresent?: boolean; error?: string }>;
 }
 
 function fmtUSD(n: number): string {
@@ -64,7 +67,9 @@ export default function CollectionAddPage() {
       }
       return json;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      // Fires once per successful POST (mutation onSuccess, not a render body).
+      if (cards) trackCardsAdded(cards, result);
       // Clear the pending cards now that they've been added
       clearPendingCollectionCards();
       // The dashboard and portfolio both read live collection data —

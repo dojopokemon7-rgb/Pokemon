@@ -28,7 +28,9 @@
  * curve. Population data + add-rows still follow the reference shape.
  */
 
-import { useState, useMemo, useEffect, Suspense } from "react";
+import { useState, useMemo, useEffect, useRef, Suspense } from "react";
+import { track } from "@/lib/analytics/track";
+import { cardBaseProps } from "@/lib/analytics/card-event-props";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toast } from "@/components/Toast";
@@ -326,6 +328,24 @@ function CardDetailInner() {
 
   // Franchise display name for the "{Game} · {Set}" line (Task 1).
   const gameName = game === "onepiece" ? "One Piece" : "Pokémon";
+
+  // Analytics: card_viewed once per card id on this page (covers search taps,
+  // scanner results, portfolio links and deep links). Ref-keyed on id so
+  // re-renders / StrictMode never double-fire; navigating to another card id
+  // fires again. `set` is omitted when the page was opened without one.
+  const viewedCardRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!id || viewedCardRef.current === id) return;
+    viewedCardRef.current = id;
+    track("card_viewed", {
+      card_id: id,
+      set: setName || undefined,
+      ...cardBaseProps(id),
+      game: game === "onepiece" ? "one_piece" : "pokemon",
+    });
+    // Only the card id should retrigger; set/game come from the same URL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   // Serial line "{rarity} · {number}" (Task 2). One Piece ids are the
   // serial sellers use (OP01-001); Pokémon's serial is the `number` field

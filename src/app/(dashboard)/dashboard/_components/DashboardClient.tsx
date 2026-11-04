@@ -21,7 +21,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { type CardDetailsData } from "@/components/CardDetailsPopup";
 import { AreaChart } from "@/components/AreaChart";
 import { Skeleton } from "@/components/Skeleton";
@@ -38,6 +38,8 @@ import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { statsFromLots } from "@/lib/utils/portfolio-accounting";
 import { displayPrice } from "@/lib/utils/graded-price";
 import { fmtWeeklyDelta } from "@/lib/utils/weekly-delta";
+import { track } from "@/lib/analytics/track";
+import { toAnalyticsChartRange } from "@/lib/analytics/chart-range";
 import { HeaderLeftSlot } from "../../header-slot";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -817,6 +819,18 @@ export default function DashboardClient({
     () => hasDashboardHistory(scopedChartSeries),
     [scopedChartSeries],
   );
+
+  // Analytics: portfolio_chart_viewed when the chart is really shown and each
+  // time the user picks a different range. Ranges the taxonomy lacks (1D, 6M)
+  // map to null and send nothing. The ref de-dupes re-renders / StrictMode.
+  const lastChartRangeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hasChartableHistory_) return;
+    const range = toAnalyticsChartRange(activeRange);
+    if (range === null || lastChartRangeRef.current === range) return;
+    lastChartRangeRef.current = range;
+    track("portfolio_chart_viewed", { range });
+  }, [hasChartableHistory_, activeRange]);
 
   // Active tab card rows
   const getActiveRows = () => {

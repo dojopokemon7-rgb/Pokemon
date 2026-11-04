@@ -268,6 +268,16 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const results: Array<{ externalId: string; ok: boolean; alreadyPresent?: boolean; error?: string }> = [];
   const { onExisting } = parsed.data;
+
+  // Analytics (first_card_added): did this user own ZERO collection rows
+  // (active OR sold) BEFORE this request? Read before any write. Best-effort —
+  // a failed count yields false so we never claim a "first" we did not observe.
+  let hadNoCardsBefore = false;
+  try {
+    hadNoCardsBefore = (await prisma.userCollection.count({ where: { userId } })) === 0;
+  } catch {
+    hadNoCardsBefore = false;
+  }
   const topLevelId = parsed.data.collectionId || undefined;
 
   // Dedupe by externalId (first wins) so a double-selected card is one lot.
@@ -601,6 +611,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     {
       message: allFailed ? (results[0]?.error ?? "Could not add this card.") : undefined,
       added: addedCount,
+      // True only when the user had no collection rows before this request AND
+      // at least one card was actually added (drives the first_card_added event).
+      firstCard: hadNoCardsBefore && addedCount > 0,
       alreadyPresent: alreadyPresentCount,
       invalid: invalidCount,
       total: results.length,

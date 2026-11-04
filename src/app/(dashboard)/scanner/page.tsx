@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AddCardSheet } from "@/components/AddCardSheet";
+import { track } from "@/lib/analytics/track";
 import { validateScanFile, computeDownscaleSize } from "@/lib/utils/scan-image-file";
 import { readScanLanguage, writeScanLanguage, type ScanLanguage } from "@/lib/utils/scan-language";
 import { readScanGame, writeScanGame, type ScanGame } from "@/lib/utils/scan-game";
@@ -110,6 +111,25 @@ export default function ScannerPage() {
   function changeGame(next: ScanGame) {
     setGame(next);
     writeScanGame(next);
+  }
+
+  // Analytics helpers. `language` is the scanner's own selector: "all" means the
+  // user did not say, so it is omitted (never guessed); en/ja map to en/jp.
+  const scanOpenRef = useRef(false);
+  function scanEventProps(): Record<string, string | undefined> {
+    return {
+      game: game === "onepiece" ? "one_piece" : "pokemon",
+      language: language === "ja" ? "jp" : language === "en" ? "en" : undefined,
+    };
+  }
+  /** Emit the single terminal scan event for the scan in flight (if any). */
+  function finishScan(
+    event: "scan_succeeded" | "scan_failed",
+    extra: Record<string, string | number>
+  ) {
+    if (!scanOpenRef.current) return;
+    scanOpenRef.current = false;
+    track(event, { ...scanEventProps(), ...extra });
   }
 
   // "Choose photo": object URL of the chosen file (preview) + inline error.
@@ -333,6 +353,7 @@ export default function ScannerPage() {
       }
       await recognizeCanvas(captured.colorCanvas, captured.ocrCanvas);
     } catch {
+      finishScan("scan_failed", { reason: "error" });
       setError("Scanner error, please try again.");
       setPhase("scan");
     }
@@ -410,6 +431,11 @@ export default function ScannerPage() {
    *  camera path supplies it. The upload path passes only a color canvas, so
    *  its rare fallback reuses it (upload already works). */
   async function recognizeCanvas(colorCanvas: HTMLCanvasElement, ocrCanvas?: HTMLCanvasElement) {
+    // Analytics: scan_started only for a frame that really goes to recognition
+    // (quality-blocked frames never get here). scanOpenRef pairs it with exactly
+    // one scan_succeeded / scan_failed, including a thrown error in the callers.
+    scanOpenRef.current = true;
+    track("scan_started", scanEventProps());
     // ── OCR-FIRST pre-pass (Phase 1) ──────────────────────────────────────
     // On-device tesseract is free (no Scrydex credit, no scan allowance), so
     // we try it BEFORE Vision: read the printed collector code off the
@@ -443,10 +469,12 @@ export default function ScannerPage() {
     const top = result.candidates[0];
     setFeedbackId(result.feedbackId);
     if (!top || top.confidence < CONFIDENCE_THRESHOLD) {
+      finishScan("scan_failed", { reason: "not_recognized" });
       setCandidates([]);
       setPhase("not-recognized");
       return;
     }
+    finishScan("scan_succeeded", { candidate_count: result.candidates.length });
 
     // ── Phase 2 — on-device VISUAL variant match (One Piece alt-art) ──────
     // When the resolved top candidate is a One Piece card carrying MORE THAN
@@ -532,6 +560,7 @@ export default function ScannerPage() {
       setPhase("recognizing");
       await recognizeCanvas(canvas);
     } catch {
+      finishScan("scan_failed", { reason: "error" });
       setError("Scanner error, please try again.");
       setPhase("scan");
     } finally {

@@ -19,6 +19,8 @@ import { CardImage, cardInitials } from "@/components/CardImage";
 import { DojoSelect } from "@/components/DojoSelect";
 import { isMainCollectionName } from "@/lib/utils/main-collection";
 import { gradedOptionsFromPrices } from "@/lib/utils/graded-options";
+import { track } from "@/lib/analytics/track";
+import { cardBaseProps } from "@/lib/analytics/card-event-props";
 
 // Minimal shape every caller can satisfy (explore tile, search result, or the
 // card-detail header). externalId is the catalog id sent to the collection API.
@@ -291,6 +293,21 @@ export function AddCardSheet({
       queryClient.invalidateQueries({ queryKey: ["portfolio-collection"] });
       queryClient.invalidateQueries({ queryKey: ["collections"] });
       queryClient.invalidateQueries({ queryKey: ["portfolio-history"] });
+      // Analytics — only after the POST succeeded. value_usd = the live stored
+      // USD price of the chosen grader/grade x quantity (omitted when the card
+      // has no price: never a guess). first_card_added keys off the server's
+      // own pre-insert row count (json.firstCard), not client cache.
+      const base = cardBaseProps(card.externalId);
+      const isRaw = grader === "RAW";
+      track("card_added", {
+        card_id: card.externalId,
+        ...base,
+        condition: isRaw ? "raw" : "graded",
+        grade: isRaw ? undefined : selectedGrade || undefined,
+        quantity: qty,
+        value_usd: livePrice != null ? livePrice * qty : undefined,
+      });
+      if (json.firstCard === true) track("first_card_added", base);
       onAdded(`Added ${card.name} to your portfolio`);
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : "Something went wrong.");

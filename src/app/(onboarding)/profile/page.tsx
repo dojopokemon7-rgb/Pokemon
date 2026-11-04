@@ -17,6 +17,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/lib/auth-client";
+import { track } from "@/lib/analytics/track";
 import { ArrowRight } from "@/components/ArrowRight";
 
 type Currency = "USD" | "INR";
@@ -135,6 +136,9 @@ export default function CreateProfilePage() {
     if (session?.user?.id) {
       localStorage.setItem(`profile_completed_${session.user.id}`, "true");
     }
+    // Profile setup finished. Fired before the hard navigation below; PostHog
+    // batches and flushes on pagehide. No profile fields (location etc.) sent.
+    track("onboarding_completed");
 
     // Redirect to /search so the user immediately starts picking cards.
     window.location.href = "/search";
