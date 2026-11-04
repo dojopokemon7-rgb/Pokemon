@@ -7,11 +7,16 @@
  * NEXT_PUBLIC_* keys are PUBLIC client keys, not secrets). PostHog loads ONLY
  * when `shouldInit(consent, key)` is true — i.e. the user clicked Accept AND the
  * key is present/non-empty. Unset key or non-granted consent = TOTAL no-op: no
- * network, no posthog.init.
+ * network, no posthog.init, no identify, and track() stays a no-op.
  *
  * We react both on mount and on the `dojo-consent-changed` event so flipping
  * consent takes effect without a page reload. Init-once refs stop re-renders /
  * repeated events from double-initializing.
+ *
+ * Identity: once PostHog is live, <IdentitySync/> ties events to the Better Auth
+ * user (client useSession — covers email login, signup, Google OAuth return and
+ * returning sessions) and resets on sign-out. It is mounted only after init so
+ * no session request is made for visitors who never consented.
  *
  * NEXT_PUBLIC_* must be referenced as full literal `process.env.NEXT_PUBLIC_X`
  * expressions so Next can statically inline them at build (RULE: build-time
@@ -21,18 +26,16 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { CONSENT_CHANGED_EVENT } from "./CookieConsent";
+import { useSession } from "@/lib/auth-client";
+import { resolveAuthEvents, takeAuthIntent } from "@/lib/analytics/auth-intent";
+import { track } from "@/lib/analytics/track";
+import { DEFAULT_POSTHOG_HOST } from "@/lib/utils/csp";
 import {
   CONSENT_STORAGE_KEY,
   parseConsent,
   shouldInit,
   type ConsentValue,
 } from "@/lib/utils/analytics-consent";
-
-declare global {
-  interface Window {
-    posthog?: { capture: (event: string) => void };
-  }
-}
 
 function readConsent(): ConsentValue | null {
   if (typeof window === "undefined") return null;
@@ -61,6 +64,45 @@ function PageviewTracker({ ready }: { ready: boolean }) {
   return null;
 }
 
+/**
+ * Identify the signed-in user on the PERSON profile (email + name live there,
+ * NEVER in event properties) and reset on sign-out. Also emits the one-shot
+ * signup_completed / login_completed recorded by the auth pages (auth-intent).
+ * Mounted only after consent + init, so nothing here can run before consent.
+ */
+function IdentitySync() {
+  const { data: session } = useSession();
+  const user = session?.user;
+  const identifiedId = useRef<string | null>(null);
+
+  const userId = user?.id ?? null;
+  const email = user?.email;
+  const name = user?.name;
+  const createdAt = user?.createdAt;
+
+  useEffect(() => {
+    const ph = typeof window !== "undefined" ? window.posthog : undefined;
+    if (!ph) return;
+    if (userId) {
+      if (identifiedId.current === userId) return;
+      identifiedId.current = userId;
+      ph.identify?.(userId, { email, ...(name ? { name } : {}) });
+      const intent = takeAuthIntent();
+      if (intent) {
+        for (const ev of resolveAuthEvents(intent, createdAt)) {
+          track(ev, { method: intent.method });
+        }
+      }
+    } else if (identifiedId.current) {
+      // Signed out: unlink this browser from the person.
+      identifiedId.current = null;
+      ph.reset?.();
+    }
+  }, [userId, email, name, createdAt]);
+
+  return null;
+}
+
 export default function AnalyticsProvider() {
   const posthogReady = useRef(false);
   // State (not ref) so PageviewTracker re-renders and fires the first $pageview
@@ -79,17 +121,27 @@ export default function AnalyticsProvider() {
       posthogReady.current = true;
       void import("posthog-js").then(({ default: posthog }) => {
         posthog.init(posthogKey as string, {
-          api_host: posthogHost || "https://us.i.posthog.com",
+          // Same default as the CSP allowlist (src/lib/utils/csp.ts) so the
+          // two can never disagree about which host is permitted.
+          api_host: posthogHost || DEFAULT_POSTHOG_HOST,
           // We capture $pageview manually on App Router route changes (the
           // automatic one misses client-side navigations).
           capture_pageview: false,
           capture_pageleave: true,
+          autocapture: true,
+          // Error tracking (unhandled exceptions / rejections).
+          capture_exceptions: true,
+          // Anonymous visitors get no person profile until identify().
+          person_profiles: "identified_only",
+          // Session replay with EVERY input masked so password / OTP / payment
+          // fields are never recorded. (Replay must also be enabled in the
+          // PostHog project settings — see docs/ANALYTICS_SETUP.md.)
+          session_recording: { maskAllInputs: true },
         });
         window.posthog = posthog;
         setPosthogLive(true);
       });
     }
-
   }, []);
 
   useEffect(() => {
@@ -99,8 +151,11 @@ export default function AnalyticsProvider() {
   }, [init]);
 
   return (
-    <Suspense fallback={null}>
-      <PageviewTracker ready={posthogLive} />
-    </Suspense>
+    <>
+      <Suspense fallback={null}>
+        <PageviewTracker ready={posthogLive} />
+      </Suspense>
+      {posthogLive && <IdentitySync />}
+    </>
   );
 }
