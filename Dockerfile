@@ -37,17 +37,15 @@ ENV NODE_ENV=production
 
 # Analytics public keys MUST be present at BUILD time: Next inlines every
 # NEXT_PUBLIC_* into the client bundle during `next build`, so the runtime .env
-# alone is TOO LATE — without these ARG→ENV lines the trackers silently never
+# alone is TOO LATE — without these ARG→ENV lines PostHog silently never
 # load in the image. docker-compose.yml supplies them via build.args from the
-# root .env. All are optional (unset = the tracker is a no-op at runtime).
+# root .env. All are optional (unset = PostHog is a no-op at runtime).
 ARG NEXT_PUBLIC_POSTHOG_KEY=""
 ARG NEXT_PUBLIC_POSTHOG_HOST=""
 ARG NEXT_PUBLIC_POSTHOG_DASHBOARD_URL=""
-ARG NEXT_PUBLIC_CLARITY_PROJECT_ID=""
 ENV NEXT_PUBLIC_POSTHOG_KEY=$NEXT_PUBLIC_POSTHOG_KEY
 ENV NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST
 ENV NEXT_PUBLIC_POSTHOG_DASHBOARD_URL=$NEXT_PUBLIC_POSTHOG_DASHBOARD_URL
-ENV NEXT_PUBLIC_CLARITY_PROJECT_ID=$NEXT_PUBLIC_CLARITY_PROJECT_ID
 
 RUN npm run build
 

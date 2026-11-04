@@ -1,51 +1,44 @@
-# Analytics Setup — PostHog + Microsoft Clarity
+# Analytics Setup — PostHog (EU)
 
-Dojo ships two optional, client-side analytics trackers:
+Dojo ships one optional, client-side analytics tracker: **PostHog** (product
+analytics, funnels, session replay, error tracking). The event list lives in
+`docs/ANALYTICS_EVENTS.md`.
 
-- **PostHog** — product analytics (pageviews, events, funnels).
-- **Microsoft Clarity** — heatmaps and session recordings.
-
-Both are **off by default**. They load only when (1) their key is configured
+It is **off by default**. It loads only when (1) the project key is configured
 **and** (2) the visitor clicks **Accept** on the cookie-consent banner. With no
-keys set, there is zero analytics code on the wire — no script, no network, no
-cookies.
+key set there is zero analytics code on the wire — no network, no cookies.
 
 ---
 
-## 1. Get your keys
+## 1. Get your key
 
-### PostHog
+Dojo's PostHog project is on the **EU cloud**.
 
-1. Sign in at your PostHog instance (PostHog Cloud US/EU or self-hosted).
-2. **Project Settings → Project API Key** — copy the key (starts with `phc_`).
-3. Note your ingestion host:
-   - US cloud: `https://us.i.posthog.com`
-   - EU cloud: `https://eu.i.posthog.com`
-   - Self-hosted: your own URL.
+1. Sign in at <https://eu.posthog.com> and open the project
+   (<https://eu.posthog.com/project/333915>).
+2. **Project Settings → Project API Key** — copy the project token (`phc_...`).
+3. Ingestion host: `https://eu.i.posthog.com`.
 
-### Microsoft Clarity
-
-1. Sign in at <https://clarity.microsoft.com> and open (or create) your project.
-2. **Settings → Overview** — copy the **project id** (the id that appears in the
-   install snippet and in the project URL).
+**Dev vs prod projects.** Use a separate PostHog project for testing so tester
+traffic never pollutes real metrics. Production uses the prod project key in the
+root `.env`. If you want analytics on staging, put a *different* project's key
+in the staging build env (`.env.staging` / the compose build arg) — otherwise
+leave it unset and staging stays a no-op.
 
 ---
 
 ## 2. Environment variables
 
-All three are `NEXT_PUBLIC_*` — **public client keys, not secrets**. Set them in
-your prod `.env` (templates and comments live in `.env.example`):
+All are `NEXT_PUBLIC_*` — **public client keys, not secrets**. Templates and
+comments live in `.env.example`:
 
 | Variable | Required? | Example |
 |---|---|---|
-| `NEXT_PUBLIC_POSTHOG_KEY` | for PostHog | `phc_xxxxxxxx` |
-| `NEXT_PUBLIC_POSTHOG_HOST` | for PostHog | `https://us.i.posthog.com` |
-| `NEXT_PUBLIC_CLARITY_PROJECT_ID` | for Clarity | `abcd1234` |
-| `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` | optional | exact PostHog project URL for the admin link card |
+| `NEXT_PUBLIC_POSTHOG_KEY` | yes (else no-op) | `phc_xxxxxxxx` |
+| `NEXT_PUBLIC_POSTHOG_HOST` | yes | `https://eu.i.posthog.com` |
+| `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` | optional | `https://eu.posthog.com/project/333915` |
 
-Each tracker is independent: set only the PostHog keys and only PostHog loads;
-set only the Clarity id and only Clarity loads. Any unset/blank key makes that
-tracker a **total no-op**.
+An unset/blank key makes PostHog a **total no-op**.
 
 ---
 
@@ -56,7 +49,8 @@ Accept or Decline. The choice persists in `localStorage` under
 `dojo-analytics-consent` (`granted` | `denied`).
 
 - **Nothing** loads until the choice is `granted` — not on Decline, not before a
-  choice is made.
+  choice is made. `posthog.identify` and every `track()` call are gated the same
+  way (they are no-ops until PostHog is initialized).
 - Flipping consent takes effect without a page reload (a `dojo-consent-changed`
   event re-runs the init check).
 
@@ -66,49 +60,53 @@ Accept or Decline. The choice persists in `localStorage` under
 
 **This is the step that silently breaks if skipped.** Next.js **inlines** every
 `NEXT_PUBLIC_*` value into the client bundle at **`next build` time** — it does
-**not** read them at runtime. For a standalone/Docker build, the keys must be
-present **before the build runs**, or the trackers will never load even with the
-keys sitting in the runtime `.env`.
+**not** read them at runtime. Set them in `.env` **before**
+`docker compose up --build`, or PostHog will never load even with the key sitting
+in the runtime `.env`.
 
-This repo plumbs them through as build args:
-
-- **`Dockerfile`** (builder stage) declares `ARG` + `ENV` for all four vars
-  **before** `RUN npm run build`, so the values are inlined into the image.
+- **`Dockerfile`** (builder stage) declares `ARG` + `ENV` for the vars
+  **before** `RUN npm run build`.
 - **`docker-compose.yml`** passes them under `app.build.args` (and
   `app-staging.build.args`), sourced from the root `.env` via `${VAR}`
   substitution at `--build` time.
 
+The same build-time values also drive the Content-Security-Policy in
+`next.config.ts` (see §5).
+
 ### Operator sequence (prod)
 
 ```bash
-# 1. Put the keys in the ROOT .env on the server (same dir as docker-compose.yml)
+# 1. Put the vars in the ROOT .env on the server (same dir as docker-compose.yml)
 #    NEXT_PUBLIC_POSTHOG_KEY=phc_...
-#    NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
-#    NEXT_PUBLIC_CLARITY_PROJECT_ID=abcd1234
+#    NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
+#    NEXT_PUBLIC_POSTHOG_DASHBOARD_URL=https://eu.posthog.com/project/333915
 
 # 2. (optional) confirm compose resolves the build args
 docker compose config
 
-# 3. BUILD so the keys get inlined, then bring the stack up
+# 3. BUILD so the values get inlined, then bring the stack up
 docker compose up -d --build app
 ```
 
-Changing any `NEXT_PUBLIC_*` value later requires a **rebuild** (`--build`) — a
-plain `docker compose up` reuses the old image with the old inlined values.
+Changing any `NEXT_PUBLIC_*` value later requires a **rebuild** (`--build`).
 
 ---
 
-## 5. Admin dashboard links
+## 5. Content-Security-Policy
+
+`next.config.ts` ships an enforcing CSP. PostHog is allowlisted minimally,
+derived from `NEXT_PUBLIC_POSTHOG_HOST` (EU: `eu.i.posthog.com` for ingestion and
+`eu-assets.i.posthog.com` for lazy-loaded scripts such as the session-replay
+recorder): `connect-src` gets both origins, `script-src` gets the assets origin.
+`worker-src blob:` was already present. Once a first-party `/ph` reverse proxy
+ships, these can shrink to `'self'`.
+
+---
+
+## 6. Admin dashboard link
 
 `/admin/analytics` has an **External Analytics** card
-(`src/app/(admin)/admin/_components/ExternalAnalyticsLinks.tsx`) with links that
-open the PostHog and Clarity dashboards in a new tab:
-
-- PostHog → `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` if set, else
-  `NEXT_PUBLIC_POSTHOG_HOST`.
-- Clarity → `https://clarity.microsoft.com/projects/view/<id>/dashboard`.
-
-When a provider's key is unset, the card shows a muted
-"Configure analytics keys to enable" state instead of a broken link. The
-first-party `/admin/analytics` panel (scan usage, portfolio totals, etc.) is
-unchanged — these are an additional card.
+(`src/app/(admin)/admin/_components/ExternalAnalyticsLinks.tsx`) linking to
+PostHog in a new tab: `NEXT_PUBLIC_POSTHOG_DASHBOARD_URL` if set, else
+`NEXT_PUBLIC_POSTHOG_HOST`. When neither is set it shows a muted
+"Configure analytics keys to enable" state instead of a broken link.

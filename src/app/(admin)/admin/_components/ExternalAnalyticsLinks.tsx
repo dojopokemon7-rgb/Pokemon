@@ -1,13 +1,13 @@
 /**
- * ExternalAnalyticsLinks — admin card linking out to the PostHog + Microsoft
- * Clarity dashboards (the deep product analytics / session-replay those SaaS
- * tools host, complementing the first-party <AnalyticsDetail/> panel).
+ * ExternalAnalyticsLinks — admin card linking out to the PostHog dashboard
+ * (the deep product analytics / session replay that SaaS tool hosts,
+ * complementing the first-party <AnalyticsDetail/> panel).
  *
  * Server-safe: reads only NEXT_PUBLIC_* env (public client keys, fine to read in
  * a server component — no "use client"). Admin panel = Tailwind utilities allowed
  * (AGENTS.md §10); matches AnalyticsDetail's CARD_STYLE / SectionHeading.
  *
- * Links open in a new tab (rel="noopener noreferrer"). When a provider's key is
+ * Links open in a new tab (rel="noopener noreferrer"). When the PostHog key is
  * unset, we render a muted "Configure analytics keys to enable" state instead of
  * a broken link (RULE 2 — no fake/placeholder destinations).
  */
@@ -24,16 +24,6 @@ function posthogUrl(): string | null {
   if (explicit && explicit.trim() !== "") return explicit;
   const host = process.env.NEXT_PUBLIC_POSTHOG_HOST;
   if (host && host.trim() !== "") return host;
-  return null;
-}
-
-function clarityUrl(): string | null {
-  const id = process.env.NEXT_PUBLIC_CLARITY_PROJECT_ID;
-  if (id && id.trim() !== "") {
-    return `https://clarity.microsoft.com/projects/view/${encodeURIComponent(
-      id.trim()
-    )}/dashboard`;
-  }
   return null;
 }
 
@@ -89,17 +79,13 @@ export function ExternalAnalyticsLinks() {
       >
         External Analytics
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         <ProviderRow
           name="PostHog"
           note="Product analytics, funnels, and event explorer"
           url={posthogUrl()}
         />
-        <ProviderRow
-          name="Microsoft Clarity"
-          note="Heatmaps and session recordings"
-          url={clarityUrl()}
-        />
+
       </div>
     </section>
   );

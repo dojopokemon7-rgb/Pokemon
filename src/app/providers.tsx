@@ -46,7 +46,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       {children}
       {/* Analytics is CLIENT-ONLY and mounts HERE (not in layout.tsx) so
           layout.tsx stays a server component (RULE 6). AnalyticsProvider
-          loads PostHog/Clarity only after CookieConsent grants consent AND
+          loads PostHog only after CookieConsent grants consent AND
           the NEXT_PUBLIC_* key is set — otherwise a total no-op. */}
       <AnalyticsProvider />
       <CookieConsent />

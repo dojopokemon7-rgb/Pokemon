@@ -3,7 +3,7 @@
 /**
  * CookieConsent — bottom consent banner (GDPR/ePrivacy, users are global).
  *
- * PostHog and Clarity MUST NOT load until the user clicks Accept. This banner
+ * PostHog MUST NOT load until the user clicks Accept. This banner
  * persists the choice in localStorage (`dojo-analytics-consent` = granted|denied)
  * and fires a `dojo-consent-changed` event so <AnalyticsProvider/> reacts WITHOUT
  * a page reload. On Decline / no-choice nothing loads — no cookies, no recording.
