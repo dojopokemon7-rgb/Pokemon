@@ -369,6 +369,15 @@ export const RedisKeys = {
    */
   posthogAnalytics: (range: string, environment: string): string =>
     `posthog:analytics:${range}:${environment}`,
+  /**
+   * Admin per-card analytics drill-down aggregate (posthog-query.service.ts
+   * getCardActivity) for one externalId + range + environment. USER-AGNOSTIC,
+   * admin-only. TTL: 90s (CACHE_TTL.posthogAnalytics). Only successful results
+   * are cached; Redis is optional (RULE 1). The externalId is lowercased +
+   * trimmed so keys stay stable.
+   */
+  posthogCardActivity: (externalId: string, range: string, environment: string): string =>
+    `posthog:cardactivity:${externalId.toLowerCase().trim()}:${range}:${environment}`,
 } as const;
 
 /**

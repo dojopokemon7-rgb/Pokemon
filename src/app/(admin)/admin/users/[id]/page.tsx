@@ -4,16 +4,23 @@
  * Deep view for a single client: header, financial summary, portfolio
  * table, and a recent-activity feed. All data fetching is server-side.
  *
- * The "Recent Activity" list is stubbed: it currently surfaces the
- * user's account created + collection add events derived from existing
- * timestamps. Once we ship a real event/audit stream, swap the
- * `deriveRecentActivity` call for a query against that store.
+ * The "Recent Activity" list is the user's REAL recent PostHog behaviour
+ * (getUserActivity, filtered to this person's email via a HogQL placeholder)
+ * merged with the concrete DB facts we already track (account created, profile
+ * updated), newest first. HONEST (RULE 2): when PostHog is not configured or
+ * unavailable we fall back to the DB facts only and say so; when it's
+ * configured but the user has no events we show the facts + an empty-behaviour
+ * note. We never fabricate behavioural rows.
  */
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getUserFinancials } from "@/lib/services/admin-metrics";
+import {
+  getUserActivity,
+  type UserActivityEvent,
+} from "@/lib/services/posthog-query.service";
 import { formatCurrency, formatDate, formatRelative } from "@/lib/utils/format";
 import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
@@ -43,7 +50,7 @@ export default async function AdminUserDetailPage({ params }: PageProps) {
 
   if (!user) notFound();
 
-  const [financials, collection] = await Promise.all([
+  const [financials, collection, activityResult] = await Promise.all([
     getUserFinancials(id),
     prisma.userCollection.findMany({
       where: { userId: id },
@@ -66,13 +73,19 @@ export default async function AdminUserDetailPage({ params }: PageProps) {
         },
       },
     }),
+    // Real per-user behaviour from PostHog (never throws; honest status).
+    getUserActivity(user.email, { limit: 25 }),
   ]);
 
-  const activity = deriveRecentActivity({
+  // The concrete DB facts we always know, regardless of PostHog state.
+  const dbFacts = deriveDbFacts({
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
-    latestAdds: collection.slice(0, 5),
   });
+  // PostHog unavailable / not configured → DB facts only + an honest note.
+  const liveUnavailable = activityResult.status !== "ok";
+  const behaviourEvents = activityResult.status === "ok" ? activityResult.events : [];
+  const activity = mergeActivity(behaviourEvents, dbFacts);
 
   return (
     <div className="px-10 py-10">
@@ -131,6 +144,21 @@ export default async function AdminUserDetailPage({ params }: PageProps) {
       {/* --- Recent activity --- */}
       <section style={{ marginTop: "36px" }}>
         <SectionHeading>Recent Activity</SectionHeading>
+        {liveUnavailable ? (
+          <div
+            className="dojo-faint"
+            style={{ fontSize: "11px", marginBottom: "8px" }}
+          >
+            Live activity unavailable — showing account facts only.
+          </div>
+        ) : behaviourEvents.length === 0 ? (
+          <div
+            className="dojo-faint"
+            style={{ fontSize: "11px", marginBottom: "8px" }}
+          >
+            No tracked behaviour yet — showing account facts only.
+          </div>
+        ) : null}
         <ActivityFeed items={activity} />
       </section>
     </div>
@@ -585,57 +613,82 @@ function Td({
 }
 
 // ---------------------------------------------------------------------------
-// Recent-activity feed (stubbed)
+// Recent-activity feed — real PostHog behaviour merged with DB facts
 // ---------------------------------------------------------------------------
 
 interface ActivityItem {
   id: string;
   label: string;
+  /** Secondary line (card id, search query, method, …) when present. */
+  detail?: string | null;
   timestamp: Date;
 }
 
-function deriveRecentActivity({
+// Friendly labels for the raw taxonomy event names (manager-oriented), mirrors
+// EVENT_LABELS in PostHogDashboard so the two feeds read consistently.
+const USER_EVENT_LABELS: Record<string, string> = {
+  signup_started: "Signup started",
+  signup_completed: "Signup completed",
+  onboarding_completed: "Onboarding completed",
+  login_completed: "Logged in",
+  password_reset_requested: "Password reset requested",
+  first_card_added: "Added first card",
+  portfolio_viewed: "Viewed portfolio",
+  card_added: "Added card",
+  card_removed: "Removed card",
+  portfolio_chart_viewed: "Viewed chart",
+  search_performed: "Searched",
+  card_viewed: "Viewed card",
+  filter_applied: "Applied filter",
+  wishlist_added: "Added to wishlist",
+  scan_started: "Started scan",
+  scan_succeeded: "Scan succeeded",
+  scan_failed: "Scan failed",
+  $exception: "Error",
+};
+
+/** The concrete DB facts we always know (independent of PostHog). */
+function deriveDbFacts({
   createdAt,
   updatedAt,
-  latestAdds,
 }: {
   createdAt: Date;
   updatedAt: Date;
-  latestAdds: readonly PortfolioRow[];
 }): ActivityItem[] {
-  // TODO: replace with a query against a real event/audit stream once
-  // one exists. For now we surface the concrete facts we already track:
-  // account creation, most recent collection additions, and any profile
-  // update reflected by `user.updatedAt`.
-  const items: ActivityItem[] = [];
-
-  for (const row of latestAdds) {
-    items.push({
-      id: `add-${row.id}`,
-      label: `Added ${row.card.name}${
-        row.quantity > 1 ? ` (×${row.quantity})` : ""
-      } to portfolio`,
-      timestamp: row.addedAt,
-    });
-  }
-
+  const items: ActivityItem[] = [
+    { id: "account-created", label: "Account created", timestamp: createdAt },
+  ];
   if (updatedAt.getTime() !== createdAt.getTime()) {
-    items.push({
-      id: "profile-update",
-      label: "Updated profile",
-      timestamp: updatedAt,
+    items.push({ id: "profile-update", label: "Updated profile", timestamp: updatedAt });
+  }
+  return items;
+}
+
+/**
+ * Merge real PostHog behaviour with the DB facts into ONE chronological feed,
+ * newest first. PostHog timestamps are ISO strings; unparseable ones are
+ * dropped (never shown as a wrong date — RULE 2). Capped so the feed stays
+ * scannable.
+ */
+function mergeActivity(
+  events: readonly UserActivityEvent[],
+  dbFacts: readonly ActivityItem[]
+): ActivityItem[] {
+  const fromEvents: ActivityItem[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const ts = new Date(e.time);
+    if (Number.isNaN(ts.getTime())) continue;
+    fromEvents.push({
+      id: `ev-${i}-${e.time}`,
+      label: USER_EVENT_LABELS[e.event] ?? e.event,
+      detail: e.detail,
+      timestamp: ts,
     });
   }
-
-  items.push({
-    id: "account-created",
-    label: "Account created",
-    timestamp: createdAt,
-  });
-
-  return items
+  return [...fromEvents, ...dbFacts]
     .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-    .slice(0, 8);
+    .slice(0, 30);
 }
 
 function ActivityFeed({ items }: { items: readonly ActivityItem[] }) {
@@ -694,6 +747,14 @@ function ActivityFeed({ items }: { items: readonly ActivityItem[] }) {
             }}
           >
             {item.label}
+            {item.detail ? (
+              <span
+                className="dojo-faint"
+                style={{ marginLeft: "8px", fontSize: "12px", wordBreak: "break-word" }}
+              >
+                {item.detail}
+              </span>
+            ) : null}
           </span>
           <span
             className="dojo-faint"

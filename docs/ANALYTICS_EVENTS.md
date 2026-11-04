@@ -106,8 +106,16 @@ counts:
 - **Auth & activation**: signups/logins by method, onboarding, resets, funnel.
 - **Engagement & quality**: `$exception` count + recent errors, daily trend.
 
-Deep per-user history drill-down, session replay, and ad-hoc chart building stay
-in PostHog (the "Open in PostHog" link on the page), by design.
+**Drill-down (in-app):** the Recent-activity feed's User cell links to
+`/admin/users/[id]` (email→user-id resolved server-side; anonymous/deleted →
+no link), and that user-detail page now shows the user's REAL recent per-user
+behaviour (`getUserActivity`, this same taxonomy, filtered to the person via a
+HogQL `{email}` placeholder) merged with DB account facts — honest fallback to
+facts-only when PostHog is unavailable. Clicking a `card_id` (feed cells +
+most-added/-viewed/-wishlisted lists) opens a popover with that card's
+viewed/added/wishlisted aggregate over the selected range+environment
+(`getCardActivity`, `{card_id}` placeholder). Session replay and ad-hoc chart
+building stay in PostHog (the "Open in PostHog" link), by design.
 
 ### Privacy — email in the admin feed
 

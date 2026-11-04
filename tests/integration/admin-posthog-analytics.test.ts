@@ -15,6 +15,8 @@ vi.mock("@/lib/redis", async () => {
 import {
   buildQueries,
   buildDetailQueries,
+  buildUserActivityQuery,
+  buildCardActivityQuery,
   mapTotals,
   mapTopEvents,
   mapDaily,
@@ -22,14 +24,22 @@ import {
   mapLabelCounts,
   mapCardAgg,
   activityDetail,
+  salientDetail,
+  resolveFeedUserIds,
   mapRecentActivity,
+  mapUserActivity,
+  mapCardActivity,
   mapScanner,
   mapRecentErrors,
   mapDetail,
   num,
   getPosthogAnalytics,
+  getUserActivity,
+  getCardActivity,
+  type ActivityRow,
 } from "@/lib/services/posthog-query.service";
 import { GET } from "@/app/api/admin/analytics/route";
+import { GET as GET_CARD } from "@/app/api/admin/analytics/card/route";
 import { signAdminSession, ADMIN_SESSION_COOKIE } from "@/lib/utils/admin-session";
 
 const fetchMock = vi.fn();
@@ -216,6 +226,178 @@ describe("detail mappers", () => {
     expect(populated.auth.passwordResetRequested).toBe(1);
     expect(populated.auth.signupsByMethod[0]).toEqual({ label: "email", count: 9 });
     expect(populated.engagement.errorCount).toBe(4);
+  });
+});
+
+describe("drill-down HogQL builders", () => {
+  it("user activity query filters by the {email} placeholder (never interpolated) + caps rows", () => {
+    const q = buildUserActivityQuery(25);
+    // Dynamic value flows through the placeholder, NOT the SQL text.
+    expect(q).toContain("person.properties.email = {email}");
+    expect(q).not.toContain("@"); // no email literal ever baked in
+    expect(q).toContain("event IN ('signup_started'");
+    expect(q).toContain("'$exception'");
+    expect(q).not.toContain("$autocapture");
+    expect(q).not.toContain("$pageview");
+    expect(q).toContain("LIMIT 25");
+    // Limit is clamped 1..100.
+    expect(buildUserActivityQuery(5000)).toContain("LIMIT 100");
+    expect(buildUserActivityQuery(0)).toContain("LIMIT 1");
+  });
+  it("card activity query binds the {card_id} placeholder + keeps fixed range/env", () => {
+    const q = buildCardActivityQuery("24h", "staging");
+    expect(q).toContain("properties.card_id = {card_id}");
+    expect(q).toContain("INTERVAL 24 HOUR");
+    expect(q).toContain("properties.environment = 'staging'");
+    // 'all' env drops the predicate.
+    expect(buildCardActivityQuery("30d", "all")).not.toContain("properties.environment =");
+    // Single aggregate row — the 5 countIf/sumIf columns, no card id literal.
+    expect(q).toContain("countIf(event = 'card_viewed')");
+    expect(q).toContain("countIf(event = 'wishlist_added')");
+  });
+});
+
+describe("drill-down mappers", () => {
+  it("salientDetail picks the one prop regardless of column layout", () => {
+    expect(salientDetail({ event: "card_added", cardId: "base1-4", query: null, resultsCount: null, filterType: null, method: null, reason: null, range: null })).toBe("base1-4");
+    expect(salientDetail({ event: "search_performed", cardId: null, query: "pika", resultsCount: 3, filterType: null, method: null, reason: null, range: null })).toBe('"pika" · 3 results');
+    expect(salientDetail({ event: "login_completed", cardId: null, query: null, resultsCount: null, filterType: null, method: "google", reason: null, range: null })).toBe("google");
+    // activityDetail delegates to salientDetail (same output).
+    const row: unknown[] = ["t", null, "filter_applied", null, null, null, "rarity", null, null, null, null, null, null];
+    expect(activityDetail(row)).toBe("rarity");
+  });
+  it("mapUserActivity maps the per-user column layout and skips unlabelable rows", () => {
+    const rows: unknown[][] = [
+      ["2026-01-02T00:00:00Z", "card_added", "base1-4", null, null, null, null, null, null, 10, 830, "production"],
+      ["2026-01-01T00:00:00Z", "search_performed", null, "pikachu", 0, null, null, null, null, null, null, "staging"],
+      [null, "card_added", "c", null, null, null, null, null, null, null, null, "production"], // no time → skipped
+      ["2026-01-03T00:00:00Z", null, "c", null, null, null, null, null, null, null, null, "production"], // no event → skipped
+    ];
+    const out = mapUserActivity(rows);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ event: "card_added", detail: "base1-4", valueUsd: 10, valueInr: 830, environment: "production" });
+    expect(out[1]).toMatchObject({ event: "search_performed", detail: '"pikachu" · 0 results', valueUsd: null });
+    expect(mapUserActivity([])).toEqual([]);
+  });
+  it("mapCardActivity maps the single aggregate row and null-safes empties", () => {
+    expect(mapCardActivity([[12, 5, 7, 99.5, 3]])).toEqual({
+      viewed: 12,
+      added: 5,
+      addedQuantity: 7,
+      addedValueUsd: 99.5,
+      wishlisted: 3,
+    });
+    // Empty result → all null (never a fabricated 0).
+    expect(mapCardActivity([])).toEqual({
+      viewed: null,
+      added: null,
+      addedQuantity: null,
+      addedValueUsd: null,
+      wishlisted: null,
+    });
+    expect(mapCardActivity([[null, null, null, null, null]]).added).toBeNull();
+  });
+  it("resolveFeedUserIds links matched emails and leaves anonymous/no-match unlinked", () => {
+    const base = (email: string | null): ActivityRow => ({
+      time: "t",
+      email,
+      event: "card_added",
+      detail: null,
+      valueUsd: null,
+      valueInr: null,
+      environment: "production",
+    });
+    const rows = [base("match@x.com"), base("missing@x.com"), base(null)];
+    const map = new Map([["match@x.com", "user_123"]]);
+    const out = resolveFeedUserIds(rows, map);
+    expect(out[0].userId).toBe("user_123"); // match → linked
+    expect(out[1].userId).toBeNull(); // no-match → no link
+    expect(out[2].userId).toBeNull(); // anonymous → no link
+  });
+});
+
+describe("getUserActivity", () => {
+  it("returns not_configured without a key and makes no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getUserActivity("a@b.com")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("returns ok with an empty list for a blank email (no request)", async () => {
+    expect(await getUserActivity("  ")).toEqual({ status: "ok", events: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("binds the email via query.values placeholder (never interpolated) and maps events", async () => {
+    fetchMock.mockResolvedValue(
+      okJson([["2026-01-01T00:00:00Z", "card_added", "base1-4", null, null, null, null, null, null, 10, null, "production"]])
+    );
+    const r = await getUserActivity("a@b.com", { limit: 25 });
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.events).toHaveLength(1);
+      expect(r.events[0]).toMatchObject({ event: "card_added", detail: "base1-4", valueUsd: 10 });
+    }
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.query.values).toEqual({ email: "a@b.com" });
+    expect(body.query.query).toContain("{email}");
+    expect(body.query.query).not.toContain("a@b.com");
+  });
+  it("returns unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getUserActivity("a@b.com")).status).toBe("unavailable");
+  });
+});
+
+describe("getCardActivity", () => {
+  it("returns not_configured without a key and makes no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getCardActivity("base1-4", "7d", "production")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("binds the card id via query.values placeholder (never interpolated) and maps the aggregate", async () => {
+    fetchMock.mockResolvedValue(okJson([[12, 5, 7, 99.5, 3]]));
+    const r = await getCardActivity("base1-4", "30d", "all");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.cardId).toBe("base1-4");
+      expect(r.activity).toMatchObject({ viewed: 12, added: 5, addedQuantity: 7, addedValueUsd: 99.5, wishlisted: 3 });
+    }
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.query.values).toEqual({ card_id: "base1-4" });
+    expect(body.query.query).toContain("{card_id}");
+    expect(body.query.query).not.toContain("base1-4");
+  });
+  it("empty PostHog result → ok with all-null aggregates (never fabricated)", async () => {
+    fetchMock.mockResolvedValue(okJson([]));
+    const r = await getCardActivity("base1-4", "7d", "production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") expect(r.activity.viewed).toBeNull();
+  });
+  it("returns unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getCardActivity("base1-4", "7d", "production")).status).toBe("unavailable");
+  });
+});
+
+describe("GET /api/admin/analytics/card", () => {
+  const req = (qs = "", cookie?: string) =>
+    new Request(`http://localhost/api/admin/analytics/card${qs}`, cookie ? { headers: { cookie } } : undefined);
+  const cookie = () => `${ADMIN_SESSION_COOKIE}=${signAdminSession()}`;
+
+  it("401 without an admin session and never queries PostHog", async () => {
+    const res = await GET_CARD(req("?cardId=base1-4"));
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("400 without a cardId", async () => {
+    expect((await GET_CARD(req("", cookie())))).toHaveProperty("status", 400);
+  });
+  it("200 not_configured for an admin when the key is unset", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    const res = await GET_CARD(req("?cardId=base1-4", cookie()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "not_configured" });
   });
 });
 

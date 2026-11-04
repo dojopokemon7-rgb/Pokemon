@@ -175,9 +175,41 @@ Sections (top to bottom):
 - **Engagement & quality** — `$exception` count + a recent-errors list
   (type/message when PostHog captured them), top events, daily trend.
 
-**What stays in PostHog (the "Open in PostHog" link), by design:** per-user full
-history drill-down, in-app session replay, and interactive/ad-hoc chart builders.
-This page is a readable summary + the salient detail per feature, not a query
+### Drill-down (from the numbers to the people and cards)
+
+The dashboard is clickable — you go from an aggregate into the specific people
+and cards behind it, without leaving the admin panel:
+
+- **Clickable user → live per-user activity.** In the Recent-activity feed the
+  User cell links to `/admin/users/[id]`. The email still comes ONLY from the
+  PostHog person join; the internal user id is resolved SERVER-SIDE by a Prisma
+  `email → user.id` lookup in `GET /api/admin/analytics` (anonymous / deleted
+  users have no match and render as plain text, no link). That user-detail page
+  now shows the user's REAL recent behaviour — `getUserActivity(email)` runs an
+  allowlist-safe HogQL query filtered to that person (email bound via a
+  `{email}` placeholder, never interpolated), merged with the concrete DB facts
+  we already track (account created, profile updated) into one newest-first
+  feed. If PostHog is not configured / unavailable it falls back to the DB facts
+  only with a "Live activity unavailable — showing account facts only" note;
+  configured-but-zero-events shows the facts + an empty-behaviour note (never a
+  fabricated row).
+- **Clickable card → analytics popover.** Clicking a `card_id` (feed card cells
+  and the most-added / most-viewed / most-wishlisted lists) opens a lightweight
+  popover showing that card's PostHog aggregate — times viewed, times added
+  (with quantity + summed USD), times wishlisted — over the SELECTED
+  range+environment, via `GET /api/admin/analytics/card` →
+  `getCardActivity(cardId, range, env)` (card_id bound via a `{card_id}`
+  placeholder). Row-capped and Redis-cached ~90s. PostHog unavailable → honest
+  empty/unavailable state. There is NO full per-card admin page by design.
+
+The manager-not-PostHog-clone split still holds: **Postgres** backs identity /
+portfolio FACTS (exact + free — the user-detail financials, portfolio table),
+**PostHog** backs BEHAVIOUR (cached + row-capped — the feeds and the card
+popover). Deep replay and ad-hoc funnels stay behind "Open in PostHog".
+
+**What stays in PostHog (the "Open in PostHog" link), by design:** in-app
+session replay and interactive/ad-hoc chart builders. This page is a readable
+summary + the salient detail per feature + the drill-downs above, not a query
 tool.
 
 **Cost:** every section is a row-capped HogQL query (recent activity ≤100 rows,

@@ -100,6 +100,11 @@ export type ActivityRow = {
   valueUsd: number | null;
   valueInr: number | null;
   environment: string | null;
+  // Internal Better Auth user id resolved SERVER-SIDE from `email` (Prisma
+  // lookup in the route) so the feed can link to /admin/users/[id]. Absent for
+  // anonymous / deleted users (email with no matching row) → no link. The email
+  // itself still comes only from the PostHog person join.
+  userId?: string | null;
 };
 export type LabelCount = { label: string; count: number };
 export type CardAgg = {
@@ -168,6 +173,36 @@ export type AnalyticsResult =
   | ({ status: "ok" } & AnalyticsData)
   | { status: "not_configured" }
   | { status: "unavailable"; message: string };
+
+// ── Drill-down shapes ──────────────────────────────────────────────────────
+/** One behavioural event in the per-user feed (no email — the user is known). */
+export type UserActivityEvent = {
+  time: string; // ISO timestamp
+  event: string;
+  detail: string | null; // the one salient prop (card id / query / method / …)
+  valueUsd: number | null;
+  valueInr: number | null;
+  environment: string | null;
+};
+export type UserActivityResult =
+  | { status: "ok"; events: UserActivityEvent[] }
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
+/** Per-card analytics aggregate for the admin drill-down popover. */
+export type CardActivity = {
+  viewed: number | null;
+  added: number | null; // card_added event count
+  addedQuantity: number | null; // summed quantity
+  addedValueUsd: number | null; // summed value_usd
+  wishlisted: number | null;
+};
+export type CardActivityResult =
+  | ({ status: "ok"; cardId: string; range: AnalyticsRange; environment: AnalyticsEnvironment } & {
+      activity: CardActivity;
+    })
+  | { status: "not_configured" }
+  | { status: "unavailable" };
 
 // ── HogQL builders (pure) ────────────────────────────────────────────────
 const where = (range: AnalyticsRange, env: AnalyticsEnvironment) =>
@@ -308,6 +343,46 @@ export function buildDetailQueries(range: AnalyticsRange, env: AnalyticsEnvironm
   };
 }
 
+// Row cap for the per-user behavioural feed on /admin/users/[id].
+const USER_ACTIVITY_LIMIT = 25;
+
+/**
+ * Per-user behavioural feed (drill-down from the admin user detail page).
+ * The email is the ONLY dynamic value and is bound via the `{email}`
+ * placeholder (request body `query.values`) — NEVER string-interpolated. The
+ * person join matches `person.properties.email = {email}`; business events only
+ * (same BUSINESS_EVENTS_SQL constant list — autocapture/pageview noise out).
+ */
+export function buildUserActivityQuery(limit = USER_ACTIVITY_LIMIT) {
+  const cap = Math.max(1, Math.min(100, Math.floor(limit)));
+  return (
+    `SELECT timestamp, event, properties.card_id, properties.query, ` +
+    `properties.results_count, properties.filter_type, properties.method, ` +
+    `properties.reason, properties.range, toFloat(properties.value_usd), ` +
+    `toFloat(properties.value_inr), properties.environment ` +
+    `FROM events WHERE person.properties.email = {email} ` +
+    `AND event IN ${BUSINESS_EVENTS_SQL} ` +
+    `ORDER BY timestamp DESC LIMIT ${cap}`
+  );
+}
+
+/**
+ * Per-card analytics aggregate (drill-down popover). The card_id (catalog
+ * externalId) is the ONLY dynamic value, bound via the `{card_id}` placeholder
+ * — NEVER interpolated. range/environment stay fixed allowlist fragments. One
+ * row: [viewed, added, addedQty, addedValueUsd, wishlisted].
+ */
+export function buildCardActivityQuery(range: AnalyticsRange, env: AnalyticsEnvironment) {
+  const w = where(range, env);
+  return (
+    `SELECT countIf(event = 'card_viewed'), countIf(event = 'card_added'), ` +
+    `sumIf(toFloat(properties.quantity), event = 'card_added'), ` +
+    `sumIf(toFloat(properties.value_usd), event = 'card_added'), ` +
+    `countIf(event = 'wishlist_added') ` +
+    `FROM events ${w} AND properties.card_id = {card_id}`
+  );
+}
+
 // ── Response → metrics mapping (pure) ────────────────────────────────────
 const RowsSchema = z.object({ results: z.array(z.array(z.unknown())) });
 
@@ -402,19 +477,22 @@ export function mapCardAgg(rows: unknown[][]): CardAgg[] {
   return out;
 }
 
-// recentActivity column order (buildDetailQueries.recentActivity):
-// 0 timestamp, 1 email, 2 event, 3 card_id, 4 query, 5 results_count,
-// 6 filter_type, 7 method, 8 reason, 9 range, 10 value_usd, 11 value_inr, 12 env
-/** The ONE salient prop to show per event in the activity feed. Pure. */
-export function activityDetail(r: unknown[]): string | null {
-  const event = str(r[2]);
-  const cardId = str(r[3]);
-  const query = str(r[4]);
-  const resultsCount = num(r[5]);
-  const filterType = str(r[6]);
-  const method = str(r[7]);
-  const reason = str(r[8]);
-  const range = str(r[9]);
+/**
+ * The ONE salient prop to show for an event, given the already-extracted
+ * fields. Shared by the admin feed (activityDetail) and the per-user feed
+ * (mapUserActivity) so both render the same friendly detail. Pure.
+ */
+export function salientDetail(fields: {
+  event: string | null;
+  cardId: string | null;
+  query: string | null;
+  resultsCount: number | null;
+  filterType: string | null;
+  method: string | null;
+  reason: string | null;
+  range: string | null;
+}): string | null {
+  const { event, cardId, query, resultsCount, filterType, method, reason, range } = fields;
   switch (event) {
     case "search_performed":
       return query === null
@@ -434,6 +512,39 @@ export function activityDetail(r: unknown[]): string | null {
       // card_added / card_removed / card_viewed / wishlist_added / scan_* → card id.
       return cardId;
   }
+}
+
+// recentActivity column order (buildDetailQueries.recentActivity):
+// 0 timestamp, 1 email, 2 event, 3 card_id, 4 query, 5 results_count,
+// 6 filter_type, 7 method, 8 reason, 9 range, 10 value_usd, 11 value_inr, 12 env
+/** The ONE salient prop to show per event in the admin activity feed. Pure. */
+export function activityDetail(r: unknown[]): string | null {
+  return salientDetail({
+    event: str(r[2]),
+    cardId: str(r[3]),
+    query: str(r[4]),
+    resultsCount: num(r[5]),
+    filterType: str(r[6]),
+    method: str(r[7]),
+    reason: str(r[8]),
+    range: str(r[9]),
+  });
+}
+
+/**
+ * Attach the internal user id to each feed row from a pre-fetched email→id map
+ * (the Prisma lookup lives in the route — this stays pure/testable). A row whose
+ * email has no map entry (anonymous / deleted / email-less person) gets
+ * `userId: null` → the UI renders plain text, no link. Pure.
+ */
+export function resolveFeedUserIds(
+  rows: ActivityRow[],
+  idByEmail: Map<string, string>
+): ActivityRow[] {
+  return rows.map((r) => ({
+    ...r,
+    userId: r.email ? (idByEmail.get(r.email) ?? null) : null,
+  }));
 }
 
 export function mapRecentActivity(rows: unknown[][]): ActivityRow[] {
@@ -485,6 +596,50 @@ export function mapRecentErrors(rows: unknown[][]): ErrorRow[] {
     out.push({ time, message: str(r[1]), type: str(r[2]) });
   }
   return out;
+}
+
+// buildUserActivityQuery column order:
+// 0 timestamp, 1 event, 2 card_id, 3 query, 4 results_count, 5 filter_type,
+// 6 method, 7 reason, 8 range, 9 value_usd, 10 value_inr, 11 env
+/** Per-user behavioural feed rows → UserActivityEvent[]. Pure. */
+export function mapUserActivity(rows: unknown[][]): UserActivityEvent[] {
+  const out: UserActivityEvent[] = [];
+  for (const r of rows) {
+    const time = str(r[0]);
+    const event = str(r[1]);
+    if (time === null || event === null) continue; // never a row we can't label
+    out.push({
+      time,
+      event,
+      detail: salientDetail({
+        event,
+        cardId: str(r[2]),
+        query: str(r[3]),
+        resultsCount: num(r[4]),
+        filterType: str(r[5]),
+        method: str(r[6]),
+        reason: str(r[7]),
+        range: str(r[8]),
+      }),
+      valueUsd: num(r[9]),
+      valueInr: num(r[10]),
+      environment: str(r[11]),
+    });
+  }
+  return out;
+}
+
+// buildCardActivityQuery single row: [viewed, added, addedQty, addedValueUsd, wishlisted]
+/** Per-card aggregate row → CardActivity. Pure. */
+export function mapCardActivity(rows: unknown[][]): CardActivity {
+  const r = rows[0] ?? [];
+  return {
+    viewed: num(r[0]),
+    added: num(r[1]),
+    addedQuantity: num(r[2]),
+    addedValueUsd: num(r[3]),
+    wishlisted: num(r[4]),
+  };
 }
 
 /**
@@ -561,9 +716,18 @@ function config() {
   };
 }
 
+/**
+ * Run one HogQL query. When `values` is given, the SQL carries `{name}`
+ * placeholders and the values go in the request body's `query.values` map —
+ * PostHog substitutes them via its HogQL placeholder mechanism (ast.Placeholder),
+ * so dynamic strings (user email, card id) are NEVER concatenated into SQL
+ * (injection-safe, AGENTS.md RULE 4). The range/environment fragments stay
+ * constant allowlist text; only email / card_id ever flow through `values`.
+ */
 async function hogql(
   cfg: NonNullable<ReturnType<typeof config>>,
-  query: string
+  query: string,
+  values?: Record<string, string>
 ): Promise<unknown[][]> {
   const res = await fetch(
     `${cfg.host}/api/projects/${encodeURIComponent(cfg.projectId)}/query/`,
@@ -573,7 +737,9 @@ async function hogql(
         Authorization: `Bearer ${cfg.key}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
+      body: JSON.stringify({
+        query: { kind: "HogQLQuery", query, ...(values ? { values } : {}) },
+      }),
       signal: AbortSignal.timeout(20_000),
       cache: "no-store",
     }
@@ -778,5 +944,98 @@ export async function getPosthogAnalytics(
     // Log status/shape only — the message never contains the key.
     console.error("[posthog-query] failed:", err instanceof Error ? err.message : err);
     return { status: "unavailable", message: "PostHog unavailable" };
+  }
+}
+
+/**
+ * Per-user behavioural activity feed for /admin/users/[id] (drill-down from the
+ * admin analytics). Runs one allowlist-safe HogQL query filtered to this
+ * person's events; the email is bound via the `{email}` placeholder (never
+ * interpolated). Honest states: unset key → not_configured; PostHog error →
+ * unavailable (the page falls back to DB account facts); zero events → ok with
+ * an empty list. Never throws. Not cached: the detail page is per-request SSR
+ * and a per-email cache would pile keys for little gain.
+ */
+export async function getUserActivity(
+  email: string,
+  opts: { limit?: number } = {}
+): Promise<UserActivityResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+  const trimmed = email.trim();
+  if (!trimmed) return { status: "ok", events: [] };
+  try {
+    const rows = await hogql(cfg, buildUserActivityQuery(opts.limit), { email: trimmed });
+    return { status: "ok", events: mapUserActivity(rows) };
+  } catch (err) {
+    console.error("[posthog-query] user activity failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+}
+
+// Cached card-activity payload is re-parsed on read (RULE 4).
+const CardActivityCacheSchema = z.object({
+  status: z.literal("ok"),
+  cardId: z.string(),
+  range: z.enum(ANALYTICS_RANGES),
+  environment: z.enum(ANALYTICS_ENVIRONMENTS),
+  activity: z.object({
+    viewed: z.number().nullable(),
+    added: z.number().nullable(),
+    addedQuantity: z.number().nullable(),
+    addedValueUsd: z.number().nullable(),
+    wishlisted: z.number().nullable(),
+  }),
+});
+
+/**
+ * Per-card analytics aggregate for the admin drill-down popover (times viewed /
+ * added + qty + summed value / wishlisted) over the selected range+environment.
+ * The card_id is bound via the `{card_id}` placeholder (never interpolated).
+ * Row-capped (single aggregate row) and Redis-cached ~90s (optional, RULE 1).
+ * Honest states: unset key → not_configured; PostHog error → unavailable; no
+ * events → ok with all-null/zero aggregates. Never throws.
+ */
+export async function getCardActivity(
+  cardId: string,
+  range: AnalyticsRange,
+  environment: AnalyticsEnvironment
+): Promise<CardActivityResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+  const trimmed = cardId.trim();
+  if (!trimmed) return { status: "unavailable" };
+
+  const cacheKey = RedisKeys.posthogCardActivity(trimmed, range, environment);
+  try {
+    const raw = await redis.get(cacheKey);
+    if (raw) {
+      const parsed = CardActivityCacheSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data as CardActivityResult;
+    }
+  } catch {
+    // Redis down / malformed → miss (RULE 1).
+  }
+
+  try {
+    const rows = await hogql(cfg, buildCardActivityQuery(range, environment), {
+      card_id: trimmed,
+    });
+    const result: CardActivityResult = {
+      status: "ok",
+      cardId: trimmed,
+      range,
+      environment,
+      activity: mapCardActivity(rows),
+    };
+    try {
+      await redis.set(cacheKey, JSON.stringify(result), "EX", CACHE_TTL.posthogAnalytics);
+    } catch {
+      // cache-only (RULE 1)
+    }
+    return result;
+  } catch (err) {
+    console.error("[posthog-query] card activity failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
   }
 }

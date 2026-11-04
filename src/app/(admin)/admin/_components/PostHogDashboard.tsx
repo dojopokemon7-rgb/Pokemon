@@ -9,12 +9,14 @@
  * Admin panel = Tailwind utilities allowed (AGENTS.md §10).
  */
 import { useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import type {
   AnalyticsResult,
   AnalyticsRange,
   AnalyticsEnvironment,
 } from "@/lib/services/posthog-query.service";
+import { CardActivityPopover } from "./CardActivityPopover";
 
 const CARD_STYLE: React.CSSProperties = {
   background: "var(--color-dojo-card)",
@@ -136,17 +138,47 @@ function CountTable({
   );
 }
 
+/**
+ * Clickable card id — opens the analytics drill-down popover. Styled as a link
+ * (gold, underline-on-hover) but is a real button for a11y. Breaks long ids.
+ */
+function CardCell({ cardId, onClick }: { cardId: string; onClick: (id: string) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(cardId)}
+      title="View card analytics"
+      className="dojo-link"
+      style={{
+        background: "none",
+        border: "none",
+        padding: 0,
+        margin: 0,
+        font: "inherit",
+        color: "var(--color-dojo-gold)",
+        cursor: "pointer",
+        textAlign: "left",
+        wordBreak: "break-word",
+      }}
+    >
+      {cardId}
+    </button>
+  );
+}
+
 /** Ranked card table: card id + count (+ value when present). */
 function CardTable({
   rows,
   countHead,
   showValue = false,
   empty = "No data in this range.",
+  onCardClick,
 }: {
   rows: { cardId: string; count: number; valueUsd: number | null }[];
   countHead: string;
   showValue?: boolean;
   empty?: string;
+  onCardClick: (cardId: string) => void;
 }) {
   return (
     <div style={CARD_STYLE}>
@@ -164,7 +196,9 @@ function CardTable({
           <tbody>
             {rows.map((r) => (
               <tr key={r.cardId}>
-                <td className="py-1" style={{ wordBreak: "break-word" }}>{r.cardId}</td>
+                <td className="py-1" style={{ wordBreak: "break-word" }}>
+                  <CardCell cardId={r.cardId} onClick={onCardClick} />
+                </td>
                 <td className="py-1 text-right">{fmt(r.count)}</td>
                 {showValue && (
                   <td className="py-1 text-right">{fmt(r.valueUsd, "$")}</td>
@@ -207,9 +241,23 @@ function Segmented<T extends string>({
   );
 }
 
+// Feed events whose salient detail IS a card id (so the Detail cell is a
+// clickable card drill-down). Mirrors activityDetail's default branch.
+const CARD_DETAIL_EVENTS = new Set([
+  "card_added",
+  "card_removed",
+  "card_viewed",
+  "wishlist_added",
+  "scan_started",
+  "scan_succeeded",
+  "scan_failed",
+]);
+
 export function PostHogDashboard() {
   const [range, setRange] = useState<AnalyticsRange>("7d");
   const [environment, setEnvironment] = useState<AnalyticsEnvironment>("production");
+  // Card drill-down popover: the externalId currently open, or null.
+  const [openCard, setOpenCard] = useState<string | null>(null);
 
   const { data, isLoading, isError } = useQuery<AnalyticsResult>({
     queryKey: ["admin-posthog", range, environment],
@@ -282,9 +330,29 @@ export function PostHogDashboard() {
                 {d.recentActivity.map((r, i) => (
                   <tr key={`${r.time}-${r.event}-${i}`}>
                     <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{fmtTime(r.time)}</td>
-                    <td className="py-1 pr-3">{r.email ?? "anonymous"}</td>
+                    <td className="py-1 pr-3">
+                      {r.email == null ? (
+                        "anonymous"
+                      ) : r.userId ? (
+                        // Resolved email→user id server-side → drill into the
+                        // user. No id (anonymous / deleted) → plain text.
+                        <Link href={`/admin/users/${r.userId}`} className="dojo-link">
+                          {r.email}
+                        </Link>
+                      ) : (
+                        r.email
+                      )}
+                    </td>
                     <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{eventLabel(r.event)}</td>
-                    <td className="py-1 pr-3" style={{ wordBreak: "break-word" }}>{r.detail ?? "—"}</td>
+                    <td className="py-1 pr-3" style={{ wordBreak: "break-word" }}>
+                      {r.detail == null ? (
+                        "—"
+                      ) : CARD_DETAIL_EVENTS.has(r.event) ? (
+                        <CardCell cardId={r.detail} onClick={setOpenCard} />
+                      ) : (
+                        r.detail
+                      )}
+                    </td>
                     <td className="py-1 pr-3 text-right" style={{ whiteSpace: "nowrap" }}>
                       {fmtValue(r.valueUsd, r.valueInr)}
                     </td>
@@ -309,7 +377,7 @@ export function PostHogDashboard() {
           </div>
           <div>
             <Heading>Most-viewed cards</Heading>
-            <CardTable rows={d.search.mostViewedCards} countHead="Views" empty="No card views." />
+            <CardTable rows={d.search.mostViewedCards} countHead="Views" empty="No card views." onCardClick={setOpenCard} />
           </div>
           <div>
             <Heading>Filters applied</Heading>
@@ -331,6 +399,7 @@ export function PostHogDashboard() {
               countHead="Qty"
               showValue
               empty="No cards added in this range."
+              onCardClick={setOpenCard}
             />
           </div>
           <div>
@@ -356,7 +425,7 @@ export function PostHogDashboard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <Heading>Most-wishlisted cards</Heading>
-            <CardTable rows={d.wishlist.mostWishlisted} countHead="Adds" empty="No wishlist adds." />
+            <CardTable rows={d.wishlist.mostWishlisted} countHead="Adds" empty="No wishlist adds." onCardClick={setOpenCard} />
           </div>
           <div>
             <Heading>Wishlist by game</Heading>
@@ -519,6 +588,14 @@ export function PostHogDashboard() {
         </div>
       </div>
       {body}
+      {openCard !== null && (
+        <CardActivityPopover
+          cardId={openCard}
+          range={range}
+          environment={environment}
+          onClose={() => setOpenCard(null)}
+        />
+      )}
     </section>
   );
 }
