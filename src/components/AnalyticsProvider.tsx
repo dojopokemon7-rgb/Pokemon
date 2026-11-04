@@ -29,6 +29,7 @@ import { CONSENT_CHANGED_EVENT } from "./CookieConsent";
 import { useSession } from "@/lib/auth-client";
 import { resolveAuthEvents, takeAuthIntent } from "@/lib/analytics/auth-intent";
 import { track } from "@/lib/analytics/track";
+import { analyticsEnvironment } from "@/lib/analytics/environment";
 import { DEFAULT_POSTHOG_HOST } from "@/lib/utils/csp";
 import {
   CONSENT_STORAGE_KEY,
@@ -137,6 +138,10 @@ export default function AnalyticsProvider() {
           // fields are never recorded. (Replay must also be enabled in the
           // PostHog project settings — see docs/ANALYTICS_SETUP.md.)
           session_recording: { maskAllInputs: true },
+          // Tag every event so staging/prod/dev can be filtered in the one
+          // free-tier project. Runs before the first capture.
+          loaded: (ph) =>
+            ph.register({ environment: analyticsEnvironment(window.location.hostname) }),
         });
         window.posthog = posthog;
         setPosthogLive(true);
