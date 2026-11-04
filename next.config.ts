@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+// Relative import on purpose: tsconfig path aliases are not available when
+// next.config.ts is loaded.
+import { buildContentSecurityPolicy } from "./src/lib/utils/csp";
 
 const nextConfig: NextConfig = {
   // Enable standalone output for Docker multi-stage builds.
@@ -101,50 +104,9 @@ const nextConfig: NextConfig = {
           },
           {
             key: "Content-Security-Policy",
-            value: [
-              "default-src 'self'",
-              // img-src: every host the browser loads card art from directly.
-              //   Pokémon art — kept in exact sync with the /api/card-img
-              //   proxy allowlist + next.config remotePatterns (images.scrydex.com,
-              //   assets.tcgdex.net, images.pokemontcg.io, *.supabase.co).
-              //   One Piece art — the UI <img> loads these two upstreams
-              //   DIRECTLY (card.service.ts: "the browser can embed them
-              //   directly"; card-image.ts onError chain): tcgplayer-cdn and
-              //   static.cardmarket.com. data:/blob: cover the scanner canvas.
-              "img-src 'self' data: blob: https://*.supabase.co https://images.scrydex.com https://assets.tcgdex.net https://images.pokemontcg.io https://tcgplayer-cdn.tcgplayer.com https://static.cardmarket.com",
-              // 'unsafe-inline' required by Next.js inline runtime/styles.
-              // 'wasm-unsafe-eval' lets tesseract.js compile its WASM core.
-              // cdn.jsdelivr.net hosts the tesseract.js worker script.
-              "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net",
-              // Landing (served at /) pulls the Google Fonts stylesheet.
-              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-              // Landing font files load from Google's font CDN (default-src would block them).
-              "font-src 'self' https://fonts.gstatic.com",
-              // App fetches hit same-origin /api/* (sec-audit-2 #14). The
-              // cross-origin fetches are:
-              //   1. tesseract.js pulling its WASM core + `eng` traineddata
-              //      from cdn.jsdelivr.net (scanner OCR fallback).
-              //   2. The scanner's Phase 2 on-device visual variant match
-              //      (@xenova/transformers CLIP): the ~90MB model is fetched
-              //      ONCE from the Hugging Face Hub (huggingface.co, whose LFS
-              //      weights redirect to cdn-lfs*.huggingface.co), and each One
-              //      Piece variant IMAGE is fetched from images.scrydex.com to
-              //      embed it. Both are fetch()/connect-src (NOT img-src — the
-              //      variant <img> display is already covered by img-src above).
-              "connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://images.scrydex.com",
-              // tesseract.js runs OCR in a blob-URL Web Worker.
-              "worker-src 'self' blob:",
-              "frame-ancestors 'none'",
-              "base-uri 'self'",
-              // form-action must allow Google's OAuth endpoints: the Google
-              // sign-in flow submits/redirects a form to accounts.google.com,
-              // which a bare `form-action 'self'` BLOCKED — breaking Google
-              // login on mobile (the /api/auth/callback/google navigation
-              // failed with ERR_FAILED). 'self' covers our own email/password
-              // + credential forms; the Google origins cover social sign-in.
-              "form-action 'self' https://accounts.google.com https://*.google.com",
-              "object-src 'none'",
-            ].join("; "),
+            // Built in src/lib/utils/csp.ts (unit-tested). PostHog origins derive
+            // from NEXT_PUBLIC_POSTHOG_HOST, inlined at build time.
+            value: buildContentSecurityPolicy(process.env.NEXT_PUBLIC_POSTHOG_HOST),
           },
         ],
       },
