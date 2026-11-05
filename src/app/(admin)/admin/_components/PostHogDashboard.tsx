@@ -16,6 +16,14 @@
  * one-click "Show all". Unique Visitors drills into the DISTINCT persons behind
  * the number (identified by email + an honest "anonymous (N)" remainder). Card
  * ids everywhere lead with the human-readable card NAME (id kept as a tooltip).
+ *
+ * PER-FEATURE DETAIL ROWS use the SAME feed reveal: clicking a label row in Top
+ * search terms / Top zero-result searches / Filters applied / Scanner failure
+ * reasons / Signups|Logins by method reveals the underlying events (who + when)
+ * in the SAME feed via the `dimension`+`value` params (allowlisted dimension →
+ * constant HogQL predicate; value placeholder-bound). Card lists (most-added/
+ * -viewed/-wishlisted) keep the card popover. Pure ratio / by-game / funnel
+ * rows stay static (no honest per-person drill). Only ONE reveal shows at once.
  */
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -25,7 +33,9 @@ import type {
   AnalyticsRange,
   AnalyticsEnvironment,
   AnalyticsEventFilter,
+  AnalyticsDimension,
   FilteredFeedResult,
+  DimensionFeedResult,
   DistinctPersonsResult,
   ActivityRow,
 } from "@/lib/services/posthog-query.service";
@@ -97,6 +107,12 @@ const DRILL_LABELS: Record<AnalyticsEventFilter | "persons", string> = {
   scan_succeeded: "Scans succeeded",
   $exception: "Errors",
 };
+
+// Per-feature DETAIL-ROW drill-down: clicking a label row in a per-feature list
+// reveals the events behind it in the SAME feed (the ONE consistent label-row
+// interaction). `value` is the row's label (the dynamic query/filter/method);
+// `label` is the human heading for the chip + feed title.
+type DimDrill = { dimension: AnalyticsDimension; value: string; label: string } | null;
 
 // Feed events whose salient detail IS a card id (so the Detail cell is a
 // clickable card drill-down). Mirrors the server's CARD_DETAIL_EVENTS
@@ -228,15 +244,24 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** A simple two-column label/count table with an empty state. */
+/**
+ * A simple two-column label/count table with an empty state. When `onRowClick`
+ * is given, each label becomes an accessible drill button (reveals the events
+ * behind that row in the feed); without it the labels stay plain text (used for
+ * by-game / ratio tables that have no honest per-person drill).
+ */
 function CountTable({
   rows,
   head,
   empty = "No data in this range.",
+  onRowClick,
+  rowTitle,
 }: {
   rows: { label: string; count: number }[];
   head: string;
   empty?: string;
+  onRowClick?: (label: string) => void;
+  rowTitle?: (label: string) => string;
 }) {
   return (
     <div style={CARD_STYLE}>
@@ -253,7 +278,31 @@ function CountTable({
           <tbody>
             {rows.map((r) => (
               <tr key={r.label}>
-                <td className="py-1" style={{ wordBreak: "break-word" }}>{r.label}</td>
+                <td className="py-1" style={{ wordBreak: "break-word" }}>
+                  {onRowClick ? (
+                    <button
+                      type="button"
+                      onClick={() => onRowClick(r.label)}
+                      title={rowTitle ? rowTitle(r.label) : `Show who/when behind "${r.label}"`}
+                      className="dojo-link"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        padding: 0,
+                        margin: 0,
+                        font: "inherit",
+                        color: "var(--color-dojo-gold)",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {r.label}
+                    </button>
+                  ) : (
+                    r.label
+                  )}
+                </td>
                 <td className="py-1 text-right">{fmt(r.count)}</td>
               </tr>
             ))}
@@ -408,6 +457,9 @@ export function PostHogDashboard() {
   const [environment, setEnvironment] = useState<AnalyticsEnvironment>("production");
   // Active count-card drill-down (null = show the full default feed).
   const [drill, setDrill] = useState<Drill>(null);
+  // Active per-feature DETAIL-ROW drill-down (null = none). Mutually exclusive
+  // with `drill` — only one reveal shows at a time.
+  const [dimDrill, setDimDrill] = useState<DimDrill>(null);
   // Card drill-down popover: the open card, or null.
   const [openCard, setOpenCard] = useState<{ id: string; name?: string | null } | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
@@ -416,15 +468,28 @@ export function PostHogDashboard() {
   // apply to the new window; keeps the view honest and tidy).
   useEffect(() => {
     setDrill(null);
+    setDimDrill(null);
   }, [range, environment]);
 
   const openCardPopover = (id: string, name?: string | null) => setOpenCard({ id, name });
 
-  // Click a count card: set the drill-down and scroll the feed into view.
-  const onCountClick = (d: Drill) => {
-    setDrill(d);
-    // Scroll after the state-driven re-render paints the feed section.
+  const scrollToFeed = () =>
     requestAnimationFrame(() => feedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+
+  // Click a count card: set the count-card drill-down (clearing any row drill)
+  // and scroll the feed into view.
+  const onCountClick = (d: Drill) => {
+    setDimDrill(null);
+    setDrill(d);
+    scrollToFeed();
+  };
+
+  // Click a per-feature label row: set the row drill-down (clearing any
+  // count-card drill) and scroll to the feed.
+  const onDimClick = (dimension: AnalyticsDimension, value: string, label: string) => {
+    setDrill(null);
+    setDimDrill({ dimension, value, label });
+    scrollToFeed();
   };
 
   const { data, isLoading, isError } = useQuery<AnalyticsResult>({
@@ -471,6 +536,24 @@ export function PostHogDashboard() {
     staleTime: 60_000,
   });
 
+  // Per-feature DETAIL-ROW drill-down feed — only fetched when a row drill is
+  // active. The dynamic `value` is URL-encoded (and bound via a HogQL
+  // placeholder server-side, never interpolated into SQL).
+  const dimFeedQuery = useQuery<DimensionFeedResult>({
+    queryKey: ["admin-posthog-dimfeed", dimDrill?.dimension, dimDrill?.value, range, environment],
+    enabled: dimDrill !== null,
+    queryFn: async () => {
+      const dd = dimDrill as NonNullable<DimDrill>;
+      const res = await fetch(
+        `/api/admin/analytics?dimension=${encodeURIComponent(dd.dimension)}&value=${encodeURIComponent(dd.value)}&range=${range}&environment=${environment}`,
+        { credentials: "include" }
+      );
+      if (!res.ok) throw new Error(`dimfeed ${res.status}`);
+      return (await res.json()) as DimensionFeedResult;
+    },
+    staleTime: 60_000,
+  });
+
   let body: React.ReactNode;
   if (isLoading) {
     body = <div className="dojo-faint">Loading PostHog analytics…</div>;
@@ -490,7 +573,23 @@ export function PostHogDashboard() {
 
     // ── The Recent-activity section, honouring the active drill-down ───────
     let feedSection: React.ReactNode;
-    if (drill === "persons") {
+    if (dimDrill) {
+      const r = dimFeedQuery.data;
+      const rows = r && r.status === "ok" ? r.rows : [];
+      feedSection = (
+        <>
+          <FilterChip label={dimDrill.label} onClear={() => setDimDrill(null)} />
+          <div className="dojo-faint" style={{ fontSize: "11px", margin: "0 0 8px" }}>
+            {dimFeedQuery.isLoading
+              ? "Loading…"
+              : r && r.status !== "ok"
+                ? "PostHog unavailable."
+                : `${dimDrill.label} — ${rows.length} event${rows.length === 1 ? "" : "s"}, newest first.`}
+          </div>
+          <ActivityTable rows={rows} onCardClick={openCardPopover} />
+        </>
+      );
+    } else if (drill === "persons") {
       feedSection = (
         <PersonsPanel query={personsQuery} total={m.uniqueVisitors} onClear={() => setDrill(null)} />
       );
@@ -554,11 +653,23 @@ export function PostHogDashboard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <Heading>Top search terms</Heading>
-            <CountTable rows={d.search.topTerms} head="Query" empty="No searches in this range." />
+            <CountTable
+              rows={d.search.topTerms}
+              head="Query"
+              empty="No searches in this range."
+              onRowClick={(label) => onDimClick("search_term", label, `Search “${label}”`)}
+              rowTitle={(label) => `Show who searched “${label}” and when`}
+            />
           </div>
           <div>
             <Heading>Top zero-result searches (unmet demand)</Heading>
-            <CountTable rows={d.search.zeroResult} head="Query" empty="No zero-result searches." />
+            <CountTable
+              rows={d.search.zeroResult}
+              head="Query"
+              empty="No zero-result searches."
+              onRowClick={(label) => onDimClick("zero_result_term", label, `Zero-result “${label}”`)}
+              rowTitle={(label) => `Show who hit the dead end for “${label}”`}
+            />
           </div>
           <div>
             <Heading>Most-viewed cards</Heading>
@@ -566,7 +677,13 @@ export function PostHogDashboard() {
           </div>
           <div>
             <Heading>Filters applied</Heading>
-            <CountTable rows={d.search.filterTypes} head="Filter" empty="No filters applied." />
+            <CountTable
+              rows={d.search.filterTypes}
+              head="Filter"
+              empty="No filters applied."
+              onRowClick={(label) => onDimClick("filter_type", label, `Filter: ${label}`)}
+              rowTitle={(label) => `Show who applied the ${label} filter and when`}
+            />
           </div>
           <div>
             <Heading>Searches by game</Heading>
@@ -629,7 +746,13 @@ export function PostHogDashboard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <Heading>Failure reasons</Heading>
-            <CountTable rows={d.scanner.failReasons} head="Reason" empty="No scan failures." />
+            <CountTable
+              rows={d.scanner.failReasons}
+              head="Reason"
+              empty="No scan failures."
+              onRowClick={(label) => onDimClick("scan_reason", label, `Scan failure: ${label}`)}
+              rowTitle={(label) => `Show who hit the “${label}” scan failure and when`}
+            />
           </div>
           <div>
             <Heading>Scans by game</Heading>
@@ -646,11 +769,23 @@ export function PostHogDashboard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <Heading>Signups by method</Heading>
-            <CountTable rows={d.auth.signupsByMethod} head="Method" empty="No signups in this range." />
+            <CountTable
+              rows={d.auth.signupsByMethod}
+              head="Method"
+              empty="No signups in this range."
+              onRowClick={(label) => onDimClick("signup_method", label, `Signups · ${label}`)}
+              rowTitle={(label) => `Show who signed up via ${label} and when`}
+            />
           </div>
           <div>
             <Heading>Logins by method</Heading>
-            <CountTable rows={d.auth.loginsByMethod} head="Method" empty="No logins in this range." />
+            <CountTable
+              rows={d.auth.loginsByMethod}
+              head="Method"
+              empty="No logins in this range."
+              onRowClick={(label) => onDimClick("login_method", label, `Logins · ${label}`)}
+              rowTitle={(label) => `Show who logged in via ${label} and when`}
+            />
           </div>
         </div>
         <Heading>Activation funnel (unique users per step)</Heading>

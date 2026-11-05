@@ -115,7 +115,21 @@ via the `event` filter param (FIXED allowlist + `zero_result` pseudo + `$excepti
 mapped to a constant HogQL predicate, never free text), with an active-filter
 chip + "Show all" and a heading that reflects the filter. Unique Visitors drills
 into the DISTINCT persons behind it (`view=persons`): identified by email +
-an honest "anonymous (N)" remainder, never a fabricated identity. Everywhere a
+an honest "anonymous (N)" remainder, never a fabricated identity.
+
+The SAME feed reveal extends to the per-feature DETAIL label rows: clicking a
+row in Top search terms, Top zero-result searches, Filters applied, Scanner
+failure reasons, or Signups/Logins by method re-loads the Recent-activity feed
+scoped to the events behind that row (who + when) via the `dimension`+`value`
+params. `dimension` is a FIXED allowlist (`search_term`, `zero_result_term`,
+`filter_type`, `scan_reason`, `signup_method`, `login_method`) → a constant
+HogQL predicate; the row's `value` is the ONLY dynamic part and is bound via a
+`{value}` placeholder (never interpolated), with categorical dimensions
+(`filter_type`/`scan_reason`/`*_method`) additionally allowlisted against their
+fixed enums (double-guard). Only ONE reveal shows at a time. The card lists
+(most-added/-viewed/-wishlisted) keep the aggregate card popover; pure
+ratio/by-game/chart-range/funnel/daily rows stay static (no honest per-person
+drill). Everywhere a
 `card_id` appears (feed Detail cell + most-added/-viewed/-wishlisted lists +
 the card popover header) the human-readable card NAME leads (catalog
 `externalId`→`Card.name`, resolved server-side in one batched Prisma query; raw

@@ -388,6 +388,22 @@ export const RedisKeys = {
   posthogFeed: (filter: string, range: string, environment: string): string =>
     `posthog:feed:${filter}:${range}:${environment}`,
   /**
+   * Admin analytics per-feature DETAIL-ROW drill-down FEED, scoped to one
+   * dimension+value (posthog-query.service.ts getDimensionFeed) — a search
+   * term / zero-result term / filter_type / scan reason / auth method. One row
+   * per range+environment+dimension+value. USER-AGNOSTIC, admin-only. TTL: 90s
+   * (CACHE_TTL.posthogAnalytics). `dimension` is a FIXED allowlist value; the
+   * dynamic `value` is lowercased + trimmed so keys stay stable (still bound
+   * via a HogQL placeholder in the query itself). Redis is optional (RULE 1).
+   */
+  posthogDimensionFeed: (
+    dimension: string,
+    value: string,
+    range: string,
+    environment: string
+  ): string =>
+    `posthog:dimfeed:${dimension}:${value.toLowerCase().trim()}:${range}:${environment}`,
+  /**
    * Admin analytics distinct-persons drill-down behind Unique Visitors
    * (posthog-query.service.ts getDistinctPersons) for one range+environment.
    * USER-AGNOSTIC, admin-only. TTL: 90s. Redis optional (RULE 1).

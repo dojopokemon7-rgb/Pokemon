@@ -99,6 +99,58 @@ const EVENT_FILTER_SQL: Record<AnalyticsEventFilter, string> = {
   $exception: "event = '$exception'",
 } as const;
 
+// Per-feature DETAIL-ROW → feed drill-down. Clicking a label row in a
+// per-feature list (a search term, a filter_type, a scan reason, an auth
+// method) reveals the underlying events behind that row in the SAME activity
+// feed. `dimension` is a FIXED allowlist mapped to a CONSTANT HogQL predicate
+// fragment; the row's `value` is the ONLY dynamic part and is ALWAYS bound via
+// the `{value}` placeholder (query.values), NEVER interpolated (RULE 4). For
+// the categorical dimensions `value` is ALSO validated against a fixed enum
+// (double-guarded). This generalizes the count-card `event` drill-down above.
+export const ANALYTICS_DIMENSIONS = [
+  "search_term", // search_performed for that exact query
+  "zero_result_term", // search_performed + results_count=0 for that query
+  "filter_type", // filter_applied for that filter_type (enum)
+  "scan_reason", // scan_failed for that reason (enum)
+  "signup_method", // signup_completed for that method (enum)
+  "login_method", // login_completed for that method (enum)
+] as const;
+export type AnalyticsDimension = (typeof ANALYTICS_DIMENSIONS)[number];
+
+// dimension → constant HogQL predicate fragment. The dynamic part is ONLY the
+// `{value}` placeholder (supplied via query.values) — never concatenated text.
+const DIMENSION_PREDICATE_SQL: Record<AnalyticsDimension, string> = {
+  search_term: "event = 'search_performed' AND properties.query = {value}",
+  zero_result_term:
+    "event = 'search_performed' AND toFloat(properties.results_count) = 0 AND properties.query = {value}",
+  filter_type: "event = 'filter_applied' AND properties.filter_type = {value}",
+  scan_reason: "event = 'scan_failed' AND properties.reason = {value}",
+  signup_method: "event = 'signup_completed' AND properties.method = {value}",
+  login_method: "event = 'login_completed' AND properties.method = {value}",
+} as const;
+
+// Fixed value sets for the CATEGORICAL dimensions (docs/ANALYTICS_EVENTS.md).
+// An absent key = a free-text dimension (search_term / zero_result_term) whose
+// value is still placeholder-bound but not enum-restricted. Keeping these here
+// (not just at the Zod boundary) keeps the allowlist in ONE place.
+const DIMENSION_VALUE_ENUM: Partial<Record<AnalyticsDimension, readonly string[]>> = {
+  filter_type: ["set", "rarity", "graded", "minPrice", "maxPrice", "hasPrice", "language", "sort"],
+  scan_reason: ["not_recognized", "error"],
+  signup_method: ["email", "google"],
+  login_method: ["email", "google"],
+} as const;
+
+/**
+ * True when `value` is acceptable for `dimension`: free-text dimensions accept
+ * any non-empty value (still placeholder-bound), categorical dimensions accept
+ * ONLY a value in their fixed enum. The route rejects a false here with 400 so
+ * an off-list categorical value NEVER reaches PostHog (double-guard). Pure.
+ */
+export function isAllowedDimensionValue(dimension: AnalyticsDimension, value: string): boolean {
+  const enumValues = DIMENSION_VALUE_ENUM[dimension];
+  return enumValues ? enumValues.includes(value) : value.trim().length > 0;
+}
+
 // Row caps — bound the PostHog Query API cost and keep the page scannable.
 const FEED_LIMIT = 100;
 const LIST_LIMIT = 10;
@@ -257,6 +309,25 @@ export type FilteredFeedResult =
   | {
       status: "ok";
       filter: AnalyticsEventFilter;
+      range: AnalyticsRange;
+      environment: AnalyticsEnvironment;
+      rows: ActivityRow[];
+    }
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
+/**
+ * Per-feature DETAIL-ROW drill-down feed: the activity rows BEHIND one label
+ * row in a per-feature list (a search term, a filter_type, a scan reason, an
+ * auth method), re-queried scoped to that `dimension`+`value`. Same
+ * `ActivityRow[]` shape as the count-card feed, so the SAME mappers + client
+ * `ActivityTable` are reused. Card names are attached server-side in the route.
+ */
+export type DimensionFeedResult =
+  | {
+      status: "ok";
+      dimension: AnalyticsDimension;
+      value: string;
       range: AnalyticsRange;
       environment: AnalyticsEnvironment;
       rows: ActivityRow[];
@@ -483,6 +554,32 @@ export function buildFilteredFeedQuery(
     `properties.range, toFloat(properties.value_usd), toFloat(properties.value_inr), ` +
     `properties.environment ` +
     `FROM events ${w} AND ${EVENT_FILTER_SQL[filter]} ` +
+    `ORDER BY timestamp DESC LIMIT ${FEED_LIMIT}`
+  );
+}
+
+/**
+ * Per-feature DETAIL-ROW drill-down feed query: SAME column layout as
+ * buildFilteredFeedQuery (so the SAME mappers/UI apply) but scoped to one
+ * per-feature label row via a FIXED allowlist predicate
+ * (`DIMENSION_PREDICATE_SQL[dimension]`) whose only dynamic part is the
+ * `{value}` placeholder — the value is supplied via `query.values`, NEVER
+ * interpolated into the string (RULE 4). range/environment stay the fixed
+ * fragments. Capped at FEED_LIMIT rows.
+ */
+export function buildDimensionFeedQuery(
+  dimension: AnalyticsDimension,
+  range: AnalyticsRange,
+  env: AnalyticsEnvironment
+) {
+  const w = where(range, env);
+  return (
+    `SELECT timestamp, person.properties.email, event, ` +
+    `properties.card_id, properties.query, properties.results_count, ` +
+    `properties.filter_type, properties.method, properties.reason, ` +
+    `properties.range, toFloat(properties.value_usd), toFloat(properties.value_inr), ` +
+    `properties.environment ` +
+    `FROM events ${w} AND ${DIMENSION_PREDICATE_SQL[dimension]} ` +
     `ORDER BY timestamp DESC LIMIT ${FEED_LIMIT}`
   );
 }
@@ -1396,6 +1493,75 @@ export async function getDistinctPersons(
     return result;
   } catch (err) {
     console.error("[posthog-query] distinct persons failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+}
+
+// Cached dimension-feed payload is re-parsed on read (RULE 4).
+const DimensionFeedCacheSchema = z.object({
+  status: z.literal("ok"),
+  dimension: z.enum(ANALYTICS_DIMENSIONS),
+  value: z.string(),
+  range: z.enum(ANALYTICS_RANGES),
+  environment: z.enum(ANALYTICS_ENVIRONMENTS),
+  rows: z.array(FeedRowSchema),
+});
+
+/**
+ * Per-feature DETAIL-ROW drill-down feed: re-query the activity feed scoped to
+ * ONE per-feature label row (a search term / zero-result term / filter_type /
+ * scan reason / auth method). `dimension` is a FIXED allowlist value mapped to
+ * a constant HogQL predicate; `value` is the ONLY dynamic part and is bound via
+ * the `{value}` placeholder (never interpolated, RULE 4). Row-capped
+ * (FEED_LIMIT) + Redis-cached ~90s (optional, RULE 1). Card names are attached
+ * later in the route (same batch as the main feed). Honest states: unset key →
+ * not_configured; blank value → ok with no rows (no request); PostHog error →
+ * unavailable. Never throws. (Categorical-value allowlisting happens at the
+ * route boundary via isAllowedDimensionValue, so an off-list categorical value
+ * never reaches this function.)
+ */
+export async function getDimensionFeed(
+  dimension: AnalyticsDimension,
+  value: string,
+  range: AnalyticsRange,
+  environment: AnalyticsEnvironment
+): Promise<DimensionFeedResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+  const trimmed = value.trim();
+  if (!trimmed) return { status: "ok", dimension, value: trimmed, range, environment, rows: [] };
+
+  const cacheKey = RedisKeys.posthogDimensionFeed(dimension, trimmed, range, environment);
+  try {
+    const raw = await redis.get(cacheKey);
+    if (raw) {
+      const parsed = DimensionFeedCacheSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data as DimensionFeedResult;
+    }
+  } catch {
+    // Redis down / malformed → miss (RULE 1).
+  }
+
+  try {
+    const rows = mapRecentActivity(
+      await hogql(cfg, buildDimensionFeedQuery(dimension, range, environment), { value: trimmed })
+    );
+    const result: DimensionFeedResult = {
+      status: "ok",
+      dimension,
+      value: trimmed,
+      range,
+      environment,
+      rows,
+    };
+    try {
+      await redis.set(cacheKey, JSON.stringify(result), "EX", CACHE_TTL.posthogAnalytics);
+    } catch {
+      // cache-only (RULE 1)
+    }
+    return result;
+  } catch (err) {
+    console.error("[posthog-query] dimension feed failed:", err instanceof Error ? err.message : err);
     return { status: "unavailable" };
   }
 }

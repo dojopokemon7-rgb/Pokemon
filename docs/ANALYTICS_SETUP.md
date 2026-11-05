@@ -205,6 +205,22 @@ and cards behind it, without leaving the admin panel:
   anonymous count is the authoritative distinct-persons-with-no-email total, not
   a list-length guess, and NO identity is ever fabricated (`view=persons`,
   allowlist-safe, Redis-cached ~90s).
+- **Per-feature DETAIL label rows → the events behind them.** The SAME feed
+  reveal (ONE consistent label-row interaction) extends to the per-feature
+  lists: each row in Top search terms, Top zero-result searches, Filters
+  applied, Scanner failure reasons, and Signups/Logins by method is an
+  accessible drill button (hover/pointer/focus-ring, `aria-label`). Clicking one
+  re-loads the Recent-activity feed scoped to that row's events — who did it and
+  when — with the same chip + "Show all" + heading, and only ONE reveal is
+  active at a time. Safety: the `dimension` (`search_term`, `zero_result_term`,
+  `filter_type`, `scan_reason`, `signup_method`, `login_method`) is a FIXED
+  allowlist → a constant HogQL predicate; the row's `value` is the ONLY dynamic
+  part and is bound via a `{value}` placeholder (never interpolated); the
+  categorical dimensions (`filter_type`/`scan_reason`/`*_method`) ALSO allowlist
+  the value against their fixed enum (off-list → 400, PostHog never called —
+  double-guard). The card lists keep the card popover below, and pure
+  ratio/by-game/chart-range/funnel/daily rows stay static (no honest per-person
+  drill).
 - **Card NAMES everywhere a card id appears.** The feed Detail cell, the
   most-added / most-viewed / most-wishlisted lists, and the card popover header
   lead with the human-readable card name (catalog `externalId` → `Card.name`,
@@ -248,9 +264,10 @@ tool.
 ranked lists ≤10) batched into one round-trip per page load, and the whole result
 is Redis-cached ~90s (optional; a cache miss/outage just re-queries). This keeps
 a page load from hammering the PostHog query quota. The count-card drill-downs
-are lazy — the scoped feed (`event=…`, one capped query) and distinct-persons
-(`view=persons`, two capped queries) only fire when a count card is clicked, and
-each is Redis-cached ~90s under its own key.
+are lazy — the scoped feed (`event=…`, one capped query), distinct-persons
+(`view=persons`, two capped queries) and the per-feature row reveal
+(`dimension=…&value=…`, one capped query) only fire when a card/row is clicked,
+and each is Redis-cached ~90s under its own key.
 
 1. PostHog -> Settings -> Personal API keys -> create a key with the **Query read** scope.
 2. Set `POSTHOG_PERSONAL_API_KEY` (server secret, never `NEXT_PUBLIC_`), optional `POSTHOG_PROJECT_ID` (default 333915) and `POSTHOG_API_HOST` (default https://eu.posthog.com).

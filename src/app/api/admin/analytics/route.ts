@@ -14,7 +14,14 @@
  *    constant HogQL predicate — never free text, never interpolated.
  *  - `view=persons`: the DISTINCT persons behind Unique Visitors — identified
  *    by email (with a user link) + an honest anonymous remainder count.
- * Both reuse the same card-name + email→user-id server-side resolution as the
+ *  - `dimension=<allowlisted>&value=<row value>`: the events behind one
+ *    per-feature DETAIL ROW (search_term, zero_result_term, filter_type,
+ *    scan_reason, signup_method, login_method). `dimension` is a FIXED Zod
+ *    allowlist → constant HogQL predicate; `value` (1–100 chars) is bound via a
+ *    `{value}` placeholder in the service (never interpolated) and, for a
+ *    categorical dimension, must be in that dimension's fixed enum (off-list
+ *    value → 400). Missing value → 400.
+ * All reuse the same card-name + email→user-id server-side resolution as the
  * default view.
  *
  * The PostHog personal API key stays server-side. Unconfigured / PostHog
@@ -30,8 +37,11 @@ import {
   ANALYTICS_RANGES,
   ANALYTICS_ENVIRONMENTS,
   ANALYTICS_EVENT_FILTERS,
+  ANALYTICS_DIMENSIONS,
+  isAllowedDimensionValue,
   getPosthogAnalytics,
   getFilteredFeed,
+  getDimensionFeed,
   getDistinctPersons,
   resolveFeedUserIds,
   resolvePersonUserIds,
@@ -49,6 +59,13 @@ const QuerySchema = z.object({
   // out-of-allowlist value fails parse → 400. Absent → the full dashboard.
   event: z.enum(ANALYTICS_EVENT_FILTERS).optional(),
   view: z.literal("persons").optional(),
+  // Optional per-feature DETAIL-ROW drill-down. `dimension` is a FIXED
+  // allowlist (off-list → Zod 400); `value` is the dynamic row value, always
+  // bound via a HogQL `{value}` placeholder in the service (never
+  // interpolated). For categorical dimensions `value` is additionally
+  // allowlisted in the handler (double-guard).
+  dimension: z.enum(ANALYTICS_DIMENSIONS).optional(),
+  value: z.string().trim().min(1).max(100).optional(),
 });
 
 /**
@@ -111,11 +128,13 @@ export async function GET(request: Request): Promise<NextResponse> {
     environment: sp.get("environment") ?? undefined,
     event: sp.get("event") ?? undefined,
     view: sp.get("view") ?? undefined,
+    dimension: sp.get("dimension") ?? undefined,
+    value: sp.get("value") ?? undefined,
   });
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid query parameters" }, { status: 400 });
   }
-  const { range, environment, event, view } = parsed.data;
+  const { range, environment, event, view, dimension, value } = parsed.data;
 
   // ── DRILL-DOWN: distinct persons behind Unique Visitors ──────────────────
   if (view === "persons") {
@@ -123,6 +142,28 @@ export async function GET(request: Request): Promise<NextResponse> {
     if (result.status === "ok" && result.identified.length > 0) {
       const idByEmail = await emailToUserId(result.identified.map((p) => p.email));
       result.identified = resolvePersonUserIds(result.identified, idByEmail);
+    }
+    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+  }
+
+  // ── DRILL-DOWN: the events behind one per-feature DETAIL ROW ──────────────
+  // (a search term / zero-result term / filter_type / scan reason / auth
+  // method). `dimension` is Zod-allowlisted; `value` is required and, for a
+  // categorical dimension, must be in that dimension's fixed enum (off-list →
+  // 400, PostHog never called). The value is bound via a `{value}` placeholder
+  // in the service — never interpolated. Mutually exclusive with `event` by
+  // branch order.
+  if (dimension) {
+    if (!value || !isAllowedDimensionValue(dimension, value)) {
+      return NextResponse.json({ error: "Invalid drill-down value" }, { status: 400 });
+    }
+    const result = await getDimensionFeed(dimension, value, range, environment);
+    if (result.status === "ok" && result.rows.length > 0) {
+      const idByEmail = await emailToUserId(
+        result.rows.map((r) => r.email).filter((e): e is string => typeof e === "string")
+      );
+      const nameById = await externalIdToName(collectCardExternalIds([result.rows], []));
+      result.rows = attachFeedCardNames(resolveFeedUserIds(result.rows, idByEmail), nameById);
     }
     return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
   }

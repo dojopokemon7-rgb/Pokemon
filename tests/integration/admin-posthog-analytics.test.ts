@@ -18,8 +18,12 @@ import {
   buildUserActivityQuery,
   buildCardActivityQuery,
   buildFilteredFeedQuery,
+  buildDimensionFeedQuery,
   buildDistinctPersonsQuery,
   buildDistinctPersonsCountQuery,
+  isAllowedDimensionValue,
+  getDimensionFeed,
+  ANALYTICS_DIMENSIONS,
   mapTotals,
   mapTopEvents,
   mapDaily,
@@ -480,6 +484,114 @@ describe("count-card drill-down: event filter → constant HogQL fragment", () =
   });
 });
 
+describe("per-feature row drill-down: dimension → constant HogQL predicate", () => {
+  it("allowlist is the fixed set of per-feature dimensions (no free text)", () => {
+    expect([...ANALYTICS_DIMENSIONS].sort()).toEqual(
+      [
+        "filter_type",
+        "login_method",
+        "scan_reason",
+        "search_term",
+        "signup_method",
+        "zero_result_term",
+      ].sort()
+    );
+  });
+  it("every dimension yields a constant predicate + fixed range/env + {value} placeholder, never a literal", () => {
+    for (const dim of ANALYTICS_DIMENSIONS) {
+      const sql = buildDimensionFeedQuery(dim, "7d", "production");
+      expect(sql).toContain("INTERVAL 7 DAY");
+      expect(sql).toContain("properties.environment = 'production'");
+      expect(sql).toContain("LIMIT 100");
+      // Same person-join + column layout as the main feed (shared mapper).
+      expect(sql).toContain("person.properties.email");
+      // Dynamic value flows ONLY through the placeholder, never the SQL text.
+      expect(sql).toContain("{value}");
+    }
+    // Each dimension's predicate is its own fixed event + prop match.
+    expect(buildDimensionFeedQuery("search_term", "24h", "all")).toContain(
+      "event = 'search_performed' AND properties.query = {value}"
+    );
+    expect(buildDimensionFeedQuery("zero_result_term", "24h", "all")).toContain(
+      "event = 'search_performed' AND toFloat(properties.results_count) = 0 AND properties.query = {value}"
+    );
+    expect(buildDimensionFeedQuery("filter_type", "24h", "all")).toContain(
+      "event = 'filter_applied' AND properties.filter_type = {value}"
+    );
+    expect(buildDimensionFeedQuery("scan_reason", "24h", "all")).toContain(
+      "event = 'scan_failed' AND properties.reason = {value}"
+    );
+    expect(buildDimensionFeedQuery("signup_method", "24h", "all")).toContain(
+      "event = 'signup_completed' AND properties.method = {value}"
+    );
+    expect(buildDimensionFeedQuery("login_method", "24h", "all")).toContain(
+      "event = 'login_completed' AND properties.method = {value}"
+    );
+    // 'all' env drops the environment predicate.
+    expect(buildDimensionFeedQuery("search_term", "30d", "all")).not.toContain("properties.environment =");
+  });
+  it("isAllowedDimensionValue double-guards categorical values and passes free text", () => {
+    // Categorical: ONLY the fixed enum (the taxonomy in docs/ANALYTICS_EVENTS.md).
+    for (const v of ["set", "rarity", "graded", "minPrice", "maxPrice", "hasPrice", "language", "sort"]) {
+      expect(isAllowedDimensionValue("filter_type", v)).toBe(true);
+    }
+    expect(isAllowedDimensionValue("filter_type", "DROP TABLE")).toBe(false);
+    expect(isAllowedDimensionValue("scan_reason", "not_recognized")).toBe(true);
+    expect(isAllowedDimensionValue("scan_reason", "error")).toBe(true);
+    expect(isAllowedDimensionValue("scan_reason", "boom")).toBe(false);
+    expect(isAllowedDimensionValue("signup_method", "email")).toBe(true);
+    expect(isAllowedDimensionValue("signup_method", "github")).toBe(false);
+    expect(isAllowedDimensionValue("login_method", "google")).toBe(true);
+    // Free-text dimensions: any non-empty value is allowed (still placeholder-bound).
+    expect(isAllowedDimensionValue("search_term", "charizard' OR 1=1")).toBe(true);
+    expect(isAllowedDimensionValue("search_term", "  ")).toBe(false);
+    expect(isAllowedDimensionValue("zero_result_term", "some query")).toBe(true);
+  });
+});
+
+describe("getDimensionFeed service", () => {
+  it("not_configured without a key, no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getDimensionFeed("search_term", "charizard", "7d", "production")).toEqual({
+      status: "not_configured",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("blank value → ok with no rows and NO request", async () => {
+    const r = await getDimensionFeed("search_term", "   ", "7d", "production");
+    expect(r).toEqual({ status: "ok", dimension: "search_term", value: "", range: "7d", environment: "production", rows: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("binds value via query.values placeholder (never interpolated) and maps rows", async () => {
+    fetchMock.mockResolvedValue(
+      okJson([["2026-01-01T00:00:00Z", "a@b.com", "search_performed", null, "charizard", 3, null, null, null, null, null, null, "production"]])
+    );
+    const r = await getDimensionFeed("search_term", "charizard", "7d", "production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.dimension).toBe("search_term");
+      expect(r.value).toBe("charizard");
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]).toMatchObject({ email: "a@b.com", event: "search_performed", detail: '"charizard" · 3 results' });
+    }
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.query.values).toEqual({ value: "charizard" });
+    expect(body.query.query).toContain("{value}");
+    expect(body.query.query).not.toContain("charizard"); // never a literal
+  });
+  it("empty PostHog result → ok with no rows (never fabricated)", async () => {
+    fetchMock.mockResolvedValue(okJson([]));
+    const r = await getDimensionFeed("filter_type", "rarity", "30d", "all");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") expect(r.rows).toEqual([]);
+  });
+  it("unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getDimensionFeed("login_method", "google", "7d", "production")).status).toBe("unavailable");
+  });
+});
+
 describe("unique-visitors drill-down: distinct persons", () => {
   it("person queries use fixed range/env fragments and cap the list", () => {
     const q = buildDistinctPersonsQuery("24h", "staging");
@@ -639,6 +751,25 @@ describe("GET /api/admin/analytics", () => {
   it("200 not_configured for the persons drill-down when the key is unset", async () => {
     delete process.env.POSTHOG_PERSONAL_API_KEY;
     const res = await GET(req("?view=persons", cookie()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "not_configured" });
+  });
+  it("400 on an out-of-allowlist dimension (never interpolated)", async () => {
+    expect((await GET(req("?dimension=bogus&value=x", cookie()))).status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("400 on a dimension with no value", async () => {
+    expect((await GET(req("?dimension=search_term", cookie()))).status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("400 on an off-list categorical value (PostHog never called, double-guard)", async () => {
+    const res = await GET(req("?dimension=filter_type&value=DROP%20TABLE", cookie()));
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("200 not_configured for the dimension drill-down when the key is unset", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    const res = await GET(req("?dimension=search_term&value=charizard", cookie()));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "not_configured" });
   });
