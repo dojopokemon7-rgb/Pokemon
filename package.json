@@ -13,6 +13,7 @@
     "seed": "tsx prisma/seed-test.ts",
     "test:unit": "vitest run tests/unit src",
     "test:integration": "vitest run tests/integration",
+    "test:concurrency": "node scripts/concurrency-test.mjs",
     "test:coverage": "vitest run tests/unit tests/integration src --coverage",
     "test:e2e": "playwright test",
     "test:chart-accuracy": "tsx scripts/compare-chart-accuracy.ts",
