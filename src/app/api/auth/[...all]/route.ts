@@ -100,7 +100,20 @@ export async function POST(request: Request): Promise<Response> {
     // also registers its own 3/60s per-path cap, but that is in-memory /
     // per-instance; this shared Redis authTier IP cap is the cross-instance net
     // and also covers dev (where the plugin cap is off). See design.md §5.
-    pathname.startsWith("/api/auth/email-otp")
+    pathname.startsWith("/api/auth/email-otp") ||
+    // C-3 — password-reset REQUEST path (triggers the reset email). The
+    // forgot-password page calls authClient.requestPasswordReset(), which Better
+    // Auth routes to POST /api/auth/request-password-reset (core password route,
+    // node_modules/better-auth/dist/api/routes/password.mjs:20); /forget-password
+    // is its legacy alias (better-auth's own rate-limiter groups both as the
+    // reset family, api/rate-limiter/index.mjs:379). Capping these per IP stops
+    // reset-email mail-bombing + timing-based account probing. We do NOT match
+    // the token-SUBMISSION step `/reset-password` (that doesn't send email and
+    // the token is already a secret), nor sign-out / get-session / callbacks.
+    // The 429 is uniform regardless of whether the email exists (the limiter
+    // fires before the handler), so it adds no account-enumeration oracle.
+    pathname.startsWith("/api/auth/request-password-reset") ||
+    pathname.startsWith("/api/auth/forget-password")
   ) {
     const limited = await enforceRateLimit(request, authTier(), {
       kind: "ip",
