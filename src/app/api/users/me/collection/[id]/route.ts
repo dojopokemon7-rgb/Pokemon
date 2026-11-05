@@ -50,10 +50,13 @@ const UpdateCollectionItemSchema = z.object({
   purchasePrice: z.number().finite().nonnegative().nullable().optional(),
   condition: z.string().trim().nullable().optional(),
   collectionId: z.string().trim().nullable().optional(),
-  // Collectr Mark as Sold feature
+  // isSold=false is the REVERT-to-active control (still live). The isSold=true
+  // "Mark as Sold" sale path was removed — the canonical sale route is
+  // POST .../[id]/sell (guarded atomic decrement, provenance, gross-per-copy).
   isSold: z.boolean().optional(),
+  // soldPrice/soldAt remain for the general-update path (editing a sold row's
+  // recorded price/date) and are cleared by the revert branch.
   soldPrice: z.number().finite().nonnegative().nullable().optional(),
-  soldQuantity: z.number().int().min(1).optional(),
   // Coerce to a Date and reject a malformed string (z.coerce.date rejects an
   // unparseable value). Yields a Date, so downstream uses it directly.
   soldAt: z.coerce.date().optional(),
@@ -86,74 +89,21 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     const existing = await prisma.userCollection.findFirst({
       where: { id, userId },
-      include: { card: true },
     });
 
     if (!existing) {
       return NextResponse.json({ error: "Not Found", message: "Item not found" }, { status: 404 });
     }
 
-    const { isSold, soldPrice, soldQuantity, soldAt, purchasePrice, condition, collectionId, quantity } = parsed.data;
+    const { isSold, soldPrice, soldAt, purchasePrice, condition, collectionId, quantity } = parsed.data;
 
-    // Handle Mark as Sold.
-    // NOTE: the primary sale path is POST .../[id]/sell (gross-per-copy, partial
-    // splits, provenance). This PATCH branch is kept for the legacy UI control
-    // but must NOT fabricate a sale price: if no soldPrice is given and there is
-    // no market value to fall back to, we refuse rather than record a $0 sale.
-    if (isSold === true) {
-      const price = soldPrice ?? existing.card.marketPrice ?? null;
-      if (price == null) {
-        return NextResponse.json(
-          { error: "Bad Request", message: "A sale price is required (no market value to default to)." },
-          { status: 400 }
-        );
-      }
-      const saleDate = soldAt ?? new Date(); // soldAt is already a coerced Date
-      const qtyToSell = soldQuantity ?? existing.quantity;
-
-      if (qtyToSell < existing.quantity) {
-        // Partial sale: decrement existing active item
-        await prisma.userCollection.update({
-          where: { id: existing.id },
-          data: { quantity: existing.quantity - qtyToSell },
-        });
-
-        // Create new sold record
-        const soldItem = await prisma.userCollection.create({
-          data: {
-            userId,
-            cardId: existing.cardId,
-            quantity: qtyToSell,
-            isFoil: existing.isFoil,
-            condition: existing.condition,
-            notes: existing.notes,
-            purchasePrice: existing.purchasePrice,
-            collectionId: existing.collectionId,
-            isSold: true,
-            soldPrice: price,
-            soldAt: saleDate,
-          },
-        });
-
-        // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
-        await invalidateUserCaches(userId, ["collection", "dashboard"]);
-        return NextResponse.json({ ok: true, item: soldItem }, { status: 200 });
-      } else {
-        // Complete sale of this entry
-        const updated = await prisma.userCollection.update({
-          where: { id: existing.id },
-          data: {
-            isSold: true,
-            soldPrice: price,
-            soldAt: saleDate,
-          },
-        });
-
-        // Invalidate collection:{userId} + dashboard:{userId}. Best-effort.
-        await invalidateUserCaches(userId, ["collection", "dashboard"]);
-        return NextResponse.json({ ok: true, item: updated }, { status: 200 });
-      }
-    }
+    // Mark as Sold is handled ONLY by the canonical POST .../[id]/sell route
+    // (guarded atomic decrement, single $transaction, gross-per-copy proceeds,
+    // full cost-basis provenance). The former PATCH isSold=true branch was a
+    // dead second sale path with weaker guarantees (no tx, dropped provenance +
+    // soldCurrency, same oversell race) and has been removed. A stray
+    // isSold=true that isn't the revert below falls through to the general
+    // update, which never flips isSold → no sale is recorded here.
 
     // Handle Unsold / Revert to active.
     //
