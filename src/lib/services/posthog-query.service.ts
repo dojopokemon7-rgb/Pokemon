@@ -171,6 +171,15 @@ export type AnalyticsMetrics = {
   scansStarted: number | null;
   scansSucceeded: number | null;
   errors: number | null;
+  // Distinct PERSONS (uniq(person_id), de-duped across sessions — NOT
+  // uniq(distinct_id)). `distinctUsers` is the window-wide distinct person
+  // count; dau/wau are fixed 24h/7d rolling windows regardless of `range`;
+  // weeklyActiveCollectors = distinct persons with a card_added/card_removed
+  // in the last 7 days. See audit items 1-2.
+  distinctUsers: number | null;
+  dau: number | null;
+  wau: number | null;
+  weeklyActiveCollectors: number | null;
 };
 export type AnalyticsDailyPoint = {
   date: string;
@@ -262,8 +271,59 @@ export type AnalyticsData = {
   daily: AnalyticsDailyPoint[];
   funnel: AnalyticsFunnelStep[];
   detail: AnalyticsDetailData;
+  // Audit items 3-5 (honest states folded into the ok payload).
+  retention: RetentionResult;
+  signupCohorts: SignupCohortsResult;
+  signupAttribution: SignupAttributionResult;
   fetchedAt: string;
 };
+// ── Retention / cohort / attribution shapes (audit items 3-5) ──────────────
+/**
+ * First-seen retention over the whole window: of the cohort of persons whose
+ * FIRST business event was long enough ago to be observable at each bucket,
+ * the % who returned (any business event) exactly D1 / D7 / D30 later. A null
+ * (not a fabricated 0%) when the cohort is empty. `cohortSize` is the count of
+ * anchored persons.
+ */
+export type RetentionData = {
+  cohortSize: number | null;
+  d1: number | null;
+  d7: number | null;
+  d30: number | null;
+};
+export type RetentionResult =
+  | ({ status: "ok" } & RetentionData)
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
+/**
+ * Weekly signup-cohort retention: each row is a signup week (persons whose
+ * signup_completed landed that week), the cohort `size`, and the % of them who
+ * returned (any business event) in each following week. A zero-size week or a
+ * not-yet-observable following week → null cell (UI "—"), never a fabricated 0.
+ */
+export type SignupCohortRow = {
+  week: string; // ISO date of the week start (toStartOfWeek)
+  size: number;
+  returns: (number | null)[]; // following-week return %
+};
+export type SignupCohortsResult =
+  | { status: "ok"; cohorts: SignupCohortRow[] }
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
+/**
+ * Signup conversion by initial-touch UTM (person props $initial_utm_source /
+ * _medium / _campaign). Each list counts DISTINCT persons who completed signup,
+ * bucketed by the attribution label; missing/blank UTM → "direct / none"
+ * (never a blank or fabricated label). Supports Instagram, Comic Con QR,
+ * direct and campaign attribution via whatever the initial-touch props carry.
+ */
+export type SignupAttributionResult =
+  | { status: "ok"; bySource: LabelCount[]; byMedium: LabelCount[]; byCampaign: LabelCount[] }
+  | { status: "not_configured" }
+  | { status: "unavailable" };
+
 export type AnalyticsResult =
   | ({ status: "ok" } & AnalyticsData)
   | { status: "not_configured" }
@@ -369,7 +429,16 @@ export function buildQueries(range: AnalyticsRange, env: AnalyticsEnvironment) {
       `countIf(event = 'search_performed'), ` +
       `countIf(event = 'search_performed' AND toFloat(properties.results_count) = 0), ` +
       `countIf(event = 'wishlist_added'), countIf(event = 'scan_started'), ` +
-      `countIf(event = 'scan_succeeded'), countIf(event = '$exception') ` +
+      `countIf(event = 'scan_succeeded'), countIf(event = '$exception'), ` +
+      // Distinct PERSONS (de-duped across sessions): overall (window), DAU
+      // (24h), WAU (7d), weekly active collectors (card_added/card_removed, 7d).
+      // These use uniq(person_id), NOT uniq(distinct_id). The DAU/WAU/collector
+      // windows are fixed rolling intervals (constant fragments), independent of
+      // the selected range. Columns 12-15 (appended AFTER the existing 12).
+      `uniq(person_id), ` +
+      `uniqIf(person_id, timestamp >= now() - INTERVAL 24 HOUR), ` +
+      `uniqIf(person_id, timestamp >= now() - INTERVAL 7 DAY), ` +
+      `uniqIf(person_id, event IN ('card_added', 'card_removed') AND timestamp >= now() - INTERVAL 7 DAY) ` +
       `FROM events ${w}`,
     topEvents:
       `SELECT event, count() AS c FROM events ${w} ` +
@@ -382,6 +451,106 @@ export function buildQueries(range: AnalyticsRange, env: AnalyticsEnvironment) {
       `SELECT uniq(distinct_id), uniqIf(distinct_id, event = 'signup_started'), ` +
       `uniqIf(distinct_id, event = 'signup_completed'), ` +
       `uniqIf(distinct_id, event = 'card_added') FROM events ${w}`,
+  };
+}
+
+// Business events EXCEPT '$exception' — the activity set that counts as
+// "returned" for retention. An error is noise, not an intentional return, so it
+// is excluded. CONSTANT SQL list literal; no user input ever reaches it.
+const RETURN_EVENTS = BUSINESS_EVENTS.filter((e) => e !== "$exception");
+const RETURN_EVENTS_SQL = `(${RETURN_EVENTS.map((e) => `'${e}'`).join(", ")})`;
+
+/**
+ * First-seen retention query (audit item 3). Anchors each person on their
+ * first-EVER business-event day (min(toDate(timestamp)) over the return-event
+ * set, GROUP BY person_id — NOT windowed, so the anchor is the true first
+ * touch) and, in a subsequent self-join on the same person's return-event days,
+ * counts how many returned EXACTLY 1 / 7 / 30 days later via
+ * dateDiff('day', first_seen_day, activity_day). Only persons whose anchor is
+ * old enough to be observable at a bucket are eligible for that bucket (the
+ * cohortIf/returnIf pairs). ONE aggregate row:
+ *   [cohortSize, d1cohort, d1ret, d7cohort, d7ret, d30cohort, d30ret]
+ * Environment is the only variable part and is a CONSTANT allowlist fragment;
+ * no user input is interpolated. Retention is a whole-population metric (the
+ * range selector does not scope the anchor — that would truncate cohorts), so
+ * no RANGE_SQL here by design.
+ */
+export function buildRetentionQuery(env: AnalyticsEnvironment) {
+  const envFrag = ENV_SQL[env];
+  // Per-person first-seen day + their set of return-event days.
+  const firstSeen =
+    `SELECT person_id, min(toDate(timestamp)) AS first_day ` +
+    `FROM events WHERE event IN ${RETURN_EVENTS_SQL} ${envFrag} ` +
+    `GROUP BY person_id`;
+  const activity =
+    `SELECT DISTINCT person_id, toDate(timestamp) AS act_day ` +
+    `FROM events WHERE event IN ${RETURN_EVENTS_SQL} ${envFrag}`;
+  // Join each person's first day to each of their later activity days. The
+  // cohort for bucket N = persons whose first_day is >= N days before today
+  // (so a return at N could have been observed); returned = any activity day
+  // exactly N days after the first day.
+  return (
+    `SELECT ` +
+    `uniq(f.person_id), ` +
+    `uniqIf(f.person_id, f.first_day <= today() - 1), ` +
+    `uniqIf(f.person_id, dateDiff('day', f.first_day, a.act_day) = 1), ` +
+    `uniqIf(f.person_id, f.first_day <= today() - 7), ` +
+    `uniqIf(f.person_id, dateDiff('day', f.first_day, a.act_day) = 7), ` +
+    `uniqIf(f.person_id, f.first_day <= today() - 30), ` +
+    `uniqIf(f.person_id, dateDiff('day', f.first_day, a.act_day) = 30) ` +
+    `FROM (${firstSeen}) AS f LEFT JOIN (${activity}) AS a ON f.person_id = a.person_id`
+  );
+}
+
+/**
+ * Weekly signup-cohort retention query (audit item 4). Groups signup_completed
+ * persons by their signup week (toStartOfWeek) and, per following-week offset
+ * 1..4, counts DISTINCT persons from that cohort who had ANY return event in
+ * that later week. ONE row per cohort week:
+ *   [week, size, w1, w2, w3, w4]
+ * Environment is the only variable part (CONSTANT allowlist fragment). Whole
+ * population (no range scoping — a cohort table spans history by design).
+ */
+export function buildSignupCohortQuery(env: AnalyticsEnvironment) {
+  const envFrag = ENV_SQL[env];
+  const signups =
+    `SELECT person_id, toStartOfWeek(min(timestamp)) AS cohort_week ` +
+    `FROM events WHERE event = 'signup_completed' ${envFrag} ` +
+    `GROUP BY person_id`;
+  const activity =
+    `SELECT DISTINCT person_id, toStartOfWeek(timestamp) AS act_week ` +
+    `FROM events WHERE event IN ${RETURN_EVENTS_SQL} ${envFrag}`;
+  // For each later-week offset, count persons whose activity week is exactly
+  // N weeks after their cohort week (dateDiff in weeks).
+  return (
+    `SELECT toString(s.cohort_week), uniq(s.person_id), ` +
+    `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 1), ` +
+    `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 2), ` +
+    `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 3), ` +
+    `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 4) ` +
+    `FROM (${signups}) AS s LEFT JOIN (${activity}) AS a ON s.person_id = a.person_id ` +
+    `GROUP BY s.cohort_week ORDER BY s.cohort_week DESC LIMIT ${LIST_LIMIT}`
+  );
+}
+
+/**
+ * Signup conversion by initial-touch UTM (audit item 5). Three grouped queries
+ * over person.properties.$initial_utm_source / _medium / _campaign counting
+ * DISTINCT signup_completed persons per label — the SAME person-join mechanism
+ * used to read email (never event props). range/env are CONSTANT allowlist
+ * fragments. Blank/absent labels are kept (NOT filtered in SQL) so the mapper
+ * can bucket them honestly as "direct / none" rather than silently dropping a
+ * real signup.
+ */
+export function buildSignupAttributionQueries(range: AnalyticsRange, env: AnalyticsEnvironment) {
+  const w = where(range, env);
+  const grouped = (prop: string) =>
+    `SELECT person.properties.${prop}, uniq(person_id) AS c FROM events ${w} ` +
+    `AND event = 'signup_completed' GROUP BY person.properties.${prop} ORDER BY c DESC LIMIT ${LIST_LIMIT}`;
+  return {
+    bySource: grouped("$initial_utm_source"),
+    byMedium: grouped("$initial_utm_medium"),
+    byCampaign: grouped("$initial_utm_campaign"),
   };
 }
 
@@ -644,6 +813,10 @@ export function mapTotals(rows: unknown[][]): AnalyticsMetrics {
     scansStarted: num(r[9]),
     scansSucceeded: num(r[10]),
     errors: num(r[11]),
+    distinctUsers: num(r[12]),
+    dau: num(r[13]),
+    wau: num(r[14]),
+    weeklyActiveCollectors: num(r[15]),
   };
 }
 
@@ -673,6 +846,76 @@ export function mapFunnel(rows: unknown[][]): AnalyticsFunnelStep[] {
     { label: "Signup completed", users: num(r[2]) },
     { label: "Card added", users: num(r[3]) },
   ];
+}
+
+/** One retention bucket as a % of the cohort, rounded to 0.1. */
+function pct(returned: number | null, cohort: number | null): number | null {
+  if (cohort === null || cohort === 0 || returned === null) return null;
+  return Math.round((returned / cohort) * 1000) / 10;
+}
+
+/**
+ * Retention percentages from the buildRetentionQuery row. A zero/null cohort
+ * for a bucket → null (UI "—"), never a fabricated 0% or 100%. Each bucket uses
+ * its OWN observable cohort (people old enough to have reached that bucket).
+ * `cohortSize` is the overall anchored-person count. Pure.
+ */
+export function retentionPercents(rows: unknown[][]): RetentionData {
+  const r = rows[0] ?? [];
+  // [cohortSize, d1cohort, d1ret, d7cohort, d7ret, d30cohort, d30ret]
+  return {
+    cohortSize: num(r[0]),
+    d1: pct(num(r[2]), num(r[1])),
+    d7: pct(num(r[4]), num(r[3])),
+    d30: pct(num(r[6]), num(r[5])),
+  };
+}
+
+/**
+ * Shape the weekly signup-cohort rows. Each row:
+ *   [week, size, w1, w2, w3, w4]
+ * A zero-size week yields all-null return cells (never 0%/100%); otherwise each
+ * following-week count becomes a % of the cohort size (null when PostHog gave
+ * no value). Rows with no parseable week are dropped. Pure.
+ */
+export function shapeSignupCohorts(rows: unknown[][]): SignupCohortRow[] {
+  const out: SignupCohortRow[] = [];
+  for (const r of rows) {
+    const week = str(r[0]);
+    const size = num(r[1]);
+    if (week === null) continue;
+    const s = size ?? 0;
+    const returns = [2, 3, 4, 5].map((i) => (s === 0 ? null : pct(num(r[i]), s)));
+    out.push({ week, size: s, returns });
+  }
+  return out;
+}
+
+/**
+ * Bucket grouped UTM rows into LabelCount[]. A blank/null label (no
+ * initial-touch UTM) collapses into a single "direct / none" bucket — never a
+ * blank label and never a fabricated source. Multiple blank variants (null, "",
+ * whitespace) merge into the one direct bucket. Pure.
+ */
+export function bucketUtm(rows: unknown[][]): LabelCount[] {
+  const DIRECT = "direct / none";
+  let direct = 0;
+  const byLabel = new Map<string, number>();
+  for (const r of rows) {
+    const label = str(r[0]);
+    const count = num(r[1]);
+    if (count === null) continue;
+    if (label === null) {
+      direct += count;
+    } else {
+      byLabel.set(label, (byLabel.get(label) ?? 0) + count);
+    }
+  }
+  const out: LabelCount[] = Array.from(byLabel, ([label, count]) => ({ label, count }));
+  if (direct > 0) out.push({ label: DIRECT, count: direct });
+  // Keep the service's "highest first" convention.
+  out.sort((a, b) => b.count - a.count);
+  return out;
 }
 
 // ── Detail mappers (pure) ────────────────────────────────────────────────
@@ -1088,6 +1331,45 @@ const CardAggSchema = z.object({
   count: z.number(),
   valueUsd: z.number().nullable(),
 });
+// Audit items 3-5 cached sub-payloads — re-parsed on read (RULE 4). Each keeps
+// its honest-state union (not_configured/unavailable fold in with their own
+// shape so a cached "unavailable" survives a round-trip unchanged).
+const RetentionCacheSchema = z.union([
+  z.object({
+    status: z.literal("ok"),
+    cohortSize: z.number().nullable(),
+    d1: z.number().nullable(),
+    d7: z.number().nullable(),
+    d30: z.number().nullable(),
+  }),
+  z.object({ status: z.literal("not_configured") }),
+  z.object({ status: z.literal("unavailable") }),
+]);
+const SignupCohortsCacheSchema = z.union([
+  z.object({
+    status: z.literal("ok"),
+    cohorts: z.array(
+      z.object({
+        week: z.string(),
+        size: z.number(),
+        returns: z.array(z.number().nullable()),
+      })
+    ),
+  }),
+  z.object({ status: z.literal("not_configured") }),
+  z.object({ status: z.literal("unavailable") }),
+]);
+const SignupAttributionCacheSchema = z.union([
+  z.object({
+    status: z.literal("ok"),
+    bySource: z.array(LabelCountSchema),
+    byMedium: z.array(LabelCountSchema),
+    byCampaign: z.array(LabelCountSchema),
+  }),
+  z.object({ status: z.literal("not_configured") }),
+  z.object({ status: z.literal("unavailable") }),
+]);
+
 const CachedSchema = z.object({
   status: z.literal("ok"),
   range: z.enum(ANALYTICS_RANGES),
@@ -1157,6 +1439,9 @@ const CachedSchema = z.object({
       ),
     }),
   }),
+  retention: RetentionCacheSchema,
+  signupCohorts: SignupCohortsCacheSchema,
+  signupAttribution: SignupAttributionCacheSchema,
   fetchedAt: z.string(),
 });
 
@@ -1233,6 +1518,14 @@ export async function getPosthogAnalytics(
       hogql(cfg, dq.activation),
       hogql(cfg, dq.recentErrors),
     ]);
+    // Audit items 3-5 in the SAME batch (each a standalone honest-state
+    // service so a single-block PostHog hiccup degrades that block to
+    // `unavailable` without failing the whole dashboard).
+    const [retention, signupCohorts, signupAttribution] = await Promise.all([
+      getRetention(environment),
+      getSignupCohorts(environment),
+      getSignupAttribution(range, environment),
+    ]);
     const metrics = mapTotals(totals);
     const result: AnalyticsResult = {
       status: "ok",
@@ -1265,6 +1558,9 @@ export async function getPosthogAnalytics(
         activation,
         recentErrors,
       }),
+      retention,
+      signupCohorts,
+      signupAttribution,
       fetchedAt: new Date().toISOString(),
     };
     try {
@@ -1277,6 +1573,75 @@ export async function getPosthogAnalytics(
     // Log status/shape only — the message never contains the key.
     console.error("[posthog-query] failed:", err instanceof Error ? err.message : err);
     return { status: "unavailable", message: "PostHog unavailable" };
+  }
+}
+
+/**
+ * First-seen retention (D1/D7/D30) — audit item 3. Standalone honest-state
+ * wrapper around buildRetentionQuery + retentionPercents. Not cached on its
+ * own (it is folded into getPosthogAnalytics' ~90s cache). unset key →
+ * not_configured (no request); PostHog error → unavailable; empty cohort →
+ * null percentages. Never throws.
+ */
+export async function getRetention(environment: AnalyticsEnvironment): Promise<RetentionResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+  try {
+    const rows = await hogql(cfg, buildRetentionQuery(environment));
+    const d = retentionPercents(rows);
+    return { status: "ok", ...d };
+  } catch (err) {
+    console.error("[posthog-query] retention failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+}
+
+/**
+ * Weekly signup-cohort retention — audit item 4. Honest-state wrapper around
+ * buildSignupCohortQuery + shapeSignupCohorts. Honest states as elsewhere; a
+ * fully-empty result → ok with no cohort rows. Never throws.
+ */
+export async function getSignupCohorts(
+  environment: AnalyticsEnvironment
+): Promise<SignupCohortsResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+  try {
+    const rows = await hogql(cfg, buildSignupCohortQuery(environment));
+    return { status: "ok", cohorts: shapeSignupCohorts(rows) };
+  } catch (err) {
+    console.error("[posthog-query] signup cohorts failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
+  }
+}
+
+/**
+ * Signup conversion by initial-touch UTM (source/medium/campaign) — audit item
+ * 5. Three grouped person-prop queries → bucketUtm (missing → "direct / none").
+ * Honest states as elsewhere. Never throws.
+ */
+export async function getSignupAttribution(
+  range: AnalyticsRange,
+  environment: AnalyticsEnvironment
+): Promise<SignupAttributionResult> {
+  const cfg = config();
+  if (!cfg) return { status: "not_configured" };
+  try {
+    const q = buildSignupAttributionQueries(range, environment);
+    const [bySource, byMedium, byCampaign] = await Promise.all([
+      hogql(cfg, q.bySource),
+      hogql(cfg, q.byMedium),
+      hogql(cfg, q.byCampaign),
+    ]);
+    return {
+      status: "ok",
+      bySource: bucketUtm(bySource),
+      byMedium: bucketUtm(byMedium),
+      byCampaign: bucketUtm(byCampaign),
+    };
+  } catch (err) {
+    console.error("[posthog-query] signup attribution failed:", err instanceof Error ? err.message : err);
+    return { status: "unavailable" };
   }
 }
 

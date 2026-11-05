@@ -21,6 +21,15 @@ import {
   buildDimensionFeedQuery,
   buildDistinctPersonsQuery,
   buildDistinctPersonsCountQuery,
+  buildRetentionQuery,
+  buildSignupCohortQuery,
+  buildSignupAttributionQueries,
+  retentionPercents,
+  shapeSignupCohorts,
+  bucketUtm,
+  getRetention,
+  getSignupCohorts,
+  getSignupAttribution,
   isAllowedDimensionValue,
   getDimensionFeed,
   ANALYTICS_DIMENSIONS,
@@ -85,15 +94,206 @@ describe("HogQL builders", () => {
     expect(buildQueries("30d", "all").totals).not.toContain("properties.environment");
     expect(buildQueries("7d", "production").daily).toContain("INTERVAL 7 DAY");
   });
+  it("totals adds distinct-PERSON metrics on uniq(person_id), never distinct_id", () => {
+    const q = buildQueries("7d", "production").totals;
+    // DAU/WAU/collectors are distinct PERSONS (de-duped across sessions).
+    expect(q).toContain("uniq(person_id)");
+    expect(q).toContain("uniqIf(person_id, timestamp >= now() - INTERVAL 24 HOUR)"); // DAU
+    expect(q).toContain("uniqIf(person_id, timestamp >= now() - INTERVAL 7 DAY)"); // WAU
+    expect(q).toContain(
+      "uniqIf(person_id, event IN ('card_added', 'card_removed') AND timestamp >= now() - INTERVAL 7 DAY)"
+    ); // weekly active collectors
+    // The window-wide Unique Visitors metric is unchanged (distinct_id).
+    expect(q).toContain("uniq(distinct_id)");
+  });
+});
+
+describe("retention / cohort / attribution HogQL builders (audit items 3-5)", () => {
+  it("buildRetentionQuery anchors on first_seen, uses person_id + dateDiff buckets, env is a constant fragment", () => {
+    const q = buildRetentionQuery("production");
+    expect(q).toContain("min(toDate(timestamp))"); // first-seen anchor
+    expect(q).toContain("GROUP BY person_id");
+    expect(q).toContain("dateDiff('day', f.first_day, a.act_day) = 1");
+    expect(q).toContain("dateDiff('day', f.first_day, a.act_day) = 7");
+    expect(q).toContain("dateDiff('day', f.first_day, a.act_day) = 30");
+    // "returned" = any business event EXCEPT $exception.
+    expect(q).toContain("event IN ('signup_started'");
+    expect(q).not.toContain("'$exception'");
+    // Env is a constant allowlist fragment; 'all' drops it.
+    expect(q).toContain("properties.environment = 'production'");
+    expect(buildRetentionQuery("all")).not.toContain("properties.environment =");
+  });
+  it("buildSignupCohortQuery groups by signup week + counts following-week returners", () => {
+    const q = buildSignupCohortQuery("staging");
+    expect(q).toContain("toStartOfWeek(min(timestamp))");
+    expect(q).toContain("event = 'signup_completed'");
+    expect(q).toContain("dateDiff('week', s.cohort_week, a.act_week) = 1");
+    expect(q).toContain("dateDiff('week', s.cohort_week, a.act_week) = 4");
+    expect(q).toContain("properties.environment = 'staging'");
+    expect(q).toContain("LIMIT 10");
+    expect(buildSignupCohortQuery("all")).not.toContain("properties.environment =");
+  });
+  it("buildSignupAttributionQueries read initial-touch person props, count distinct persons, no interpolation", () => {
+    const q = buildSignupAttributionQueries("30d", "production");
+    expect(q.bySource).toContain("person.properties.$initial_utm_source");
+    expect(q.byMedium).toContain("person.properties.$initial_utm_medium");
+    expect(q.byCampaign).toContain("person.properties.$initial_utm_campaign");
+    for (const sql of Object.values(q)) {
+      expect(sql).toContain("uniq(person_id)"); // distinct persons, not events
+      expect(sql).toContain("event = 'signup_completed'");
+      expect(sql).toContain("INTERVAL 30 DAY");
+      expect(sql).toContain("properties.environment = 'production'");
+    }
+    for (const sql of Object.values(buildSignupAttributionQueries("7d", "all"))) {
+      expect(sql).not.toContain("properties.environment =");
+    }
+  });
+});
+
+describe("retention / cohort / attribution mappers (pure)", () => {
+  it("retentionPercents: % per bucket, zero/null cohort → null (never 0% / 100%)", () => {
+    // [cohortSize, d1cohort, d1ret, d7cohort, d7ret, d30cohort, d30ret]
+    const r = retentionPercents([[100, 100, 40, 80, 20, 50, 5]]);
+    expect(r.cohortSize).toBe(100);
+    expect(r.d1).toBe(40); // 40/100
+    expect(r.d7).toBe(25); // 20/80
+    expect(r.d30).toBe(10); // 5/50
+    // Zero/empty cohort for a bucket → null, never a fabricated number.
+    const z = retentionPercents([[0, 0, 0, 0, 0, 0, 0]]);
+    expect(z.d1).toBeNull();
+    expect(z.d7).toBeNull();
+    expect(z.d30).toBeNull();
+    const empty = retentionPercents([]);
+    expect(empty.cohortSize).toBeNull();
+    expect(empty.d1).toBeNull();
+  });
+  it("shapeSignupCohorts: % of cohort, empty week dropped, zero-size cell → null", () => {
+    const rows: unknown[][] = [
+      ["2026-01-05", 10, 5, 2, 1, 0],
+      [null, 4, 1, 1, 1, 1], // no week → dropped
+      ["2026-01-12", 0, 0, 0, 0, 0], // zero cohort → all null cells
+    ];
+    const out = shapeSignupCohorts(rows);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ week: "2026-01-05", size: 10 });
+    expect(out[0].returns).toEqual([50, 20, 10, 0]); // % of 10
+    expect(out[1]).toMatchObject({ week: "2026-01-12", size: 0 });
+    expect(out[1].returns).toEqual([null, null, null, null]);
+    expect(shapeSignupCohorts([])).toEqual([]);
+  });
+  it("bucketUtm: present label kept, missing/blank → 'direct / none' (never blank/fabricated)", () => {
+    const out = bucketUtm([
+      ["instagram", 12],
+      ["comic_con_qr", 7],
+      [null, 5], // no initial-touch UTM
+      ["", 3], // blank → merges into direct
+    ]);
+    // Sorted highest-first; the two blank variants merge into one direct row.
+    expect(out).toEqual([
+      { label: "instagram", count: 12 },
+      { label: "direct / none", count: 8 },
+      { label: "comic_con_qr", count: 7 },
+    ]);
+    // Null count rows dropped; no fabricated zero.
+    expect(bucketUtm([["x", null]])).toEqual([]);
+    expect(bucketUtm([])).toEqual([]);
+  });
+});
+
+describe("getRetention / getSignupCohorts / getSignupAttribution services", () => {
+  it("getRetention: not_configured without a key, no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getRetention("production")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("getRetention: maps the aggregate row to D1/D7/D30 percentages", async () => {
+    fetchMock.mockResolvedValue(okJson([[100, 100, 40, 80, 20, 50, 5]]));
+    const r = await getRetention("production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.cohortSize).toBe(100);
+      expect(r.d1).toBe(40);
+      expect(r.d7).toBe(25);
+      expect(r.d30).toBe(10);
+    }
+  });
+  it("getRetention: empty result → ok with null percentages (never fabricated)", async () => {
+    fetchMock.mockResolvedValue(okJson([]));
+    const r = await getRetention("all");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.cohortSize).toBeNull();
+      expect(r.d1).toBeNull();
+    }
+  });
+  it("getRetention: unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getRetention("production")).status).toBe("unavailable");
+  });
+  it("getSignupCohorts: not_configured without a key, no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getSignupCohorts("production")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("getSignupCohorts: shapes weekly rows", async () => {
+    fetchMock.mockResolvedValue(okJson([["2026-01-05", 10, 5, 2, 1, 0]]));
+    const r = await getSignupCohorts("production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.cohorts).toHaveLength(1);
+      expect(r.cohorts[0].returns).toEqual([50, 20, 10, 0]);
+    }
+  });
+  it("getSignupCohorts: unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getSignupCohorts("production")).status).toBe("unavailable");
+  });
+  it("getSignupAttribution: not_configured without a key, no request", async () => {
+    delete process.env.POSTHOG_PERSONAL_API_KEY;
+    expect(await getSignupAttribution("7d", "production")).toEqual({ status: "not_configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("getSignupAttribution: buckets the three UTM breakdowns (missing → 'direct / none')", async () => {
+    // Three queries in order: source, medium, campaign.
+    fetchMock
+      .mockResolvedValueOnce(okJson([["instagram", 12], [null, 5]]))
+      .mockResolvedValueOnce(okJson([["social", 10]]))
+      .mockResolvedValueOnce(okJson([["", 7]]));
+    const r = await getSignupAttribution("30d", "production");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") {
+      expect(r.bySource).toEqual([
+        { label: "instagram", count: 12 },
+        { label: "direct / none", count: 5 },
+      ]);
+      expect(r.byMedium).toEqual([{ label: "social", count: 10 }]);
+      expect(r.byCampaign).toEqual([{ label: "direct / none", count: 7 }]);
+    }
+  });
+  it("getSignupAttribution: unavailable on PostHog error (no throw)", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
+    expect((await getSignupAttribution("7d", "production")).status).toBe("unavailable");
+  });
 });
 
 describe("response mapping", () => {
   it("maps totals and keeps nulls as null (never 0)", () => {
-    const m = mapTotals([[5, 10, 1, 2, 3, 99.5, 4, 1, 0, 6, 5, null]]);
+    // 16 columns now: the original 12 + distinctUsers/dau/wau/collectors (12-15).
+    const m = mapTotals([[5, 10, 1, 2, 3, 99.5, 4, 1, 0, 6, 5, null, 8, 3, 7, 2]]);
     expect(m.uniqueVisitors).toBe(5);
     expect(m.cardsAddedValueUsd).toBe(99.5);
     expect(m.errors).toBeNull();
-    expect(mapTotals([]).pageviews).toBeNull();
+    // Distinct-PERSON metrics (uniq(person_id)).
+    expect(m.distinctUsers).toBe(8);
+    expect(m.dau).toBe(3);
+    expect(m.wau).toBe(7);
+    expect(m.weeklyActiveCollectors).toBe(2);
+    // Empty row → every metric null (including the new person columns).
+    const empty = mapTotals([]);
+    expect(empty.pageviews).toBeNull();
+    expect(empty.dau).toBeNull();
+    expect(empty.wau).toBeNull();
+    expect(empty.weeklyActiveCollectors).toBeNull();
     expect(num("12")).toBe(12);
     expect(num(NaN)).toBeNull();
   });
@@ -439,10 +639,21 @@ describe("getPosthogAnalytics", () => {
     expect(JSON.parse(init.body).query.kind).toBe("HogQLQuery");
     if (r.status === "ok") {
       expect(r.metrics.pageviews).toBeNull();
+      // New distinct-person metrics present + null on empty (never fabricated 0).
+      expect(r.metrics.dau).toBeNull();
+      expect(r.metrics.wau).toBeNull();
+      expect(r.metrics.weeklyActiveCollectors).toBeNull();
       // Detail block is always present (empty rows → honest empty sections).
       expect(r.detail.recentActivity).toEqual([]);
       expect(r.detail.scanner.successRate).toBeNull();
       expect(r.detail.engagement.errorCount).toBeNull();
+      // Audit items 3-5 folded into the ok payload, empty-safe.
+      expect(r.retention.status).toBe("ok");
+      if (r.retention.status === "ok") expect(r.retention.d1).toBeNull();
+      expect(r.signupCohorts.status).toBe("ok");
+      if (r.signupCohorts.status === "ok") expect(r.signupCohorts.cohorts).toEqual([]);
+      expect(r.signupAttribution.status).toBe("ok");
+      if (r.signupAttribution.status === "ok") expect(r.signupAttribution.bySource).toEqual([]);
     }
   });
 });

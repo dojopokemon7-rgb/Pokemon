@@ -38,6 +38,9 @@ import type {
   DimensionFeedResult,
   DistinctPersonsResult,
   ActivityRow,
+  RetentionResult,
+  SignupCohortsResult,
+  SignupAttributionResult,
 } from "@/lib/services/posthog-query.service";
 import { CardActivityPopover } from "./CardActivityPopover";
 
@@ -51,6 +54,9 @@ const ENVS: AnalyticsEnvironment[] = ["production", "staging", "all"];
 
 const fmt = (n: number | null, prefix = "") =>
   n === null ? "—" : `${prefix}${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
+/** Percent cell: "42.5%" or an honest "—" for null (never a fabricated 0%). */
+const fmtPct = (n: number | null) => (n === null ? "—" : `${n}%`);
 
 const fmtTime = (iso: string) => {
   const d = new Date(iso);
@@ -359,6 +365,139 @@ function CardTable({
   );
 }
 
+/**
+ * D1 / D7 / D30 first-seen retention (audit item 3). Honest "—" per bucket when
+ * the cohort is too small/empty; "PostHog unavailable" / "not configured" fold
+ * into the empty state. Each bucket is a % of the people old enough to reach it.
+ */
+function RetentionBlock({ result }: { result: RetentionResult }) {
+  if (result.status !== "ok") {
+    return (
+      <div style={CARD_STYLE}>
+        <div className="dojo-faint">
+          {result.status === "not_configured" ? "Analytics not configured." : "Retention unavailable."}
+        </div>
+      </div>
+    );
+  }
+  const cells: { label: string; value: number | null }[] = [
+    { label: "D1", value: result.d1 },
+    { label: "D7", value: result.d7 },
+    { label: "D30", value: result.d30 },
+  ];
+  return (
+    <div style={CARD_STYLE}>
+      <div className="dojo-faint" style={{ fontSize: "11px", marginBottom: "12px" }}>
+        Of {fmt(result.cohortSize)} people anchored on their first activity, the share active again
+        on each later day.
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        {cells.map((c) => (
+          <div key={c.label}>
+            <div className="dojo-step-label" style={{ fontSize: "10px" }}>
+              {c.label}
+            </div>
+            <div className="dojo-heading" style={{ fontSize: "22px", marginTop: "6px" }}>
+              {fmtPct(c.value)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Weekly signup-cohort retention table (audit item 4): signup week, cohort
+ * size, and the % returning in each following week (1-4). "—" for not-yet-
+ * observable or empty cells — never a fabricated 0%.
+ */
+function SignupCohortTable({ result }: { result: SignupCohortsResult }) {
+  if (result.status !== "ok") {
+    return (
+      <div style={CARD_STYLE}>
+        <div className="dojo-faint">
+          {result.status === "not_configured" ? "Analytics not configured." : "Cohorts unavailable."}
+        </div>
+      </div>
+    );
+  }
+  if (result.cohorts.length === 0) {
+    return (
+      <div style={CARD_STYLE}>
+        <div className="dojo-faint">No signup cohorts yet.</div>
+      </div>
+    );
+  }
+  const weekCount = Math.max(...result.cohorts.map((c) => c.returns.length), 0);
+  return (
+    <div style={{ ...CARD_STYLE, overflowX: "auto" }}>
+      <table className="w-full dojo-body" style={{ fontSize: "13px" }}>
+        <thead>
+          <tr className="dojo-faint text-left">
+            <th className="py-1 pr-3 font-normal">Signup week</th>
+            <th className="py-1 pr-3 text-right font-normal">Size</th>
+            {Array.from({ length: weekCount }, (_, i) => (
+              <th key={i} className="py-1 pr-3 text-right font-normal">
+                W{i + 1}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {result.cohorts.map((c) => (
+            <tr key={c.week}>
+              <td className="py-1 pr-3" style={{ whiteSpace: "nowrap" }}>{c.week}</td>
+              <td className="py-1 pr-3 text-right">{fmt(c.size)}</td>
+              {Array.from({ length: weekCount }, (_, i) => (
+                <td key={i} className="py-1 pr-3 text-right">
+                  {fmtPct(c.returns[i] ?? null)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Signup conversion by initial-touch UTM (audit item 5): three breakdown tables
+ * (source / medium / campaign). Missing UTM shows as a "direct / none" row
+ * (never blank). Instagram / Comic Con QR / campaign traffic appear via
+ * whatever the initial-touch props carry.
+ */
+function AttributionTables({ result }: { result: SignupAttributionResult }) {
+  if (result.status !== "ok") {
+    return (
+      <div style={CARD_STYLE}>
+        <div className="dojo-faint">
+          {result.status === "not_configured"
+            ? "Analytics not configured."
+            : "Attribution unavailable."}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div>
+        <Heading>Source</Heading>
+        <CountTable rows={result.bySource} head="Source" empty="No signups in this range." />
+      </div>
+      <div>
+        <Heading>Medium</Heading>
+        <CountTable rows={result.byMedium} head="Medium" empty="No signups in this range." />
+      </div>
+      <div>
+        <Heading>Campaign</Heading>
+        <CountTable rows={result.byCampaign} head="Campaign" empty="No signups in this range." />
+      </div>
+    </div>
+  );
+}
+
 /** The activity-feed table (shared by the default feed and the drill-down). */
 function ActivityTable({
   rows,
@@ -641,6 +780,33 @@ export function PostHogDashboard() {
           <StatButton label="Scans succeeded" value={fmt(m.scansSucceeded)} active={drill === "scan_succeeded"} onClick={() => onCountClick("scan_succeeded")} />
           <StatButton label="Errors ($exception)" value={fmt(m.errors)} active={drill === "$exception"} onClick={() => onCountClick("$exception")} />
         </div>
+
+        {/* ── ACTIVE USERS (distinct PEOPLE, de-duped across sessions) ── */}
+        <SectionHeading>Active users (distinct people)</SectionHeading>
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <Stat label="Daily active users" value={fmt(m.dau)} />
+          <Stat label="Weekly active users" value={fmt(m.wau)} />
+          <article style={CARD_STYLE}>
+            <div className="dojo-step-label" style={{ fontSize: "10px" }}>
+              Weekly active collectors
+            </div>
+            <div className="dojo-heading" style={{ fontSize: "26px", marginTop: "8px" }}>
+              {fmt(m.weeklyActiveCollectors)}
+            </div>
+            <div className="dojo-faint" style={{ fontSize: "10px", marginTop: "6px" }}>
+              Distinct people who added or removed a card in the last 7 days
+            </div>
+          </article>
+        </div>
+
+        {/* ── RETENTION & SIGNUP ATTRIBUTION (audit items 3-5) ───────── */}
+        <SectionHeading>Retention &amp; acquisition</SectionHeading>
+        <Heading>Retention (D1 / D7 / D30)</Heading>
+        <RetentionBlock result={data.retention} />
+        <Heading>Weekly signup cohorts (% returning)</Heading>
+        <SignupCohortTable result={data.signupCohorts} />
+        <Heading>Signup conversion by acquisition source</Heading>
+        <AttributionTables result={data.signupAttribution} />
 
         {/* ── 1. RECENT ACTIVITY (drill-down target) ───────────────── */}
         <div ref={feedRef}>

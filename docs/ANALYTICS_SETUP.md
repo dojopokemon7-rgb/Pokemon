@@ -157,6 +157,28 @@ Sections (top to bottom):
 - **Overview cards** — visitors, pageviews, signups, logins, cards added + USD
   value, searches, zero-result searches, wishlist adds, scans started/succeeded,
   errors.
+- **Active users (distinct people)** — Daily / Weekly active users and Weekly
+  active collectors. These count distinct PEOPLE (`uniq(person_id)`, de-duped
+  across sessions — NOT `uniq(distinct_id)`). DAU/WAU are fixed rolling 24h/7d
+  windows (independent of the range selector); Weekly active collectors =
+  distinct people who added OR removed a card in the last 7 days (the one-line
+  definition is shown under the number).
+- **Retention & acquisition** — three blocks (all honest "—" when the cohort is
+  too small/empty, never a fabricated 0% / 100%):
+  - **Retention (D1 / D7 / D30)** — first-seen retention. Each person is anchored
+    on their first-ever business-event day; a bucket is the share of the
+    observable cohort (people old enough to reach that bucket) who returned (any
+    business event except `$exception`) exactly 1 / 7 / 30 days later. This is a
+    whole-population metric — the range selector does not scope the anchor.
+  - **Weekly signup cohorts** — signup_completed people grouped by signup week
+    (`toStartOfWeek`); each following-week cell is the share of that cohort who
+    returned in that later week.
+  - **Signup conversion by acquisition source** — distinct signup_completed
+    people bucketed by their INITIAL-TOUCH UTM (`$initial_utm_source` /
+    `_medium` / `_campaign`, read via the person join — same mechanism as email,
+    never event props). Missing/blank UTM is bucketed as **`direct / none`**
+    (never blank, never fabricated), so Instagram / Comic Con QR / campaign /
+    direct traffic all surface from whatever the initial-touch props carry.
 - **Recent activity** — the latest ~100 BUSINESS events (named taxonomy events +
   `$exception`; autocapture / `$pageview` / `$pageleave` / web-vitals noise is
   excluded), newest first. Columns: Time, User (person email, "anonymous" when

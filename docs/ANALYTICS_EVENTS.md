@@ -47,6 +47,14 @@ the auth pages and consumed once by `AnalyticsProvider` when the session appears
 Verifying the email in a different browser/tab session means no completion event
 (the intent is per tab).
 
+**Signup attribution (initial-touch UTM).** Signup conversion by source/medium/
+campaign (admin dashboard) reads PostHog's auto-captured INITIAL-TOUCH person
+properties `$initial_utm_source` / `$initial_utm_medium` / `$initial_utm_campaign`
+via the person join (the SAME mechanism used for email — never event props, no
+new tracked event). People with no initial-touch UTM are bucketed honestly as
+`direct / none`. Instagram / Comic Con QR / campaign / direct attribution all
+surface from whatever those props carry — no extra instrumentation is added.
+
 ### Activation
 
 | Event | Properties | Fired when |
