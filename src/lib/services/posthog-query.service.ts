@@ -401,15 +401,25 @@ export type DistinctPerson = { email: string; userId?: string | null };
  * Distinct persons behind the Unique Visitors count: the identified ones by
  * email (linkable to their user page) plus the honest count of the anonymous
  * remainder (persons with no profile email). NEVER fabricates an identity.
+ *
+ * RECONCILIATION (the fix): all three counts are measured on the SAME person
+ * axis (uniq(person_id)), so `total = identifiedCount + anonymous` ALWAYS
+ * holds. `identifiedCount` is DERIVED from the authoritative counts
+ * (total - anonymous), NOT from `identified.length` — the `identified` list is
+ * the (possibly PERSONS_LIMIT-capped) drill-down, so the UI shows
+ * "showing N of M" when `identified.length < identifiedCount`. Counting
+ * identified on person-email while total/anonymous were on distinct_id was the
+ * bug that produced the impossible "8 distinct / 2 identified / 0 anonymous".
  */
 export type DistinctPersonsResult =
   | {
       status: "ok";
       range: AnalyticsRange;
       environment: AnalyticsEnvironment;
-      identified: DistinctPerson[];
+      identified: DistinctPerson[]; // (possibly capped) drill-down list
+      identifiedCount: number; // authoritative: total - anonymous (person axis)
       anonymous: number; // distinct persons with no email (count only)
-      total: number; // uniq(distinct_id) over the window
+      total: number; // uniq(person_id) over the window
     }
   | { status: "not_configured" }
   | { status: "unavailable" };
@@ -754,30 +764,41 @@ export function buildDimensionFeedQuery(
 }
 
 /**
- * Distinct-persons drill-down behind Unique Visitors: one DISTINCT person per
- * row with their profile email when known (null otherwise). range/environment
- * are the fixed fragments; no user input is interpolated. Capped at
- * PERSONS_LIMIT — the anonymous remainder is summed separately (see
- * buildDistinctPersonsCountQuery) so the UI never fabricates an identity.
+ * Distinct-persons drill-down behind Unique Visitors: one row per DISTINCT
+ * PERSON (person_id) WITH a non-empty profile email. Grouping by person_id
+ * (not by email) keeps this on the SAME axis as the count query below, so the
+ * list represents identified PERSONS — not email strings. Blank-email persons
+ * are excluded here (they are the authoritative `anonymous` count, see
+ * buildDistinctPersonsCountQuery). range/environment are the fixed fragments;
+ * no user input is interpolated. Capped at PERSONS_LIMIT — the full count comes
+ * from the count query, so the UI shows "showing N of M" without ever
+ * fabricating an identity.
  */
 export function buildDistinctPersonsQuery(range: AnalyticsRange, env: AnalyticsEnvironment) {
   const w = where(range, env);
   return (
-    `SELECT person.properties.email AS e, count() AS c FROM events ${w} ` +
-    `GROUP BY e ORDER BY c DESC LIMIT ${PERSONS_LIMIT}`
+    `SELECT any(person.properties.email) AS e, count() AS c FROM events ${w} ` +
+    `AND empty(toString(person.properties.email)) = 0 ` +
+    `GROUP BY person_id ORDER BY c DESC LIMIT ${PERSONS_LIMIT}`
   );
 }
 
 /**
- * Totals behind Unique Visitors: [distinct persons overall, distinct persons
- * with NO profile email]. Lets the UI show "identified (N) + anonymous (M)"
- * honestly without listing every anonymous person. Fixed fragments only.
+ * Totals behind Unique Visitors, ALL on the person axis so the triple always
+ * reconciles: [uniq(person_id) overall, distinct PERSONS with NO profile
+ * email]. `total = uniq(person_id)` and `anonymous =
+ * uniqIf(person_id, empty(email))`; the UI derives identified = total -
+ * anonymous. Counting these on distinct_id (sessions) while the identified
+ * list was on person-email was the reconciliation bug — PostHog person-merge
+ * stitches a pre-login anonymous distinct_id onto a person that later HAS an
+ * email, collapsing a distinct_id-based anonymous count to 0. Fixed fragments
+ * only.
  */
 export function buildDistinctPersonsCountQuery(range: AnalyticsRange, env: AnalyticsEnvironment) {
   const w = where(range, env);
   return (
-    `SELECT uniq(distinct_id), ` +
-    `uniqIf(distinct_id, empty(toString(person.properties.email))) ` +
+    `SELECT uniq(person_id), ` +
+    `uniqIf(person_id, empty(toString(person.properties.email))) ` +
     `FROM events ${w}`
   );
 }
@@ -1178,17 +1199,24 @@ export function mapCardActivity(rows: unknown[][]): CardActivity {
   };
 }
 
-// buildDistinctPersonsQuery rows: [email|null, count]; countRows[0]: [total, anonymous]
+// buildDistinctPersonsQuery rows: [email, count] (one per identified person_id);
+// countRows[0]: [total = uniq(person_id), anonymous = uniq person_id w/ no email]
 /**
- * Distinct-persons result behind Unique Visitors. Identified persons (non-blank
- * email) are listed; the anonymous count comes from the authoritative
- * count query (distinct persons with no email), NOT from len() of a capped list
- * — so "anonymous (N)" stays honest even past PERSONS_LIMIT. Pure.
+ * Distinct-persons result behind Unique Visitors. ALL three numbers are on the
+ * SAME person axis so they reconcile: `total` and `anonymous` come from the
+ * authoritative count query (uniq(person_id) / uniqIf no-email), and
+ * `identifiedCount` is DERIVED as `total - anonymous` (clamped ≥ 0) — NOT from
+ * the length of the `identified` drill-down list, which may be capped at
+ * PERSONS_LIMIT. So `total = identifiedCount + anonymous` ALWAYS holds, and the
+ * previously-impossible "8 / 2 / 0" (identified on email, totals on distinct_id)
+ * can no longer be produced. The `identified` list carries the emails for the
+ * (possibly capped) drill-down; the UI renders "showing N of M" when
+ * `identified.length < identifiedCount`. Pure.
  */
 export function mapDistinctPersons(
   personRows: unknown[][],
   countRows: unknown[][]
-): { identified: DistinctPerson[]; anonymous: number; total: number } {
+): { identified: DistinctPerson[]; identifiedCount: number; anonymous: number; total: number } {
   const seen = new Set<string>();
   const identified: DistinctPerson[] = [];
   for (const r of personRows) {
@@ -1199,11 +1227,12 @@ export function mapDistinctPersons(
     }
   }
   const c = countRows[0] ?? [];
-  return {
-    total: num(c[0]) ?? 0,
-    anonymous: num(c[1]) ?? 0,
-    identified,
-  };
+  const total = num(c[0]) ?? 0;
+  const anonymous = num(c[1]) ?? 0;
+  // Derived on the person axis; clamp so a transient count skew never shows a
+  // negative identified headline (honest, never fabricated).
+  const identifiedCount = Math.max(0, total - anonymous);
+  return { total, anonymous, identifiedCount, identified };
 }
 
 /**
@@ -1806,6 +1835,7 @@ const PersonsCacheSchema = z.object({
   range: z.enum(ANALYTICS_RANGES),
   environment: z.enum(ANALYTICS_ENVIRONMENTS),
   identified: z.array(z.object({ email: z.string() })),
+  identifiedCount: z.number(),
   anonymous: z.number(),
   total: z.number(),
 });
@@ -1847,6 +1877,7 @@ export async function getDistinctPersons(
       range,
       environment,
       identified: mapped.identified,
+      identifiedCount: mapped.identifiedCount,
       anonymous: mapped.anonymous,
       total: mapped.total,
     };

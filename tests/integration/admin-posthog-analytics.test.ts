@@ -810,22 +810,56 @@ describe("unique-visitors drill-down: distinct persons", () => {
     expect(q).toContain("properties.environment = 'staging'");
     expect(q).toContain("person.properties.email");
     expect(q).toContain("LIMIT 200");
+    // Identified list is grouped on the PERSON axis (person_id), filtered to
+    // non-empty email — so it represents identified PERSONS, not email strings.
+    expect(q).toContain("GROUP BY person_id");
+    expect(q).toContain("empty(toString(person.properties.email)) = 0");
     const c = buildDistinctPersonsCountQuery("7d", "all");
-    expect(c).toContain("uniq(distinct_id)");
-    expect(c).toContain("empty(toString(person.properties.email))");
+    // RECONCILIATION FIX: both total and anonymous are measured on person_id
+    // (NOT distinct_id), so total = identified + anonymous always holds.
+    expect(c).toContain("uniq(person_id)");
+    expect(c).toContain("uniqIf(person_id, empty(toString(person.properties.email)))");
+    expect(c).not.toContain("uniq(distinct_id)"); // the old session-axis bug
     expect(c).not.toContain("properties.environment ="); // 'all' drops it
   });
-  it("mapDistinctPersons lists identified + honest anonymous/total from the count row", () => {
+  it("mapDistinctPersons derives identifiedCount = total - anonymous (person axis, reconciles)", () => {
     const persons: unknown[][] = [["a@b.com", 10], ["", 5], ["c@d.com", 3], ["a@b.com", 1]];
-    const counts: unknown[][] = [[9, 4]]; // total 9, anonymous 4 (authoritative)
+    const counts: unknown[][] = [[8, 6]]; // total 8, anonymous 6 (authoritative)
     const out = mapDistinctPersons(persons, counts);
     // De-duped identified list, blank email dropped, never fabricates identity.
     expect(out.identified).toEqual([{ email: "a@b.com" }, { email: "c@d.com" }]);
-    // anonymous comes from the count query, NOT the capped list length.
-    expect(out.anonymous).toBe(4);
-    expect(out.total).toBe(9);
+    // anonymous + total come from the count query; identifiedCount is DERIVED.
+    expect(out.anonymous).toBe(6);
+    expect(out.total).toBe(8);
+    expect(out.identifiedCount).toBe(2); // 8 - 6
+    // The triple reconciles on the same axis: total = identified + anonymous.
+    expect(out.identifiedCount + out.anonymous).toBe(out.total);
     // Empty input → zeros, never nulls that would render as a fabricated row.
-    expect(mapDistinctPersons([], [])).toEqual({ identified: [], anonymous: 0, total: 0 });
+    expect(mapDistinctPersons([], [])).toEqual({
+      identified: [],
+      identifiedCount: 0,
+      anonymous: 0,
+      total: 0,
+    });
+  });
+  it("mapDistinctPersons can no longer produce the buggy 8/2/0 from consistent inputs", () => {
+    // With person-axis counts, 8 distinct persons and 2 identified emails force
+    // anonymous = 6 (not the impossible 0 the distinct_id axis produced).
+    const persons: unknown[][] = [["a@b.com", 4], ["b@c.com", 2]];
+    const out = mapDistinctPersons(persons, [[8, 6]]);
+    expect(out.total).toBe(8);
+    expect(out.identifiedCount).toBe(2);
+    expect(out.anonymous).toBe(6);
+    expect(out.anonymous).not.toBe(0);
+  });
+  it("mapDistinctPersons caps the drill-down list but keeps identifiedCount authoritative", () => {
+    // List is capped at PERSONS_LIMIT (2 rows here) while the count query says
+    // 5 identified persons → headline uses the count, list stays honestly short.
+    const persons: unknown[][] = [["a@b.com", 9], ["b@c.com", 7]];
+    const out = mapDistinctPersons(persons, [[6, 1]]); // total 6, anon 1 → 5 identified
+    expect(out.identifiedCount).toBe(5);
+    expect(out.identified).toHaveLength(2); // capped list < identifiedCount
+    expect(out.identified.length).toBeLessThan(out.identifiedCount);
   });
   it("resolvePersonUserIds links matched emails, leaves unmatched unlinked", () => {
     const persons: DistinctPerson[] = [{ email: "a@b.com" }, { email: "gone@x.com" }];
@@ -906,17 +940,20 @@ describe("getFilteredFeed / getDistinctPersons services", () => {
     expect(await getDistinctPersons("7d", "production")).toEqual({ status: "not_configured" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
-  it("getDistinctPersons: identified + anonymous remainder, never fabricated", async () => {
-    // Two queries in order: ranked persons, then the total/anonymous counts.
+  it("getDistinctPersons: reconciling triple on the person axis, never fabricated", async () => {
+    // Two queries in order: identified persons (person-axis, non-empty email),
+    // then the authoritative person-axis total/anonymous counts.
     fetchMock
-      .mockResolvedValueOnce(okJson([["a@b.com", 5], ["", 2]]))
-      .mockResolvedValueOnce(okJson([[7, 3]]));
+      .mockResolvedValueOnce(okJson([["a@b.com", 5], ["c@d.com", 2]]))
+      .mockResolvedValueOnce(okJson([[8, 6]])); // total 8, anonymous 6
     const r = await getDistinctPersons("7d", "production");
     expect(r.status).toBe("ok");
     if (r.status === "ok") {
-      expect(r.identified).toEqual([{ email: "a@b.com" }]);
-      expect(r.anonymous).toBe(3);
-      expect(r.total).toBe(7);
+      expect(r.identified).toEqual([{ email: "a@b.com" }, { email: "c@d.com" }]);
+      expect(r.anonymous).toBe(6);
+      expect(r.total).toBe(8);
+      expect(r.identifiedCount).toBe(2); // derived: 8 - 6
+      expect(r.identifiedCount + r.anonymous).toBe(r.total); // reconciles
     }
   });
   it("getDistinctPersons: unavailable on PostHog error (no throw)", async () => {

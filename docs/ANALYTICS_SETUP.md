@@ -255,10 +255,21 @@ and cards behind it, without leaving the admin panel:
 - **Unique Visitors → the distinct persons behind it.** Clicking Unique Visitors
   shows the DISTINCT persons in the window: identified ones by email (linking to
   their user page via the same server-side email→user-id resolution) plus an
-  honest "anonymous (N)" remainder for persons with no profile email. The
-  anonymous count is the authoritative distinct-persons-with-no-email total, not
-  a list-length guess, and NO identity is ever fabricated (`view=persons`,
-  allowlist-safe, Redis-cached ~90s).
+  honest "anonymous (N)" remainder for persons with no profile email. **All three
+  numbers are counted on the SAME person axis (`uniq(person_id)`), so they
+  reconcile: `total = identified + anonymous` ALWAYS holds.** `total =
+  uniq(person_id)`, `anonymous = uniqIf(person_id, empty(email))`, and the
+  headline `identified` is DERIVED as `total - anonymous` — never the length of
+  the drill-down list. (Counting `total`/`anonymous` on `distinct_id` while
+  `identified` was on person-email was the bug behind the impossible "8 distinct
+  / 2 identified / 0 anonymous": PostHog person-merge stitches a pre-login
+  anonymous `distinct_id` onto a person that later has an email, collapsing a
+  `distinct_id`-based anonymous count to 0.) The identified drill-down LIST is
+  capped at `PERSONS_LIMIT` (200); when more identified persons exist than the
+  list shows, the panel stays honest with **"showing N of M identified"** — the
+  reconciliation guarantee is at the COUNT level, not the displayed-list length.
+  NO identity is ever fabricated (`view=persons`, allowlist-safe, Redis-cached
+  ~90s).
 - **Per-feature DETAIL label rows → the events behind them.** The SAME feed
   reveal (ONE consistent label-row interaction) extends to the per-feature
   lists: each row in Top search terms, Top zero-result searches, Filters

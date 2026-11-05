@@ -1132,8 +1132,18 @@ function PersonsPanel({
   onClear: () => void;
 }) {
   const r = query.data;
-  const identified = r && r.status === "ok" ? r.identified : [];
-  const anonymous = r && r.status === "ok" ? r.anonymous : 0;
+  const ok = r && r.status === "ok" ? r : null;
+  const identified = ok ? ok.identified : [];
+  const anonymous = ok ? ok.anonymous : 0;
+  // All three are on the SAME person axis (see posthog-query.service) so they
+  // reconcile: total = identifiedCount + anonymous. The headline uses the
+  // authoritative derived identifiedCount, NOT the (possibly capped) list
+  // length — so "8 / 2 / 0" can't reappear. Prefer the result's person-axis
+  // total over the prop (which is the metrics card's uniq(distinct_id)).
+  const totalPersons = ok ? ok.total : total;
+  const identifiedCount = ok ? ok.identifiedCount : 0;
+  // The drill-down list can be capped at PERSONS_LIMIT; stay honest about it.
+  const capped = identified.length < identifiedCount;
   return (
     <>
       <FilterChip label="Unique visitors" onClear={onClear} />
@@ -1142,10 +1152,10 @@ function PersonsPanel({
           ? "Loading…"
           : r && r.status !== "ok"
             ? "PostHog unavailable."
-            : `${fmt(total)} distinct visitor${total === 1 ? "" : "s"} · ${identified.length} identified · ${anonymous} anonymous`}
+            : `${fmt(totalPersons)} distinct visitor${totalPersons === 1 ? "" : "s"} · ${identifiedCount} identified · ${anonymous} anonymous`}
       </div>
       <div style={{ ...CARD_STYLE, overflowX: "auto" }}>
-        {!query.isLoading && identified.length === 0 && anonymous === 0 ? (
+        {!query.isLoading && identifiedCount === 0 && anonymous === 0 ? (
           <div className="dojo-faint">No visitors in this range.</div>
         ) : (
           <table className="w-full dojo-body" style={{ fontSize: "13px" }}>
@@ -1168,6 +1178,13 @@ function PersonsPanel({
                   </td>
                 </tr>
               ))}
+              {capped && (
+                <tr>
+                  <td className="py-1 dojo-faint">
+                    showing {identified.length} of {identifiedCount} identified
+                  </td>
+                </tr>
+              )}
               {anonymous > 0 && (
                 <tr>
                   <td className="py-1 dojo-faint">anonymous ({anonymous})</td>

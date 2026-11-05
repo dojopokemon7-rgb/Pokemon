@@ -126,7 +126,12 @@ via the `event` filter param (FIXED allowlist + `zero_result` pseudo + `$excepti
 mapped to a constant HogQL predicate, never free text), with an active-filter
 chip + "Show all" and a heading that reflects the filter. Unique Visitors drills
 into the DISTINCT persons behind it (`view=persons`): identified by email +
-an honest "anonymous (N)" remainder, never a fabricated identity.
+an honest "anonymous (N)" remainder, never a fabricated identity. All three
+numbers are counted on the SAME person axis (`uniq(person_id)`) so they
+reconcile — `total = identified + anonymous` always holds, with `identified`
+DERIVED as `total − anonymous` (not the list length) and the capped drill-down
+list shown honestly as "showing N of M identified" when it is shorter than the
+identified count.
 
 The SAME feed reveal extends to the per-feature DETAIL label rows: clicking a
 row in Top search terms, Top zero-result searches, Filters applied, Scanner
