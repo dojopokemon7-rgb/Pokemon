@@ -9,8 +9,11 @@ All call sites use `track(event, props?)` (never `posthog` directly). `track` is
 no-op until PostHog is initialized (consent + key), never throws, and strips
 `email`, `password`, `otp`, `token` keys. Email lives only on the **person
 profile** via `identify()` (done in `AnalyticsProvider` from the Better Auth
-client session); it is never an event property. UTM source is captured
-automatically by PostHog on `signup_completed`.
+client session); it is never an event property. Signup conversion attribution
+uses PostHog's auto-captured **initial-touch** person properties
+`$initial_utm_source` / `$initial_utm_medium` / `$initial_utm_campaign`
+(first-touch, read via the person join — not event props); people with no
+initial-touch UTM are bucketed honestly as `direct / none`.
 
 ## Common property rules
 

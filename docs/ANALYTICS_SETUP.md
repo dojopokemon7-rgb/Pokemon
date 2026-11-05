@@ -19,15 +19,47 @@ Dojo's PostHog project is on the **EU cloud**.
 2. **Project Settings → Project API Key** — copy the project token (`phc_...`).
 3. Ingestion host: `https://eu.i.posthog.com`.
 
-**Dev vs prod projects.** Create a second PostHog project (e.g. "Dojo Dev") so
-tester traffic never pollutes real metrics. Production uses the prod project key
-in the root `.env` (`NEXT_PUBLIC_POSTHOG_*`). Staging has its own build vars
-`STAGING_NEXT_PUBLIC_POSTHOG_KEY` / `_HOST` / `_DASHBOARD_URL`, which
-`docker-compose.yml` feeds to the `app-staging` build. They go in the **root
-`.env`**, not `.env.staging`: `NEXT_PUBLIC_*` is inlined at build time and compose
-only interpolates the root `.env`. Leave them unset and staging analytics is a
-no-op (staging no longer reuses the production key). Local dev: set
-`NEXT_PUBLIC_POSTHOG_KEY` to the dev project key in your own `.env`.
+**Environments share ONE free-tier project (separated by a tag).** On the
+free tier Dojo runs a SINGLE PostHog project; prod and staging both send to the
+same key (`NEXT_PUBLIC_POSTHOG_KEY`) and are told apart by an `environment`
+super-property, not by separate projects. `src/lib/analytics/environment.ts`
+derives that tag from the hostname (`localhost`/`127.0.0.1` → `development`, any
+host containing `staging` → `staging`, `dojocollect.com` / `*.dojocollect.com` →
+`production`, else `unknown`), and `AnalyticsProvider` registers it on every
+event. The admin dashboard then filters on `properties.environment`
+(production / staging / all), so tester traffic is isolated without a second
+project.
+
+`STAGING_NEXT_PUBLIC_POSTHOG_KEY` / `_HOST` / `_DASHBOARD_URL` are the ready
+**upgrade switch**: they are already wired into `docker-compose.yml` as
+`app-staging` build args (sourced from the root `.env` — `NEXT_PUBLIC_*` is
+inlined at build time and compose only interpolates the root `.env`). Leave them
+unset and staging keeps using the shared key + `environment` tag (today's
+design). Point them at a dedicated "Dojo Staging" project ONLY when the client
+leaves the free tier and wants fully separate projects — do not invent that
+second project or change the compose wiring before then. Local dev: set
+`NEXT_PUBLIC_POSTHOG_KEY` in your own `.env` (it carries the `development` tag
+automatically).
+
+### UTM attribution scheme
+
+Signup conversion by acquisition source is driven entirely by UTM params on the
+landing URL — there is no extra instrumentation. The canonical links:
+
+| Source | URL params |
+|---|---|
+| Instagram | `?utm_source=instagram&utm_medium=social` |
+| Comic Con QR | `?utm_source=comic_con&utm_medium=qr&utm_campaign=<event-name>` |
+| Campaign link | `?utm_campaign=<name>` (with `utm_source`/`utm_medium` as relevant) |
+| Direct | no UTM params → bucketed **`direct / none`** |
+
+The app does **not** strip UTM params: `AnalyticsProvider` captures a manual
+`$pageview` with no property editing, so PostHog reads `utm_*` straight off the
+landing URL and records them as initial-touch person properties
+(`$initial_utm_source` / `_medium` / `_campaign`). Those first-touch props back
+the signup-attribution breakdown in the admin dashboard (read via the person
+join, never event props); people with no initial-touch UTM show as
+`direct / none`.
 
 **Session replay.** The SDK records with every input masked
 (`maskAllInputs`), but replay must also be switched on in PostHog
