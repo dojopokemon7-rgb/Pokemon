@@ -300,7 +300,8 @@ export type RetentionResult =
  * Weekly signup-cohort retention: each row is a signup week (persons whose
  * signup_completed landed that week), the cohort `size`, and the % of them who
  * returned (any business event) in each following week. A zero-size week or a
- * not-yet-observable following week → null cell (UI "—"), never a fabricated 0.
+ * following week that has NOT fully elapsed (not yet observable) → null cell
+ * (UI "—"), distinct from an elapsed week where nobody returned (a real 0%).
  */
 export type SignupCohortRow = {
   week: string; // ISO date of the week start (toStartOfWeek)
@@ -516,8 +517,16 @@ export function buildRetentionQuery(env: AnalyticsEnvironment) {
  * Weekly signup-cohort retention query (audit item 4). Groups signup_completed
  * persons by their signup week (toStartOfWeek) and, per following-week offset
  * 1..4, counts DISTINCT persons from that cohort who had ANY return event in
- * that later week. ONE row per cohort week:
- *   [week, size, w1, w2, w3, w4]
+ * that later week. ONE row per cohort week, with a per-offset OBSERVABLE flag:
+ *   [week, size, w1, w2, w3, w4, elapsed1, elapsed2, elapsed3, elapsed4]
+ * A following week W_n is only OBSERVABLE once it has fully elapsed, i.e. the
+ * cohort week is at least N weeks in the past relative to the current week. The
+ * `elapsedN` boolean mirrors the D-bucket guard in buildRetentionQuery
+ * (`first_day <= today() - N`): `dateDiff('week', cohort_week,
+ * toStartOfWeek(now())) >= N`. The mapper renders a not-yet-elapsed week as "—"
+ * (not observable), distinct from an elapsed 0% (cohort existed, nobody
+ * returned). now()/toStartOfWeek run in the PostHog project timezone, the SAME
+ * clock as the cohort_week grouping, so the comparison is timezone-consistent.
  * Environment is the only variable part (CONSTANT allowlist fragment). Whole
  * population (no range scoping — a cohort table spans history by design).
  */
@@ -531,13 +540,18 @@ export function buildSignupCohortQuery(env: AnalyticsEnvironment) {
     `SELECT DISTINCT person_id, toStartOfWeek(timestamp) AS act_week ` +
     `FROM events WHERE event IN ${RETURN_EVENTS_SQL} ${envFrag}`;
   // For each later-week offset, count persons whose activity week is exactly
-  // N weeks after their cohort week (dateDiff in weeks).
+  // N weeks after their cohort week (dateDiff in weeks), plus a boolean that is
+  // true only once that following week has fully elapsed (observable).
   return (
     `SELECT toString(s.cohort_week), uniq(s.person_id), ` +
     `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 1), ` +
     `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 2), ` +
     `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 3), ` +
-    `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 4) ` +
+    `uniqIf(s.person_id, dateDiff('week', s.cohort_week, a.act_week) = 4), ` +
+    `dateDiff('week', s.cohort_week, toStartOfWeek(now())) >= 1, ` +
+    `dateDiff('week', s.cohort_week, toStartOfWeek(now())) >= 2, ` +
+    `dateDiff('week', s.cohort_week, toStartOfWeek(now())) >= 3, ` +
+    `dateDiff('week', s.cohort_week, toStartOfWeek(now())) >= 4 ` +
     `FROM (${signups}) AS s LEFT JOIN (${activity}) AS a ON s.person_id = a.person_id ` +
     `GROUP BY s.cohort_week ORDER BY s.cohort_week DESC LIMIT ${LIST_LIMIT}`
   );
@@ -906,10 +920,27 @@ export function shapeSignupCohorts(rows: unknown[][]): SignupCohortRow[] {
     const size = num(r[1]);
     if (week === null) continue;
     const s = size ?? 0;
-    const returns = [2, 3, 4, 5].map((i) => (s === 0 ? null : pct(num(r[i]), s)));
+    // Columns: [week, size, w1, w2, w3, w4, elapsed1, elapsed2, elapsed3, elapsed4].
+    // A cell is "—" (null) when its following week is NOT yet fully elapsed
+    // (not observable) OR the cohort is zero-size; a real NUMBER/0% only when
+    // the week IS elapsed. This keeps a not-yet-observable 0 distinct from a
+    // genuine elapsed-with-no-return 0%.
+    const returns = [1, 2, 3, 4].map((n) => {
+      const elapsed = truthy(r[5 + n]);
+      if (s === 0 || !elapsed) return null;
+      return pct(num(r[1 + n]), s);
+    });
     out.push({ week, size: s, returns });
   }
   return out;
+}
+
+/**
+ * True when a PostHog boolean column reads truthy. ClickHouse returns booleans
+ * as JSON `true`/`false` or occasionally `1`/`0` — accept both. Pure.
+ */
+function truthy(v: unknown): boolean {
+  return v === true || v === 1 || v === "true" || v === "1";
 }
 
 /**

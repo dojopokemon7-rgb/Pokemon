@@ -204,7 +204,11 @@ Sections (top to bottom):
     whole-population metric — the range selector does not scope the anchor.
   - **Weekly signup cohorts** — signup_completed people grouped by signup week
     (`toStartOfWeek`); each following-week cell is the share of that cohort who
-    returned in that later week.
+    returned in that later week. A following week is only shown once it has
+    FULLY ELAPSED (observable): a not-yet-elapsed week renders as **"—"** (not
+    yet observable), distinct from an elapsed week where nobody returned (a real
+    **0%**). Like retention, this is whole-history — the range selector does not
+    scope it (the UI carries an "All-time" caption on this section to say so).
   - **Signup conversion by acquisition source** — distinct signup_completed
     people bucketed by their INITIAL-TOUCH UTM (`$initial_utm_source` /
     `_medium` / `_campaign`, read via the person join — same mechanism as email,

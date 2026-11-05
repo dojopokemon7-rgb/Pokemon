@@ -409,8 +409,9 @@ function RetentionBlock({ result }: { result: RetentionResult }) {
 
 /**
  * Weekly signup-cohort retention table (audit item 4): signup week, cohort
- * size, and the % returning in each following week (1-4). "—" for not-yet-
- * observable or empty cells — never a fabricated 0%.
+ * size, and the % returning in each following week (1-4). "—" for a following
+ * week that has NOT fully elapsed (not yet observable) or an empty cohort —
+ * distinct from an elapsed week with no return (a real 0%). Never a fabricated 0%.
  */
 function SignupCohortTable({ result }: { result: SignupCohortsResult }) {
   if (result.status !== "ok") {
@@ -801,6 +802,12 @@ export function PostHogDashboard() {
 
         {/* ── RETENTION & SIGNUP ATTRIBUTION (audit items 3-5) ───────── */}
         <SectionHeading>Retention &amp; acquisition</SectionHeading>
+        {/* Retention + the weekly cohort are whole-history (the builders ignore
+            the range selector); say so so the 7D control isn't read as scoping
+            them (audit item 5). */}
+        <div className="dojo-faint" style={{ fontSize: "11px", marginBottom: "4px" }}>
+          All-time · not scoped to the selected range
+        </div>
         <Heading>Retention (D1 / D7 / D30)</Heading>
         <RetentionBlock result={data.retention} />
         <Heading>Weekly signup cohorts (% returning)</Heading>

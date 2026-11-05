@@ -123,12 +123,15 @@ describe("retention / cohort / attribution HogQL builders (audit items 3-5)", ()
     expect(q).toContain("properties.environment = 'production'");
     expect(buildRetentionQuery("all")).not.toContain("properties.environment =");
   });
-  it("buildSignupCohortQuery groups by signup week + counts following-week returners", () => {
+  it("buildSignupCohortQuery groups by signup week + counts following-week returners + per-week elapsed flag", () => {
     const q = buildSignupCohortQuery("staging");
     expect(q).toContain("toStartOfWeek(min(timestamp))");
     expect(q).toContain("event = 'signup_completed'");
     expect(q).toContain("dateDiff('week', s.cohort_week, a.act_week) = 1");
     expect(q).toContain("dateDiff('week', s.cohort_week, a.act_week) = 4");
+    // Per-offset observable flag: the following week must have fully elapsed.
+    expect(q).toContain("dateDiff('week', s.cohort_week, toStartOfWeek(now())) >= 1");
+    expect(q).toContain("dateDiff('week', s.cohort_week, toStartOfWeek(now())) >= 4");
     expect(q).toContain("properties.environment = 'staging'");
     expect(q).toContain("LIMIT 10");
     expect(buildSignupCohortQuery("all")).not.toContain("properties.environment =");
@@ -167,18 +170,26 @@ describe("retention / cohort / attribution mappers (pure)", () => {
     expect(empty.cohortSize).toBeNull();
     expect(empty.d1).toBeNull();
   });
-  it("shapeSignupCohorts: % of cohort, empty week dropped, zero-size cell → null", () => {
+  it("shapeSignupCohorts: % of cohort, elapsed 0 → 0% but not-yet-elapsed → '—', empty week dropped, zero-size → null", () => {
+    // Columns: [week, size, w1, w2, w3, w4, elapsed1, elapsed2, elapsed3, elapsed4].
     const rows: unknown[][] = [
-      ["2026-01-05", 10, 5, 2, 1, 0],
-      [null, 4, 1, 1, 1, 1], // no week → dropped
-      ["2026-01-12", 0, 0, 0, 0, 0], // zero cohort → all null cells
+      // Fully elapsed cohort: W4 elapsed with 0 returns renders as a real 0%.
+      ["2026-01-05", 10, 5, 2, 1, 0, true, true, true, true],
+      [null, 4, 1, 1, 1, 1, true, true, true, true], // no week → dropped
+      ["2026-01-12", 0, 0, 0, 0, 0, true, true, true, true], // zero cohort → all null
+      // Recent "Size 1" cohort: only W1 has elapsed (0 returns → 0%); W2-W4 not
+      // yet observable → "—", NOT 0% (the staging defect).
+      ["2026-02-02", 1, 0, 0, 0, 0, true, false, false, false],
     ];
     const out = shapeSignupCohorts(rows);
-    expect(out).toHaveLength(2);
+    expect(out).toHaveLength(3);
     expect(out[0]).toMatchObject({ week: "2026-01-05", size: 10 });
-    expect(out[0].returns).toEqual([50, 20, 10, 0]); // % of 10
+    expect(out[0].returns).toEqual([50, 20, 10, 0]); // % of 10; elapsed 0 → 0%
     expect(out[1]).toMatchObject({ week: "2026-01-12", size: 0 });
-    expect(out[1].returns).toEqual([null, null, null, null]);
+    expect(out[1].returns).toEqual([null, null, null, null]); // zero-size row
+    expect(out[2]).toMatchObject({ week: "2026-02-02", size: 1 });
+    // Elapsed W1 with 0 returns → real 0%; not-yet-elapsed W2-W4 → null ("—").
+    expect(out[2].returns).toEqual([0, null, null, null]);
     expect(shapeSignupCohorts([])).toEqual([]);
   });
   it("bucketUtm: present label kept, missing/blank → 'direct / none' (never blank/fabricated)", () => {
@@ -235,13 +246,20 @@ describe("getRetention / getSignupCohorts / getSignupAttribution services", () =
     expect(await getSignupCohorts("production")).toEqual({ status: "not_configured" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
-  it("getSignupCohorts: shapes weekly rows", async () => {
-    fetchMock.mockResolvedValue(okJson([["2026-01-05", 10, 5, 2, 1, 0]]));
+  it("getSignupCohorts: shapes weekly rows (elapsed 0 → 0%, not-yet-elapsed → null)", async () => {
+    fetchMock.mockResolvedValue(
+      okJson([
+        ["2026-01-05", 10, 5, 2, 1, 0, true, true, true, true],
+        ["2026-02-02", 1, 0, 0, 0, 0, true, false, false, false],
+      ]),
+    );
     const r = await getSignupCohorts("production");
     expect(r.status).toBe("ok");
     if (r.status === "ok") {
-      expect(r.cohorts).toHaveLength(1);
+      expect(r.cohorts).toHaveLength(2);
       expect(r.cohorts[0].returns).toEqual([50, 20, 10, 0]);
+      // Size-1 recent cohort: elapsed W1 0% real, W2-W4 not observable → "—".
+      expect(r.cohorts[1].returns).toEqual([0, null, null, null]);
     }
   });
   it("getSignupCohorts: unavailable on PostHog error (no throw)", async () => {
