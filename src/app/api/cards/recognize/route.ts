@@ -11,9 +11,9 @@ import {
   getScanAllowance,
   reserveSuccessfulScan,
 } from "@/lib/services/scan-allowance.service";
-import { base64ToBytes, validateScanUpload } from "@/lib/utils/scan-upload";
+import { base64ToBytes, validateScanUpload, MAX_SCAN_BYTES } from "@/lib/utils/scan-upload";
 import { isScrydexLiveApproved } from "@/lib/services/scrydex-credit-gate";
-import { enforceRateLimit, creditTier } from "@/lib/utils/rate-limit";
+import { enforceRateLimit, creditTier, searchTier, clientIp } from "@/lib/utils/rate-limit";
 import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 import { parseVariantImages, type VariantImagesMap } from "@/lib/utils/card-image";
 
@@ -76,6 +76,86 @@ const TOP_N = 5;
 // Vision-ranked matches (local-DB expansion, no Scrydex credits).
 const SIBLING_CAP = 10;
 
+// C-1 (request-size protection): hard ceiling on the RAW request body, enforced
+// BEFORE request.json() and before any base64 decode. Next.js App Router route
+// handlers impose no default body-size limit, so an oversized JSON body (a giant
+// base64 `image` or a huge `text`) would otherwise be fully buffered + parsed +
+// decoded into memory before the post-decode 20MB image check (MAX_SCAN_BYTES)
+// could reject it — a memory/CPU amplification vector. We size the ceiling off
+// the real image cap: a 20MB image's base64 string is ~27MB (4/3 overhead) plus
+// JSON/field slack, so ~28MB is comfortably above any legitimate scan yet an
+// order of magnitude below a hostile multi-hundred-MB payload. A valid <=20MB
+// image still passes end-to-end.
+const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024; // ~28MB
+
+// C-2 (anonymous text abuse): strict cap on the OCR `text` field. Longer input
+// is rejected with 400 BEFORE tokenizing / the ILIKE pool scan / the DB write —
+// a very long blob is CPU-amplifying in the fuzzy scorer and bloats the stored
+// ScanFeedback.ocrText. 4KB is far beyond any real card's printed text.
+const MAX_RECOGNIZE_TEXT_CHARS = 4096;
+
+/**
+ * C-1: read the raw request body with a HARD byte ceiling, BEFORE JSON.parse /
+ * base64 decode. Returns the decoded body string, or a 413 NextResponse when the
+ * body exceeds MAX_REQUEST_BYTES.
+ *
+ * Content-Length is advisory (absent on chunked uploads, and attacker-lyable),
+ * so we DON'T trust it alone: a present-and-oversized length is a fast reject,
+ * but we ALSO stream the body through a byte counter and abort the moment the
+ * running total crosses the cap — so a missing or understated Content-Length
+ * can't smuggle an oversized payload past the gate. Either way we reject before
+ * ever parsing JSON or calling base64ToBytes.
+ */
+async function readBodyWithCap(request: Request): Promise<string | NextResponse> {
+  const tooLarge = () =>
+    NextResponse.json(
+      { success: false, error: "request-too-large" },
+      { status: 413 }
+    );
+
+  // Fast path: a present Content-Length that already exceeds the cap is rejected
+  // without reading a single body byte.
+  const contentLength = request.headers.get("content-length");
+  if (contentLength) {
+    const declared = Number(contentLength);
+    if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) return tooLarge();
+  }
+
+  // Authoritative path: count actual bytes as they stream in and abort as soon
+  // as the running total crosses the cap (defends a missing/lying Content-Length).
+  const body = request.body;
+  if (!body) {
+    // No stream (e.g. a synthetic Request): fall back to the buffered read, still
+    // capped by length below.
+    const text = await request.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_REQUEST_BYTES) return tooLarge();
+    return text;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > MAX_REQUEST_BYTES) {
+          await reader.cancel().catch(() => {});
+          return tooLarge();
+        }
+        chunks.push(value);
+      }
+    }
+  } catch {
+    // A read error is a client/transport failure, not an oversize — surface a
+    // generic 400 via the empty string (JSON.parse will reject it downstream).
+    return "";
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+}
+
 /** Reads the session if present; recognition works anonymously too. */
 async function optionalUserId(request: Request): Promise<string | null> {
   try {
@@ -87,9 +167,14 @@ async function optionalUserId(request: Request): Promise<string | null> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // C-1: enforce the raw-body size ceiling BEFORE JSON.parse / base64 decode.
+  // Oversized bodies 413 here without ever decoding the payload.
+  const raw = await readBodyWithCap(request);
+  if (raw instanceof NextResponse) return raw; // 413 — too large
+
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw);
   } catch {
     return NextResponse.json({ success: false, error: "Invalid JSON body." }, { status: 400 });
   }
@@ -343,6 +428,39 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!text) {
     return NextResponse.json(
       { success: false, error: "Provide an `image` (Vision OCR) or `text` (OCR result)." },
+      { status: 400 }
+    );
+  }
+
+  // ======================================================================
+  // C-2: the `text` path is ANONYMOUS (no session, no Scrydex credit), so it
+  // was previously un-throttled while running an unindexed ILIKE pool scan and
+  // a ScanFeedback write per call. Harden it BEFORE any expensive work:
+  //
+  //   1. IP-keyed rate limit (searchTier, 60/min) — reuses the existing DB /
+  //      public-read tier since this path is DB-bound (no credit spend), keyed
+  //      by clientIp (same Cloudflare-trusted derivation as search/ebay).
+  //      Runs FIRST, before the findMany/findFirst and before the write.
+  //   2. Strict length cap — reject text over MAX_RECOGNIZE_TEXT_CHARS with 400
+  //      before tokenizing/scoring/storing (CPU + storage amplification guard).
+  //
+  // The anonymous ScanFeedback.create below is kept (the PATCH feedback-label
+  // flow + authed analytics depend on a feedbackId being returned, and the
+  // existing behavior lets an anonymous caller label its own null-userId row),
+  // but it now only runs AFTER the IP rate limit has gated the request — so the
+  // writes are bounded by the per-IP 60/min cap, not unbounded.
+  // Fail-open note (RULE 1): this limit inherits the limiter's fail-open
+  // behavior; it is DB-abuse throttling, not a brute-force control.
+  // ======================================================================
+  const textLimited = await enforceRateLimit(request, searchTier(), {
+    kind: "ip",
+    id: clientIp(request),
+  });
+  if (textLimited) return textLimited;
+
+  if (text.length > MAX_RECOGNIZE_TEXT_CHARS) {
+    return NextResponse.json(
+      { success: false, error: "text-too-long" },
       { status: 400 }
     );
   }
