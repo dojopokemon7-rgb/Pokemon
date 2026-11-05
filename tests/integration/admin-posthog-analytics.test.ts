@@ -180,9 +180,13 @@ describe("retention / cohort / attribution mappers (pure)", () => {
       // Recent "Size 1" cohort: only W1 has elapsed (0 returns → 0%); W2-W4 not
       // yet observable → "—", NOT 0% (the staging defect).
       ["2026-02-02", 1, 0, 0, 0, 0, true, false, false, false],
+      // Brand-new "Size 1" this-week cohort: NO following week has elapsed yet
+      // (all four elapsed flags false) → every cell "—", NOT 0%. This is the
+      // exact staging defect the user reported ("Size 1, W1–W4 all show 0%").
+      ["2026-02-09", 1, 0, 0, 0, 0, false, false, false, false],
     ];
     const out = shapeSignupCohorts(rows);
-    expect(out).toHaveLength(3);
+    expect(out).toHaveLength(4);
     expect(out[0]).toMatchObject({ week: "2026-01-05", size: 10 });
     expect(out[0].returns).toEqual([50, 20, 10, 0]); // % of 10; elapsed 0 → 0%
     expect(out[1]).toMatchObject({ week: "2026-01-12", size: 0 });
@@ -190,6 +194,9 @@ describe("retention / cohort / attribution mappers (pure)", () => {
     expect(out[2]).toMatchObject({ week: "2026-02-02", size: 1 });
     // Elapsed W1 with 0 returns → real 0%; not-yet-elapsed W2-W4 → null ("—").
     expect(out[2].returns).toEqual([0, null, null, null]);
+    expect(out[3]).toMatchObject({ week: "2026-02-09", size: 1 });
+    // This-week cohort: no following week elapsed → W1-W4 all "—", NOT 0%.
+    expect(out[3].returns).toEqual([null, null, null, null]);
     expect(shapeSignupCohorts([])).toEqual([]);
   });
   it("bucketUtm: present label kept, missing/blank → 'direct / none' (never blank/fabricated)", () => {
