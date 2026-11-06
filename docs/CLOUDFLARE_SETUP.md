@@ -208,7 +208,10 @@ Caddy's `MB`/`KB` are decimal (30MB = 30,000,000 B; 64KB = 64,000 B). 30MB sits
 just ABOVE the app cap MAX_REQUEST_BYTES = 29,010,603 B, so a legitimate max
 (20MiB) image still passes and the app's 413 stays the precise guard. The cookie
 check is a presence check only (Caddy cannot validate sessions): a forged cookie
-header gets the 30MB ceiling instead of 64KB.
+header gets the 30MB ceiling AT CADDY. The app closes that hole (S-3): it resolves
+the session (headers only) BEFORE reading the body and gives only a real
+authenticated user the 29,010,603 B cap; everyone else, forged cookie included,
+gets 64KiB (413, stream cancelled).
 
 Observed Caddy behaviour (scripts/verify-caddy-body-limit.mjs): Caddy does NOT
 short-circuit on Content-Length. It streams to the upstream, aborts at max_size
@@ -220,14 +223,19 @@ body). So the limit BOUNDS buffering rather than avoiding the first KB/MB.
 |---|---|---|
 | No session cookie, body > 64KB (Caddy, 64,000 B) | Caddy | 413 |
 | No session cookie, body > 64KiB (app, if Caddy absent/bypassed) | app `readBodyWithCap` | 413 `request-too-large` |
+| Forged cookie / no valid session, body > 64KiB (app) | app `readBodyWithCap` | 413 `request-too-large` |
 | Session cookie, body > 30,000,000 B | Caddy | 413 |
 | Body > 29,010,603 B (and <= 30MB) | app `readBodyWithCap` | 413 `request-too-large` |
 | Valid JSON, decoded image > 20MiB, wrong MIME, not an image | app `validateScanUpload` | 400 |
 | Anonymous image (small body) | app | 401 `auth-required` |
 
-Residual: a forged `better-auth.session_token=x` cookie still lets one request
-force a ~29MB read before the 401. Further mitigation (not done): a container
-memory limit, or Caddy `forward_auth` to a session check.
+Forged-cookie hole: CLOSED at the APP layer (S-3). A junk `better-auth.session_token`
+cookie no longer selects the large cap; only a resolved session does, and a
+session-lookup error counts as unauthenticated (64KiB). Memory ceiling now: non-
+session callers buffer <= 64KiB; a genuine signed-in user can still buffer up to
+~29MB (~100MB transient) per request, bounded by Caddy 30MB and the container
+`mem_limit` + `--max-old-space-size` in docker-compose.yml (app 1200m/heap 900,
+app-staging 800m/heap 600 — judgement calls, confirm with `docker stats`).
 
 Verify the shipped Caddyfile against the real image (needs Docker, no prod impact):
 

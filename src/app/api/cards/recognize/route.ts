@@ -88,20 +88,22 @@ const SIBLING_CAP = 10;
 // image still passes end-to-end.
 const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024; // 29,010,603 B (~27.7MiB)
 
-// M-1 (secondary, app layer): a request with NO Better Auth session cookie can
-// never be a successful image scan (the image path 401s anonymous callers), and
-// the anonymous text path is capped at 4096 chars (<~25KB even fully
-// JSON-escaped). So such requests get a tiny ceiling instead of the 29MB one,
-// which stops anonymous callers forcing a ~29MB buffer + parse before the 401.
-// This is a cheap optimisation, NOT the primary control: a forged cookie header
-// defeats it. The PRIMARY control is Caddy's request_body max_size on this route
-// (Caddyfile, docs/CLOUDFLARE_SETUP.md); the MAX_REQUEST_BYTES cap above stays
-// the precise app-level guard. Cookie names match src/middleware.ts.
+// S-3 (app layer, now the real control): the body cap is chosen by a RESOLVED
+// SESSION, never by cookie presence. A forged `better-auth.session_token=x`
+// header used to unlock the 29MB tier before the 401. Now optionalUserId()
+// (headers/cookie only, never touches the body) runs BEFORE the body is read;
+// only a real authenticated user gets MAX_REQUEST_BYTES. Everyone else gets
+// 64KiB (anon text path is capped at 4096 chars, <~25KB JSON-escaped). A lookup
+// error is treated as unauthenticated (small cap) — never fail open to the big cap.
+// Cost of the lookup for forged cookies: Better Auth verifies the cookie's HMAC
+// signature before any DB read, so an unsigned/junk cookie is rejected without a
+// query (not re-verified here; the existing route already did this lookup for
+// every image request). A separate pre-check/IP limit was judged NOT warranted:
+// it would add code without lowering the memory ceiling, which is now bounded by
+// the 64KiB cap for non-sessions. Residual: a genuine signed-in user can still
+// buffer ~29MB per request (rate-limited only after parse); Caddy 30MB and the
+// container memory limit (docker-compose.yml) bound that.
 const ANON_MAX_REQUEST_BYTES = 64 * 1024;
-function hasSessionCookie(request: Request): boolean {
-  const cookie = request.headers.get("cookie") ?? "";
-  return /(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=/.test(cookie);
-}
 
 // C-2 (anonymous text abuse): strict cap on the OCR `text` field. Longer input
 // is rejected with 400 BEFORE tokenizing / the ILIKE pool scan / the DB write —
@@ -187,10 +189,12 @@ async function optionalUserId(request: Request): Promise<string | null> {
 export async function POST(request: Request): Promise<NextResponse> {
   // C-1: enforce the raw-body size ceiling BEFORE JSON.parse / base64 decode.
   // Oversized bodies 413 here without ever decoding the payload.
-  // Session-cookie-less callers get the small anonymous ceiling (M-1, secondary).
+  // S-3: resolve the session FIRST (once; reused below); only a real user gets
+  // the large ceiling.
+  const userId = await optionalUserId(request);
   const raw = await readBodyWithCap(
     request,
-    hasSessionCookie(request) ? MAX_REQUEST_BYTES : ANON_MAX_REQUEST_BYTES
+    userId ? MAX_REQUEST_BYTES : ANON_MAX_REQUEST_BYTES
   );
   if (raw instanceof NextResponse) return raw; // 413 — too large
 
@@ -237,8 +241,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   //      discarded (held in memory only; never persisted).
   // ======================================================================
   if (image) {
-    // 1. Auth — counted scans require a session.
-    const userId = await optionalUserId(request);
+    // 1. Auth — counted scans require a session (resolved before the body read).
     if (!userId) {
       return NextResponse.json(
         { success: false, error: "auth-required" },
@@ -597,7 +600,6 @@ export async function POST(request: Request): Promise<NextResponse> {
     // never break recognition.
     let feedbackId: string | null = null;
     try {
-      const userId = await optionalUserId(request);
       const row = await prisma.scanFeedback.create({
         data: { userId, ocrText: text, ocrSource, candidates },
         select: { id: true },

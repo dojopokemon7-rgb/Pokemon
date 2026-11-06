@@ -101,45 +101,134 @@ beforeEach(() => {
 
 // MAX_REQUEST_BYTES in the route = ceil(MAX_SCAN_BYTES*4/3) + 1MB (~28MB).
 const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024;
-// M-1: presence of this cookie selects the large (29MB) ceiling; absent -> 64KiB.
+// S-3: the cap is chosen by a RESOLVED SESSION (authMock.getSession), never by
+// cookie presence. The cookie below is only a header; whether it is "forged" or
+// "real" is decided by what getSession returns.
 const SESSION_COOKIE = "better-auth.session_token=x.y";
+const ANON_CAP = 64 * 1024;
+const sessionUser = () => authMock.getSession.mockResolvedValue({ user: { id: "user_1" } });
+function cookieReq(body: unknown): Request {
+  return new Request("http://localhost/api/cards/recognize", {
+    method: "POST",
+    headers: { cookie: SESSION_COOKIE },
+    body: JSON.stringify(body),
+  });
+}
 
-describe("M-1 — unauthenticated oversized body (app layer; Caddy is the primary control)", () => {
-  it("no session cookie + body just over 64KiB -> 413 BEFORE JSON.parse/decode/auth lookup", async () => {
+describe("S-3 — body cap follows the resolved session, not cookie presence", () => {
+  it("(a) forged cookie, NO valid session, body > 64KiB -> 413; parse/decode/scorer never reached", async () => {
+    authMock.getSession.mockResolvedValue(null); // junk cookie: session does not resolve
     const parse = vi.spyOn(JSON, "parse");
-    const res = await POST(req({ image: "A".repeat(70 * 1024) }));
+    const res = await POST(cookieReq({ image: "A".repeat(70 * 1024) }));
     expect(res.status).toBe(413);
-    expect(parse).not.toHaveBeenCalled(); // checked BEFORE res.json() (which itself calls JSON.parse)
+    expect(parse).not.toHaveBeenCalled(); // 413 happens before JSON.parse
     expect((await res.json()).error).toBe("request-too-large");
-    expect(authMock.getSession).not.toHaveBeenCalled();
     expect(scanUpload.base64ToBytes).not.toHaveBeenCalled();
+    expect(scanUpload.validateScanUpload).not.toHaveBeenCalled();
+    expect(prismaMock.card.findMany).not.toHaveBeenCalled();
     parse.mockRestore();
   });
 
-  it("no session cookie + a ~29MB-class body (the old pre-auth buffering vector) -> 413 immediately", async () => {
-    const res = await POST(req({ image: "A".repeat(MAX_REQUEST_BYTES - 1000) }));
-    expect(res.status).toBe(413);
-  });
-
-  it("no session cookie + small body under 64KiB still reaches the 401 image gate (behaviour preserved)", async () => {
-    const res = await POST(req({ image: "A".repeat(1000) }));
-    expect(res.status).toBe(401);
-  });
-
-  it("session cookie + body just under the app cap is NOT size-rejected (reaches auth/validation)", async () => {
-    authMock.getSession.mockResolvedValue(null);
+  it("(a) forged cookie + huge STREAMED body: session resolved BEFORE the first body read; stream cancelled at ~64KiB, not 29MB", async () => {
+    const events: string[] = [];
+    authMock.getSession.mockImplementation(async () => {
+      events.push("session");
+      return null;
+    });
+    const chunk = new Uint8Array(16 * 1024).fill(0x41);
+    let pulled = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (pulled === 0) events.push("read");
+          pulled++;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 } // no read-ahead: pulled counts bytes the route actually asked for
+    );
     const r = new Request("http://localhost/api/cards/recognize", {
       method: "POST",
       headers: { cookie: SESSION_COOKIE },
-      body: JSON.stringify({ image: "A".repeat(MAX_REQUEST_BYTES - 1000) }),
+      body: stream,
+      // @ts-expect-error duplex is required by undici for a stream body
+      duplex: "half",
     });
-    expect((await POST(r)).status).toBe(401); // not 413
+    const res = await POST(r);
+    expect(res.status).toBe(413);
+    expect(events[0]).toBe("session"); // session first, then body (mutation: read-then-auth)
+    expect(cancelled).toBe(true);
+    // 64KiB cap / 16KiB chunks = crossed on the 5th chunk; allow slack, but
+    // nowhere near the 29MB tier (~1770 chunks).
+    expect(pulled).toBeLessThanOrEqual(8);
+    expect(scanUpload.base64ToBytes).not.toHaveBeenCalled();
+  });
+
+  it("(b) valid session + body between 64KiB and the app cap is accepted (not 413) and reaches decode", async () => {
+    sessionUser();
+    scrydex.identifyCard.mockResolvedValue([]); // no match -> 200 "unavailable"; we only care it got past the cap
+    const res = await POST(cookieReq({ image: "A".repeat(2 * 1024 * 1024) }));
+    expect(res.status).toBe(200);
+    expect(scanUpload.base64ToBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it("(b') valid session + body just under MAX_REQUEST_BYTES is not size-rejected", async () => {
+    sessionUser();
+    scrydex.identifyCard.mockResolvedValue([]);
+    const res = await POST(cookieReq({ image: "A".repeat(MAX_REQUEST_BYTES - 1000) }));
+    expect(res.status).toBe(200);
+  });
+
+  it("(c) valid session + body > 29,010,603 B -> 413 before parse/decode", async () => {
+    sessionUser();
+    const res = await POST(cookieReq({ image: "A".repeat(MAX_REQUEST_BYTES + 1000) }));
+    expect(res.status).toBe(413);
+    expect(scanUpload.base64ToBytes).not.toHaveBeenCalled();
+  });
+
+  it("(d) session lookup THROWS -> treated as unauthenticated: small cap (no fail-open to 29MB)", async () => {
+    authMock.getSession.mockRejectedValue(new Error("db down"));
+    const res = await POST(cookieReq({ image: "A".repeat(ANON_CAP + 1000) }));
+    expect(res.status).toBe(413);
+    expect(scanUpload.base64ToBytes).not.toHaveBeenCalled();
+  });
+
+  it("(e) optionalUserId (getSession) is called exactly once per request: 413, image 200, anon text, anon 401", async () => {
+    authMock.getSession.mockResolvedValue(null);
+    await POST(cookieReq({ image: "A".repeat(ANON_CAP + 1000) })); // 413
+    expect(authMock.getSession).toHaveBeenCalledTimes(1);
+
+    authMock.getSession.mockClear();
+    await POST(req({ image: "A".repeat(100) })); // anon image -> 401
+    expect(authMock.getSession).toHaveBeenCalledTimes(1);
+
+    authMock.getSession.mockClear();
+    await POST(req({ text: "charizard", game: "pokemon", source: "tesseract" })); // anon text (+feedback write)
+    expect(authMock.getSession).toHaveBeenCalledTimes(1);
+
+    authMock.getSession.mockClear();
+    sessionUser();
+    scrydex.identifyCard.mockResolvedValue([]);
+    await POST(cookieReq({ image: "A".repeat(100) })); // authed image
+    expect(authMock.getSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("anonymous (no cookie) body just over 64KiB -> 413; under 64KiB still reaches the 401 image gate", async () => {
+    const big = await POST(req({ image: "A".repeat(70 * 1024) }));
+    expect(big.status).toBe(413);
+    const small = await POST(req({ image: "A".repeat(1000) }));
+    expect(small.status).toBe(401);
   });
 });
 
 describe("C-1 — request-size protection (413 before parse/decode)", () => {
   it("rejects an oversized body (honest large Content-Length) with 413 and never decodes", async () => {
     // Build a body whose actual size exceeds the cap.
+    sessionUser(); // large tier requires a RESOLVED session (S-3)
     const huge = "A".repeat(MAX_REQUEST_BYTES + 1000);
     const r = new Request("http://localhost/api/cards/recognize", {
       method: "POST",
@@ -163,6 +252,7 @@ describe("C-1 — request-size protection (413 before parse/decode)", () => {
   it("rejects an oversized body even with a MISSING/LYING Content-Length (stream-counted) with 413", async () => {
     // Construct a Request whose body stream yields more than the cap while the
     // Content-Length header is absent (undici does not set it for a stream body).
+    sessionUser(); // large tier requires a RESOLVED session (S-3)
     const chunk = new Uint8Array(1024 * 1024).fill(0x41); // 1MB of 'A'
     const chunksNeeded = Math.ceil(MAX_REQUEST_BYTES / chunk.byteLength) + 2;
     let sent = 0;

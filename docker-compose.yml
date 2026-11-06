@@ -53,7 +53,13 @@ services:
       - "127.0.0.1:3000:3000"
     env_file:
       - .env
+    # S-3: bound the worst-case request buffering. Droplet = 2 vCPU/4GB shared by
+    # prod app + staging app + redis + caddy: prod 1200m (heap 900 leaves headroom
+    # for ~100MB transient 29MB-scan buffers + native/Buffer memory), staging 800m.
+    # JUDGEMENT CALL: confirm against real RSS (docker stats) before deploying.
+    mem_limit: 1200m
     environment:
+      NODE_OPTIONS: --max-old-space-size=900
       # Override REDIS_URL to use the Docker service name + the shared password.
       REDIS_URL: redis://default:${REDIS_PASSWORD}@redis:6379
     healthcheck:
@@ -99,7 +105,10 @@ services:
       - "127.0.0.1:3001:3000"
     env_file:
       - .env.staging
+    # S-3: staging memory ceiling (see prod app note); heap 600 < limit 800m.
+    mem_limit: 800m
     environment:
+      NODE_OPTIONS: --max-old-space-size=600
       # Same Docker-service Redis host; password comes from the shared .env.staging.
       REDIS_URL: redis://default:${REDIS_PASSWORD}@redis:6379
     healthcheck:
