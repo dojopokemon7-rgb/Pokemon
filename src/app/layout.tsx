@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Ubuntu_Sans, Marcellus } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import Providers from "./providers";
 import PwaRegistrar from "@/components/PwaRegistrar";
@@ -8,21 +8,23 @@ import PwaRegistrar from "@/components/PwaRegistrar";
 // (dojo-prototype/styles.css: --font-display:'Ubuntu Sans',system-ui,...).
 // Previously this loaded Archivo, which has different letterforms/spacing —
 // that mismatch was the root cause of the "alignment looks different" report.
-const ubuntuSans = Ubuntu_Sans({
-  subsets: ["latin"],
-  weight: ["400", "600", "700", "800"],
-  style: ["normal", "italic"],
+// Self-hosted (next/font/local): removes the build-time fetch to Google that
+// intermittently crashed `next build` (vercel/next.js#99114). Same CSS variable
+// names/display as the former next/font/google config. Latin subset only,
+// matching the previous `subsets: ["latin"]`. See src/fonts/README.md.
+const ubuntuSans = localFont({
+  src: [
+    { path: "../fonts/UbuntuSans-latin-normal.woff2", weight: "100 800", style: "normal" },
+    { path: "../fonts/UbuntuSans-latin-italic.woff2", weight: "100 800", style: "italic" },
+  ],
   variable: "--font-ubuntu-sans",
   display: "swap",
 });
-
-const marcellus = Marcellus({
-  subsets: ["latin"],
-  weight: ["400"],
+const marcellus = localFont({
+  src: [{ path: "../fonts/Marcellus-latin-400.woff2", weight: "400", style: "normal" }],
   variable: "--font-marcellus",
   display: "swap",
 });
-
 export const metadata: Metadata = {
   title: {
     default: "Dojo — TCG Collection",
