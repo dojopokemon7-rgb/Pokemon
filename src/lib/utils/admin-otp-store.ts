@@ -94,6 +94,16 @@ export function verifyOtp(nonce: string, code: string, now: number = Date.now())
   return { ok: false, reason: "invalid", remaining: MAX_ATTEMPTS - challenge.attempts };
 }
 
+/**
+ * Side-effect-free: true only for a known, unexpired challenge. Lets the
+ * verify-otp route charge the durable global OTP budget ONLY for real
+ * challenges (S-2). Mutates nothing; verifyOtp stays the atomic decider.
+ */
+export function hasValidChallenge(nonce: string, now: number = Date.now()): boolean {
+  const c = store.get(nonce);
+  return !!c && now < c.exp;
+}
+
 /** Drops any challenge for `nonce` (e.g. on logout / password re-entry). */
 export function clearChallenge(nonce: string): void {
   store.delete(nonce);

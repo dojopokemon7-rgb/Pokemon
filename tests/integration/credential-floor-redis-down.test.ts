@@ -15,9 +15,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  * WHAT THIS PROVES (and what it does not):
  *  - Redis down => the per-IP limiter is open (login still reaches the
  *    credential step).
- *  - The ADMIN PASSWORD step is bounded WITHOUT Redis: after 5 attempts the
- *    window locks, even the CORRECT password gets the same 429 as a wrong one,
- *    and it recovers when the 15-min window ends (M-2).
+ *  - The ADMIN PASSWORD step is bounded WITHOUT Redis, per source (5 / 15 min,
+ *    S-2: a flood from one IP locks only that IP) and globally (40 / 15 min, the
+ *    distributed-attack ceiling): even the CORRECT password gets the same 429 as
+ *    a wrong one while locked, and it recovers when the 15-min window ends.
+ *    NOTE: here the guard runs on its IN-PROCESS fallback (DB mocked down), so
+ *    this proves the fallback semantics, not durability across restarts.
  *  - The admin OTP has the per-nonce 5-guess lock, AND a cross-nonce cap so a
  *    repeated password step cannot reset the guess budget (M-2).
  * NOT proven here: the USER email/password lockout (see
@@ -75,10 +78,10 @@ import {
   __resetAdminGuardMemoryForTests,
 } from "@/lib/services/admin-login-guard.service";
 
-function loginReq(body: unknown): Request {
+function loginReq(body: unknown, ip?: string): Request {
   return new Request("http://localhost/api/admin-auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(ip ? { "x-real-ip": ip } : {}) },
     body: JSON.stringify(body),
   });
 }
@@ -114,6 +117,16 @@ afterEach(() => {
 });
 
 describe("Redis down: limiter fails open, non-Redis floor still holds", () => {
+  it("S-2: one source locks only itself; the global ceiling (40) bounds a distributed attack", async () => {
+    for (let i = 0; i < 6; i++) await loginPost(loginReq({ email: ADMIN_EMAIL, password: "x" }, "198.51.100.1"));
+    expect((await loginPost(loginReq({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }, "198.51.100.1"))).status).toBe(429);
+    expect((await loginPost(loginReq({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }, "198.51.100.2"))).status).toBe(200);
+    __resetAdminGuardMemoryForTests();
+    for (let s = 1; s <= 8; s++)
+      for (let i = 0; i < 5; i++) await loginPost(loginReq({ email: ADMIN_EMAIL, password: "x" }, `192.0.2.${s}`));
+    expect((await loginPost(loginReq({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }, "192.0.2.77"))).status).toBe(429);
+  });
+
   it("admin login proceeds (limiter fails open, never 429)", async () => {
     const res = await loginPost(good());
     expect(res.status).toBe(200);

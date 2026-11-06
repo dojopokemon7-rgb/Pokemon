@@ -21,7 +21,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { verifyOtp } from "@/lib/utils/admin-otp-store";
+import { hasValidChallenge, verifyOtp } from "@/lib/utils/admin-otp-store";
 import {
   ADMIN_LOGIN_NONCE_COOKIE,
   ADMIN_SESSION_COOKIE,
@@ -67,6 +67,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid code" }, { status: 401 });
   }
 
+  // S-2: an unknown/forged/expired nonce gets the generic relogin failure and
+  // NEVER touches the global OTP budget (else an anonymous `Cookie:
+  // dojo_admin_login=x` flood would 429 the real admin). Only a live challenge
+  // (which requires the correct password to obtain) is charged below.
+  if (!hasValidChallenge(nonce)) {
+    const res = NextResponse.json({ error: "Too many attempts", relogin: true }, { status: 401 });
+    clearNonceCookie(res);
+    return res;
+  }
+
   // Reserve a guess in the cross-nonce durable budget BEFORE verifying; once the
   // window's budget is spent even the correct code is refused (no oracle).
   const guess = await reserveAdminOtpAttempt();
@@ -81,7 +91,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const result = verifyOtp(nonce, parsed.data.code);
   if (result.ok) {
-    await resetAdminGuard(); // full password+OTP login done → clear counters
+    await resetAdminGuard(undefined, clientIp(request)); // full password+OTP login done → clear counters
     const res = NextResponse.json({ ok: true });
     res.cookies.set(ADMIN_SESSION_COOKIE, signAdminSession(), adminSessionCookieOptions());
     clearNonceCookie(res);

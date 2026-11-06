@@ -9,7 +9,10 @@
  *
  * SECURITY:
  *  - rate-limited per IP (brute-force cap) via the existing fail-open limiter,
- *    PLUS a durable, non-Redis, GLOBAL floor (admin-login-guard.service.ts, M-2):
+ *    PLUS a durable, non-Redis floor (admin-login-guard.service.ts, M-2/S-2):
+ *    PER-SOURCE-IP password cap (5/15min, locks only that source) under a higher
+ *    GLOBAL ceiling (40/15min); one anonymous client cannot lock the admin out.
+ *    Global floor details:
  *    max 5 password attempts / 15 min, max 5 OTP mints (= emails) / 15 min.
  *    While locked EVERY attempt (right or wrong password) gets the same 429, so
  *    the lock leaks no password-validity signal.
@@ -77,7 +80,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Durable floor (M-2): reserve an attempt BEFORE acting on the result, so a
   // parallel burst cannot overshoot and a locked window rejects even the correct
   // password. Fixed 15-min window; attempts while locked don't extend it.
-  const attempt = await reserveAdminPasswordAttempt();
+  const attempt = await reserveAdminPasswordAttempt(clientIp(request));
   if (!attempt.allowed) return tooManyAttempts();
 
   if (!credsOk) {

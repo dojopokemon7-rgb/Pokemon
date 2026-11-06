@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createOtpChallenge, verifyOtp, clearChallenge } from "@/lib/utils/admin-otp-store";
+import { createOtpChallenge, verifyOtp, clearChallenge, hasValidChallenge } from "@/lib/utils/admin-otp-store";
 
 /**
  * Admin login OTP store — single-use, expiry, 5-attempt cap, unknown nonce.
@@ -55,5 +55,15 @@ describe("admin-otp-store", () => {
     const code = createOtpChallenge(nonce);
     clearChallenge(nonce);
     expect(verifyOtp(nonce, code)).toEqual({ ok: false, reason: "unknown" });
+  });
+
+  it("hasValidChallenge is side-effect-free: true only for a live challenge, never consumes attempts", () => {
+    const nonce = "n-valid";
+    expect(hasValidChallenge(nonce)).toBe(false);
+    const code = createOtpChallenge(nonce);
+    for (let i = 0; i < 20; i++) expect(hasValidChallenge(nonce)).toBe(true);
+    expect(hasValidChallenge(nonce, Date.now() + 11 * 60 * 1000)).toBe(false);
+    expect(verifyOtp(nonce, code)).toEqual({ ok: true }); // still intact, 0 attempts used
+    expect(hasValidChallenge(nonce)).toBe(false);
   });
 });
