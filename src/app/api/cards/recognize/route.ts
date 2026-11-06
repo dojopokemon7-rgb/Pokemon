@@ -86,7 +86,22 @@ const SIBLING_CAP = 10;
 // JSON/field slack, so ~28MB is comfortably above any legitimate scan yet an
 // order of magnitude below a hostile multi-hundred-MB payload. A valid <=20MB
 // image still passes end-to-end.
-const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024; // ~28MB
+const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024; // 29,010,603 B (~27.7MiB)
+
+// M-1 (secondary, app layer): a request with NO Better Auth session cookie can
+// never be a successful image scan (the image path 401s anonymous callers), and
+// the anonymous text path is capped at 4096 chars (<~25KB even fully
+// JSON-escaped). So such requests get a tiny ceiling instead of the 29MB one,
+// which stops anonymous callers forcing a ~29MB buffer + parse before the 401.
+// This is a cheap optimisation, NOT the primary control: a forged cookie header
+// defeats it. The PRIMARY control is Caddy's request_body max_size on this route
+// (Caddyfile, docs/CLOUDFLARE_SETUP.md); the MAX_REQUEST_BYTES cap above stays
+// the precise app-level guard. Cookie names match src/middleware.ts.
+const ANON_MAX_REQUEST_BYTES = 64 * 1024;
+function hasSessionCookie(request: Request): boolean {
+  const cookie = request.headers.get("cookie") ?? "";
+  return /(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=/.test(cookie);
+}
 
 // C-2 (anonymous text abuse): strict cap on the OCR `text` field. Longer input
 // is rejected with 400 BEFORE tokenizing / the ILIKE pool scan / the DB write —
@@ -106,7 +121,10 @@ const MAX_RECOGNIZE_TEXT_CHARS = 4096;
  * can't smuggle an oversized payload past the gate. Either way we reject before
  * ever parsing JSON or calling base64ToBytes.
  */
-async function readBodyWithCap(request: Request): Promise<string | NextResponse> {
+async function readBodyWithCap(
+  request: Request,
+  maxBytes: number = MAX_REQUEST_BYTES
+): Promise<string | NextResponse> {
   const tooLarge = () =>
     NextResponse.json(
       { success: false, error: "request-too-large" },
@@ -118,7 +136,7 @@ async function readBodyWithCap(request: Request): Promise<string | NextResponse>
   const contentLength = request.headers.get("content-length");
   if (contentLength) {
     const declared = Number(contentLength);
-    if (Number.isFinite(declared) && declared > MAX_REQUEST_BYTES) return tooLarge();
+    if (Number.isFinite(declared) && declared > maxBytes) return tooLarge();
   }
 
   // Authoritative path: count actual bytes as they stream in and abort as soon
@@ -128,7 +146,7 @@ async function readBodyWithCap(request: Request): Promise<string | NextResponse>
     // No stream (e.g. a synthetic Request): fall back to the buffered read, still
     // capped by length below.
     const text = await request.text();
-    if (Buffer.byteLength(text, "utf8") > MAX_REQUEST_BYTES) return tooLarge();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) return tooLarge();
     return text;
   }
 
@@ -141,7 +159,7 @@ async function readBodyWithCap(request: Request): Promise<string | NextResponse>
       if (done) break;
       if (value) {
         total += value.byteLength;
-        if (total > MAX_REQUEST_BYTES) {
+        if (total > maxBytes) {
           await reader.cancel().catch(() => {});
           return tooLarge();
         }
@@ -153,7 +171,7 @@ async function readBodyWithCap(request: Request): Promise<string | NextResponse>
     // generic 400 via the empty string (JSON.parse will reject it downstream).
     return "";
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** Reads the session if present; recognition works anonymously too. */
@@ -169,7 +187,11 @@ async function optionalUserId(request: Request): Promise<string | null> {
 export async function POST(request: Request): Promise<NextResponse> {
   // C-1: enforce the raw-body size ceiling BEFORE JSON.parse / base64 decode.
   // Oversized bodies 413 here without ever decoding the payload.
-  const raw = await readBodyWithCap(request);
+  // Session-cookie-less callers get the small anonymous ceiling (M-1, secondary).
+  const raw = await readBodyWithCap(
+    request,
+    hasSessionCookie(request) ? MAX_REQUEST_BYTES : ANON_MAX_REQUEST_BYTES
+  );
   if (raw instanceof NextResponse) return raw; // 413 — too large
 
   let body: unknown;

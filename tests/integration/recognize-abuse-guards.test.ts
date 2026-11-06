@@ -101,6 +101,41 @@ beforeEach(() => {
 
 // MAX_REQUEST_BYTES in the route = ceil(MAX_SCAN_BYTES*4/3) + 1MB (~28MB).
 const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024;
+// M-1: presence of this cookie selects the large (29MB) ceiling; absent -> 64KiB.
+const SESSION_COOKIE = "better-auth.session_token=x.y";
+
+describe("M-1 — unauthenticated oversized body (app layer; Caddy is the primary control)", () => {
+  it("no session cookie + body just over 64KiB -> 413 BEFORE JSON.parse/decode/auth lookup", async () => {
+    const parse = vi.spyOn(JSON, "parse");
+    const res = await POST(req({ image: "A".repeat(70 * 1024) }));
+    expect(res.status).toBe(413);
+    expect(parse).not.toHaveBeenCalled(); // checked BEFORE res.json() (which itself calls JSON.parse)
+    expect((await res.json()).error).toBe("request-too-large");
+    expect(authMock.getSession).not.toHaveBeenCalled();
+    expect(scanUpload.base64ToBytes).not.toHaveBeenCalled();
+    parse.mockRestore();
+  });
+
+  it("no session cookie + a ~29MB-class body (the old pre-auth buffering vector) -> 413 immediately", async () => {
+    const res = await POST(req({ image: "A".repeat(MAX_REQUEST_BYTES - 1000) }));
+    expect(res.status).toBe(413);
+  });
+
+  it("no session cookie + small body under 64KiB still reaches the 401 image gate (behaviour preserved)", async () => {
+    const res = await POST(req({ image: "A".repeat(1000) }));
+    expect(res.status).toBe(401);
+  });
+
+  it("session cookie + body just under the app cap is NOT size-rejected (reaches auth/validation)", async () => {
+    authMock.getSession.mockResolvedValue(null);
+    const r = new Request("http://localhost/api/cards/recognize", {
+      method: "POST",
+      headers: { cookie: SESSION_COOKIE },
+      body: JSON.stringify({ image: "A".repeat(MAX_REQUEST_BYTES - 1000) }),
+    });
+    expect((await POST(r)).status).toBe(401); // not 413
+  });
+});
 
 describe("C-1 — request-size protection (413 before parse/decode)", () => {
   it("rejects an oversized body (honest large Content-Length) with 413 and never decodes", async () => {
@@ -108,6 +143,7 @@ describe("C-1 — request-size protection (413 before parse/decode)", () => {
     const huge = "A".repeat(MAX_REQUEST_BYTES + 1000);
     const r = new Request("http://localhost/api/cards/recognize", {
       method: "POST",
+      headers: { cookie: SESSION_COOKIE }, // exercise the 29MB app cap, not the anon cap
       body: JSON.stringify({ image: huge }),
     });
 
@@ -143,6 +179,7 @@ describe("C-1 — request-size protection (413 before parse/decode)", () => {
     const r = new Request("http://localhost/api/cards/recognize", {
       method: "POST",
       body: stream,
+      headers: { cookie: SESSION_COOKIE },
       // No content-length set; undici marks this a duplex stream.
       // @ts-expect-error duplex is required by undici for a stream body
       duplex: "half",

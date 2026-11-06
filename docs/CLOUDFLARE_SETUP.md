@@ -185,3 +185,60 @@ must be refreshed from <https://www.cloudflare.com/ips-v4> and
 If these drift apart, client-IP resolution (Caddy) or origin reachability (ufw) breaks.
 A stale `trusted_proxies` list silently degrades the rate limiter back to one shared
 bucket; a stale ufw list can make the origin unreachable through Cloudflare.
+
+## 7. Request-body limits on /api/cards/recognize (M-1)
+
+`POST /api/cards/recognize` reads its whole JSON body into memory in the Node app
+before it can authenticate (the image branch only 401s after the body is read). A
+~29MB body costs roughly 100MB of transient memory, so the limit is enforced at
+the PROXY as well as in the app. Caddy version used by the project:
+`caddy:2-alpine` (docker-compose.yml); verified on v2.11.4.
+
+Directive (in BOTH site blocks of [`../Caddyfile`](../Caddyfile)):
+
+```
+@recognize path /api/cards/recognize
+request_body @recognize { max_size 30MB }          # session-cookie callers
+@recognize_anon { path /api/cards/recognize
+                  not header_regexp Cookie (?:^|;\s*)(?:__Secure-)?better-auth\.session_token= }
+request_body @recognize_anon { max_size 64KB }     # no session cookie
+```
+
+Caddy's `MB`/`KB` are decimal (30MB = 30,000,000 B; 64KB = 64,000 B). 30MB sits
+just ABOVE the app cap MAX_REQUEST_BYTES = 29,010,603 B, so a legitimate max
+(20MiB) image still passes and the app's 413 stays the precise guard. The cookie
+check is a presence check only (Caddy cannot validate sessions): a forged cookie
+header gets the 30MB ceiling instead of 64KB.
+
+Observed Caddy behaviour (scripts/verify-caddy-body-limit.mjs): Caddy does NOT
+short-circuit on Content-Length. It streams to the upstream, aborts at max_size
+and answers the client 413; the upstream sees a truncated, incomplete request
+(the app's body reader then returns 400 "Invalid JSON", never a full oversized
+body). So the limit BOUNDS buffering rather than avoiding the first KB/MB.
+
+| Who sends what | Rejecting layer | Status |
+|---|---|---|
+| No session cookie, body > 64KB (Caddy, 64,000 B) | Caddy | 413 |
+| No session cookie, body > 64KiB (app, if Caddy absent/bypassed) | app `readBodyWithCap` | 413 `request-too-large` |
+| Session cookie, body > 30,000,000 B | Caddy | 413 |
+| Body > 29,010,603 B (and <= 30MB) | app `readBodyWithCap` | 413 `request-too-large` |
+| Valid JSON, decoded image > 20MiB, wrong MIME, not an image | app `validateScanUpload` | 400 |
+| Anonymous image (small body) | app | 401 `auth-required` |
+
+Residual: a forged `better-auth.session_token=x` cookie still lets one request
+force a ~29MB read before the 401. Further mitigation (not done): a container
+memory limit, or Caddy `forward_auth` to a session check.
+
+Verify the shipped Caddyfile against the real image (needs Docker, no prod impact):
+
+```
+node scripts/verify-caddy-body-limit.mjs
+```
+
+Apply (operator, repo change only until deployed). Caddy MUST be RECREATED, not
+reloaded: the Caddyfile is a single-file bind mount and an in-place edit/replace
+(e.g. `git reset --hard`) can leave the container reading a stale inode.
+
+```
+docker compose up -d --force-recreate caddy
+```

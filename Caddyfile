@@ -82,6 +82,38 @@
     # unaffected. Once DOMAIN is set, the origin cert is served on 443. The site
     # address stays the real domain; we NEVER hardcode the origin IP.
     tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+    # M-1 REQUEST-BODY LIMIT (security follow-up; load-bearing, do NOT strip).
+    # /api/cards/recognize buffers its whole JSON body in the Node app BEFORE it
+    # can authenticate (a 29MB image body is ~100MB peak memory per request), so
+    # an anonymous caller could force that cost with no session. Reject oversized
+    # bodies HERE, at the proxy, before any byte reaches the app. 30MB (Caddy's
+    # decimal MB = 30,000,000 B) sits just ABOVE the app's MAX_REQUEST_BYTES
+    # (29,010,603 B in src/app/api/cards/recognize/route.ts), so every legitimate
+    # max-size scan still passes and the app's own 413 stays the precise guard.
+    # NOTE (verified empirically, Caddy v2.11): Caddy does NOT short-circuit on a
+    # declared Content-Length; it streams to the upstream and aborts the request at
+    # max_size, answering the client 413. So the cap BOUNDS what the app can be made
+    # to read; the upstream never receives a complete oversized body.
+    # Scoped to this one path; every other route keeps current behaviour.
+    # Layer map: docs/CLOUDFLARE_SETUP.md ("Request-body limits"). Verify with
+    # scripts/verify-caddy-body-limit.mjs. Changing this file requires RECREATING
+    # the caddy container (docker compose up -d --force-recreate caddy).
+    @recognize path /api/cards/recognize
+    request_body @recognize {
+        max_size 30MB
+    }
+    # Same route, but NO Better Auth session cookie (nothing an anonymous caller
+    # may send here legitimately exceeds a few KB: image scans require a session
+    # and anonymous text is capped at 4096 chars). 64KB at the proxy means such a
+    # caller can never make the app buffer more than ~64KB. A forged cookie header
+    # defeats this (Caddy cannot validate sessions) -> falls back to the 30MB cap.
+    @recognize_anon {
+        path /api/cards/recognize
+        not header_regexp Cookie (?:^|;\s*)(?:__Secure-)?better-auth\.session_token=
+    }
+    request_body @recognize_anon {
+        max_size 64KB
+    }
     # Proxy all requests to the Next.js app container.
     reverse_proxy app:3000 {
         # Forward the original host so Next.js sees the real host. (Caddy
@@ -165,6 +197,23 @@ staging.dojocollect.com {
     # Cloudflare Origin Certificate (see the ORIGIN TLS note above).
     tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
 
+    # M-1 request-body limit: same directive + rationale as the prod block above.
+    @recognize path /api/cards/recognize
+    request_body @recognize {
+        max_size 30MB
+    }
+    # Same route, but NO Better Auth session cookie (nothing an anonymous caller
+    # may send here legitimately exceeds a few KB: image scans require a session
+    # and anonymous text is capped at 4096 chars). 64KB at the proxy means such a
+    # caller can never make the app buffer more than ~64KB. A forged cookie header
+    # defeats this (Caddy cannot validate sessions) -> falls back to the 30MB cap.
+    @recognize_anon {
+        path /api/cards/recognize
+        not header_regexp Cookie (?:^|;\s*)(?:__Secure-)?better-auth\.session_token=
+    }
+    request_body @recognize_anon {
+        max_size 64KB
+    }
     # Proxy all requests to the STAGING Next.js app container.
     reverse_proxy app-staging:3000 {
         header_up Host {host}
