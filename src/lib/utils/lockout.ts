@@ -104,3 +104,19 @@ export function nextFailureState(current: LockoutState, now: Date): LockoutState
 export function resetState(): LockoutState {
   return { failedLoginAttempts: 0, lockedUntil: null };
 }
+
+/**
+ * Canonical account identity for lockout reads/writes (H-1).
+ *
+ * MUST match Better Auth exactly: its internal adapter does
+ * `findUserByEmail(email)` with `value: email.toLowerCase()`, and sign-up /
+ * updateUser store `email.toLowerCase()` (installed better-auth
+ * internal-adapter.mjs). It does NOT trim: `sign-in/email` validates the raw
+ * value with `z.email()` first, which rejects surrounding whitespace with a 400
+ * before any credential check (so such requests never count and never succeed).
+ * Any other normalisation would let the lockout row diverge from the account
+ * Better Auth authenticates.
+ */
+export function canonicalAuthEmail(email: string): string {
+  return email.toLowerCase();
+}

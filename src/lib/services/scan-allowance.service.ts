@@ -14,6 +14,7 @@
  * The user is identified from the Better Auth server session by the caller; the
  * userId passed here is already trusted (never client-supplied).
  */
+import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getScanLimit, remainingScans } from "@/lib/utils/scan-limit";
 
@@ -44,17 +45,20 @@ export async function getScanAllowance(userId: string): Promise<ScanAllowance> {
  * matches zero rows (already at/over limit).
  */
 export async function reserveSuccessfulScan(
-  userId: string
+  userId: string,
+  // Optional client (defaults to the app singleton; the route passes only userId).
+  // Lets the real-Postgres concurrency test drive THIS function via independent pools.
+  db: Pick<PrismaClient, "user"> = prisma
 ): Promise<{ ok: boolean; allowance: ScanAllowance }> {
   const limit = getScanLimit();
 
-  const res = await prisma.user.updateMany({
+  const res = await db.user.updateMany({
     where: { id: userId, scanCount: { lt: limit } },
     data: { scanCount: { increment: 1 } },
   });
 
   // Re-read the authoritative counter for an accurate allowance snapshot.
-  const user = await prisma.user.findUnique({
+  const user = await db.user.findUnique({
     where: { id: userId },
     select: { scanCount: true },
   });
