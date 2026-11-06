@@ -33,6 +33,22 @@ const rlMock = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/utils/rate-limit", () => rlMock);
 
+// M-2: the admin routes now consult a durable (Postgres) guard. This lane is
+// DB-free, so the DB is "unavailable": the guard logs and falls back to its
+// in-process counters (the fail-safe path), which is what runs here.
+vi.mock("@/lib/db", () => ({
+  prisma: {
+    $queryRaw: vi.fn(async () => {
+      throw new Error("no database in the mocked lane");
+    }),
+    verification: {
+      deleteMany: vi.fn(async () => {
+        throw new Error("no database in the mocked lane");
+      }),
+    },
+  },
+}));
+import { __resetAdminGuardMemoryForTests } from "@/lib/services/admin-login-guard.service";
 import { POST as loginPost } from "@/app/api/admin-auth/login/route";
 import { POST as verifyPost } from "@/app/api/admin-auth/verify-otp/route";
 import { POST as logoutPost } from "@/app/api/admin-auth/logout/route";
@@ -64,6 +80,8 @@ function cookieValue(res: Response, name: string): string | undefined {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetAdminGuardMemoryForTests();
+  vi.spyOn(console, "error").mockImplementation(() => {});
   process.env.ADMIN_EMAIL = ADMIN_EMAIL;
   process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
   process.env.ADMIN_SESSION_SECRET = "integration-test-admin-secret";

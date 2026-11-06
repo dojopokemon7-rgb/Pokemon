@@ -117,3 +117,11 @@ parallel connections.**
 - `scripts/concurrency-test.mjs` — the Docker up → `db push` → Vitest → teardown
   harness.
 - `package.json` script `test:concurrency`.
+
+## Security follow-up additions (H-1, M-2, M-3)
+
+All three call PRODUCTION code through independent PrismaClient pools (nothing replicated, except the explicitly-labelled NEGATIVE CONTROLS that prove the harness can detect a lost update):
+
+- `scan-allowance.pg.test.ts` - the real `reserveSuccessfulScan(userId, db)` (optional `db` param, defaults to the singleton). Supersedes the "replicated guarded SQL" approach described above for this file.
+- `login-lockout.pg.test.ts` - real `recordFailedLogin` / `lockoutAfterSignIn` / `lockoutBeforeSignIn`: no lost updates, mixed-case convergence, lock + `lockedUntil`.
+- `admin-login-guard.pg.test.ts` - real admin guard counters: atomic increments, no window extension while locked, expiry recovery, reset, and a genuinely missing table => in-process fallback.

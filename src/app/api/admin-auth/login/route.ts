@@ -8,7 +8,11 @@
  *   short-lived httpOnly nonce cookie, return {step:"otp"}.
  *
  * SECURITY:
- *  - rate-limited per IP (brute-force cap) via the existing fail-open limiter.
+ *  - rate-limited per IP (brute-force cap) via the existing fail-open limiter,
+ *    PLUS a durable, non-Redis, GLOBAL floor (admin-login-guard.service.ts, M-2):
+ *    max 5 password attempts / 15 min, max 5 OTP mints (= emails) / 15 min.
+ *    While locked EVERY attempt (right or wrong password) gets the same 429, so
+ *    the lock leaks no password-validity signal.
  *  - generic 401 on bad creds — never reveals which field failed nor whether
  *    the admin email exists.
  *  - the password/OTP are never logged (sendOtpEmail only dev-logs the code in
@@ -27,7 +31,19 @@ import {
 } from "@/lib/utils/admin-session";
 import { sendOtpEmail } from "@/lib/utils/ses-email";
 import { enforceRateLimit, authTier, clientIp } from "@/lib/utils/rate-limit";
+import {
+  reserveAdminOtpMint,
+  reserveAdminPasswordAttempt,
+} from "@/lib/services/admin-login-guard.service";
 import { randomUUID } from "crypto";
+
+/** Same body for "password locked" and "OTP mint cap" — no state leak. */
+function tooManyAttempts(): NextResponse {
+  return NextResponse.json(
+    { error: "Too many attempts. Try again later." },
+    { status: 429, headers: { "Retry-After": "900" } }
+  );
+}
 
 const bodySchema = z.object({
   email: z.string().trim().min(1).max(320),
@@ -55,9 +71,23 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
   }
 
-  if (!verifyAdminCredentials(parsed.data.email, parsed.data.password)) {
+  // Constant-time compare ALWAYS runs (even when locked) so timing is uniform.
+  const credsOk = verifyAdminCredentials(parsed.data.email, parsed.data.password);
+
+  // Durable floor (M-2): reserve an attempt BEFORE acting on the result, so a
+  // parallel burst cannot overshoot and a locked window rejects even the correct
+  // password. Fixed 15-min window; attempts while locked don't extend it.
+  const attempt = await reserveAdminPasswordAttempt();
+  if (!attempt.allowed) return tooManyAttempts();
+
+  if (!credsOk) {
     return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
   }
+
+  // Cap OTP mints (and therefore OTP emails): repeating the password step must
+  // not mint unlimited fresh 5-guess OTP budgets.
+  const mint = await reserveAdminOtpMint();
+  if (!mint.allowed) return tooManyAttempts();
 
   // Password OK → mint a nonce, generate + email a fresh OTP.
   const nonce = randomUUID();

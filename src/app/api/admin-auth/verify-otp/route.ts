@@ -7,6 +7,10 @@
  *
  * SECURITY:
  *  - rate-limited per IP (same fail-open limiter as the password step).
+ *  - durable, non-Redis, GLOBAL cap on OTP guesses across ALL nonces (max 10 per
+ *    15 min, admin-login-guard.service.ts, M-2) so repeating the password step
+ *    to get a fresh per-nonce budget cannot reset the guess budget. A full
+ *    successful login resets the guard counters.
  *  - OTP is single-use, expires (10 min), and locks after 5 wrong attempts
  *    (store-enforced); on `locked` the nonce cookie is cleared and {relogin:true}
  *    forces the admin back to the password step.
@@ -24,6 +28,10 @@ import {
   adminSessionCookieOptions,
   signAdminSession,
 } from "@/lib/utils/admin-session";
+import {
+  reserveAdminOtpAttempt,
+  resetAdminGuard,
+} from "@/lib/services/admin-login-guard.service";
 import { enforceRateLimit, authTier, clientIp } from "@/lib/utils/rate-limit";
 
 const bodySchema = z.object({
@@ -59,8 +67,21 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid code" }, { status: 401 });
   }
 
+  // Reserve a guess in the cross-nonce durable budget BEFORE verifying; once the
+  // window's budget is spent even the correct code is refused (no oracle).
+  const guess = await reserveAdminOtpAttempt();
+  if (!guess.allowed) {
+    const res = NextResponse.json(
+      { error: "Too many attempts. Try again later.", relogin: true },
+      { status: 429, headers: { "Retry-After": "900" } }
+    );
+    clearNonceCookie(res);
+    return res;
+  }
+
   const result = verifyOtp(nonce, parsed.data.code);
   if (result.ok) {
+    await resetAdminGuard(); // full password+OTP login done → clear counters
     const res = NextResponse.json({ ok: true });
     res.cookies.set(ADMIN_SESSION_COOKIE, signAdminSession(), adminSessionCookieOptions());
     clearNonceCookie(res);
