@@ -35,6 +35,13 @@ describe("landing routes serve the built pages", () => {
     expect(js).not.toContain("https://example.com/sign");
   });
 
+  it("nav chunk carries both Log in (/login) and Sign up (/signup)", () => {
+    const nav = readdirSync(assets).find((f) => /^Nav-.*\.js$/.test(f))!;
+    const js = readFileSync(join(assets, nav), "utf8");
+    for (const s of ["Log in", "/login", "Sign up", "/signup"]) {
+      expect(js).toContain(`"${s}"`);
+    }
+  });
   it("makes no runtime request to Google Fonts", () => {
     const css = readdirSync(assets)
       .filter((f) => f.endsWith(".css"))
