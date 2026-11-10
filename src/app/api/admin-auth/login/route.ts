@@ -13,7 +13,7 @@
  *    PER-SOURCE-IP password cap (5/15min, locks only that source) under a higher
  *    GLOBAL ceiling (40/15min); one anonymous client cannot lock the admin out.
  *    Global floor details:
- *    max 5 password attempts / 15 min, max 5 OTP mints (= emails) / 15 min.
+ *    max 40 password attempts / 15 min, max 5 OTP mints (= emails) / 15 min.
  *    While locked EVERY attempt (right or wrong password) gets the same 429, so
  *    the lock leaks no password-validity signal.
  *  - generic 401 on bad creds — never reveals which field failed nor whether
