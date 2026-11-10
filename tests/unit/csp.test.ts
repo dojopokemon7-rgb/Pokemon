@@ -51,3 +51,22 @@ describe("CSP PostHog allowlist", () => {
     expect(csp).not.toMatch(/\*\.posthog\.com/);
   });
 });
+
+describe("CSP landing variant (GA4)", () => {
+  it("app policy has no Google Analytics origins", () => {
+    const csp = buildContentSecurityPolicy(undefined);
+    expect(csp).not.toContain("googletagmanager");
+    expect(csp).not.toContain("google-analytics");
+  });
+  it("landing policy adds exactly the GA4 origins to script/connect/img", () => {
+    const csp = buildContentSecurityPolicy(undefined, { landing: true });
+    expect(directive(csp, "script-src")).toContain("https://www.googletagmanager.com");
+    expect(directive(csp, "script-src")).toContain("'unsafe-inline'");
+    const c = directive(csp, "connect-src");
+    for (const o of ["https://*.google-analytics.com", "https://*.analytics.google.com", "https://www.googletagmanager.com"]) {
+      expect(c).toContain(o);
+    }
+    expect(directive(csp, "img-src")).toContain("https://*.google-analytics.com");
+    expect(directive(csp, "img-src")).toContain("https://www.googletagmanager.com");
+  });
+});

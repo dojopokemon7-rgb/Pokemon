@@ -6,13 +6,35 @@ import nextConfig from "../../next.config";
 // emits a global `/:path*` entry carrying each required header, so a future
 // edit can't silently drop them. (A real CSP block check needs a browser;
 // the CSP is ENFORCING — see the comment in next.config.ts.)
+// The app entry excludes the landing paths (see next.config.ts securityHeaders).
+const APP_SOURCE = "/((?!landing/|privacy$|grading-services$).+)";
+const csp = (e?: { headers: { key: string; value: string }[] }) =>
+  e!.headers.find((h) => h.key === "Content-Security-Policy")!.value;
+
+describe("landing CSP scoping (GA4)", () => {
+  it("GA origins only on landing entries, never on the app entry", async () => {
+    const entries = await nextConfig.headers!();
+    expect(csp(entries.find((e) => e.source === APP_SOURCE))).not.toContain("googletagmanager");
+    for (const s of ["/", "/privacy", "/grading-services", "/landing/:path*"]) {
+      const c = csp(entries.find((e) => e.source === s));
+      expect(c, s).toContain("https://www.googletagmanager.com");
+      expect(c, s).toContain("https://*.google-analytics.com");
+    }
+  });
+  it("the app regex excludes landing paths and includes app paths", () => {
+    const re = new RegExp(`^${APP_SOURCE}$`);
+    for (const p of ["/privacy", "/grading-services", "/landing/assets/x.js", "/"]) expect(re.test(p), p).toBe(false);
+    for (const p of ["/login", "/api/x", "/dashboard", "/privacy-x", "/admin/grading-interest"]) expect(re.test(p), p).toBe(true);
+  });
+});
+
 describe("next.config security headers", () => {
-  it("emits the global security-headers entry on /:path*", async () => {
+  it("emits the app security-headers entry (every route except the landing)", async () => {
     expect(typeof nextConfig.headers).toBe("function");
     const entries = await nextConfig.headers!();
 
-    const global = entries.find((e) => e.source === "/:path*");
-    expect(global, "a /:path* headers entry must exist").toBeDefined();
+    const global = entries.find((e) => e.source === APP_SOURCE);
+    expect(global, "an app (non-landing) headers entry must exist").toBeDefined();
 
     const keys = new Set(global!.headers.map((h) => h.key));
     for (const required of [
@@ -35,7 +57,7 @@ describe("next.config security headers", () => {
 
   it("CSP covers every image origin the browser loads card art from", async () => {
     const entries = await nextConfig.headers!();
-    const global = entries.find((e) => e.source === "/:path*")!;
+    const global = entries.find((e) => e.source === APP_SOURCE)!;
     const csp = global.headers.find(
       (h) => h.key === "Content-Security-Policy"
     )!.value;
@@ -58,7 +80,7 @@ describe("next.config security headers", () => {
 
   it("CSP keeps the scanner's tesseract.js OCR fallback working under enforcement", async () => {
     const entries = await nextConfig.headers!();
-    const global = entries.find((e) => e.source === "/:path*")!;
+    const global = entries.find((e) => e.source === APP_SOURCE)!;
     const csp = global.headers.find((h) => h.key === "Content-Security-Policy")!.value;
 
     // tesseract.js (scanner/page.tsx runTesseract) pulls its worker script +

@@ -36,8 +36,23 @@ export function posthogOrigins(host?: string | null): {
 }
 
 /** The enforcing CSP value sent on every response (see next.config.ts headers). */
-export function buildContentSecurityPolicy(posthogHost?: string | null): string {
+/**
+ * Extra origins GA4 (gtag.js) needs, per Google's CSP guidance. Applied ONLY to
+ * the marketing landing responses (`{ landing: true }`, see next.config.ts) so the
+ * logged-in app's policy is not loosened. The inline gtag/consent snippet is
+ * already permitted by script-src 'unsafe-inline'.
+ */
+export const GA_SCRIPT = "https://www.googletagmanager.com";
+export const GA_CONNECT =
+  "https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com";
+export const GA_IMG = "https://*.google-analytics.com https://www.googletagmanager.com";
+
+export function buildContentSecurityPolicy(
+  posthogHost?: string | null,
+  opts: { landing?: boolean } = {}
+): string {
   const ph = posthogOrigins(posthogHost);
+  const ga = opts.landing;
   return [
     "default-src 'self'",
     // img-src: every host the browser loads card art from directly.
@@ -48,7 +63,7 @@ export function buildContentSecurityPolicy(posthogHost?: string | null): string 
     //   DIRECTLY (card.service.ts: "the browser can embed them
     //   directly"; card-image.ts onError chain): tcgplayer-cdn and
     //   static.cardmarket.com. data:/blob: cover the scanner canvas.
-    "img-src 'self' data: blob: https://*.supabase.co https://images.scrydex.com https://assets.tcgdex.net https://images.pokemontcg.io https://tcgplayer-cdn.tcgplayer.com https://static.cardmarket.com",
+    `img-src 'self' data: blob: https://*.supabase.co https://images.scrydex.com https://assets.tcgdex.net https://images.pokemontcg.io https://tcgplayer-cdn.tcgplayer.com https://static.cardmarket.com${ga ? ` ${GA_IMG}` : ""}`,
     // 'unsafe-inline' required by Next.js inline runtime/styles.
     // 'wasm-unsafe-eval' lets tesseract.js compile its WASM core.
     // cdn.jsdelivr.net hosts the tesseract.js worker script.
@@ -56,7 +71,7 @@ export function buildContentSecurityPolicy(posthogHost?: string | null): string 
     // (and other extensions) as <script> from <region>-assets.i.posthog.com.
     // TEMPORARY direct allowlist — once the planned first-party /ph reverse
     // proxy ships this origin can be dropped (script loads from 'self').
-    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net ${ph.assets}`,
+    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net ${ph.assets}${ga ? ` ${GA_SCRIPT}` : ""}`,
     // Landing (served at /) pulls the Google Fonts stylesheet.
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     // Landing font files load from Google's font CDN (default-src would block them).
@@ -78,7 +93,7 @@ export function buildContentSecurityPolicy(posthogHost?: string | null): string 
     //      NEXT_PUBLIC_POSTHOG_HOST (EU by default). TEMPORARY direct
     //      allowlist: once the first-party /ph reverse proxy ships, connect-src
     //      can shrink to 'self' and these two origins can be removed.
-    `connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://images.scrydex.com ${ph.ingest} ${ph.assets}`,
+    `connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://images.scrydex.com ${ph.ingest} ${ph.assets}${ga ? ` ${GA_CONNECT}` : ""}`,
     // tesseract.js runs OCR in a blob-URL Web Worker. PostHog's session-replay
     // recorder also uses blob: workers for compression — already covered here.
     "worker-src 'self' blob:",

@@ -3,6 +3,36 @@ import type { NextConfig } from "next";
 // next.config.ts is loaded.
 import { buildContentSecurityPolicy } from "./src/lib/utils/csp";
 
+/**
+ * Security headers shared by the app and the marketing landing. The ONLY
+ * difference is the CSP: landing responses (/, /privacy, /grading-services,
+ * /landing/*) additionally allow Google Analytics (GA4) origins; every other
+ * route keeps the strict policy. The two `source` patterns below are mutually
+ * exclusive so exactly one CSP is ever emitted.
+ */
+const securityHeaders = (landing: boolean) => [
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  // Double-covered with CSP `frame-ancestors 'none'` — both intentional.
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  {
+    key: "Strict-Transport-Security",
+    value: "max-age=63072000; includeSubDomains; preload",
+  },
+  {
+    // camera=(self): the scanner uses getUserMedia on its own page.
+    // microphone/geolocation are disabled app-wide.
+    key: "Permissions-Policy",
+    value: "camera=(self), microphone=(), geolocation=()",
+  },
+  {
+    key: "Content-Security-Policy",
+    // Built in src/lib/utils/csp.ts (unit-tested). PostHog origins derive
+    // from NEXT_PUBLIC_POSTHOG_HOST, inlined at build time.
+    value: buildContentSecurityPolicy(process.env.NEXT_PUBLIC_POSTHOG_HOST, { landing }),
+  },
+];
+
 const nextConfig: NextConfig = {
   // Enable standalone output for Docker multi-stage builds.
   // This copies only the necessary files for production, drastically
@@ -84,32 +114,17 @@ const nextConfig: NextConfig = {
       //   2. Next.js injects inline runtime bootstrap + styles, so
       //      script-src/style-src keep 'unsafe-inline' (tightening to a nonce
       //      is a deliberate future task — do NOT attempt nonces here).
+      // Every route EXCEPT the landing paths: strict app CSP. (`.+` so "/" is
+      // excluded here and handled by the landing entries below.)
       {
-        source: "/:path*",
-        headers: [
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          // Double-covered with CSP `frame-ancestors 'none'` below — both are
-          // intentional (older browsers honor only one).
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          {
-            key: "Strict-Transport-Security",
-            value: "max-age=63072000; includeSubDomains; preload",
-          },
-          {
-            // camera=(self): the scanner uses getUserMedia on its own page.
-            // microphone/geolocation are disabled app-wide.
-            key: "Permissions-Policy",
-            value: "camera=(self), microphone=(), geolocation=()",
-          },
-          {
-            key: "Content-Security-Policy",
-            // Built in src/lib/utils/csp.ts (unit-tested). PostHog origins derive
-            // from NEXT_PUBLIC_POSTHOG_HOST, inlined at build time.
-            value: buildContentSecurityPolicy(process.env.NEXT_PUBLIC_POSTHOG_HOST),
-          },
-        ],
+        source: "/((?!landing/|privacy$|grading-services$).+)",
+        headers: securityHeaders(false),
       },
+      // Landing only: same headers + GA4 origins in the CSP.
+      ...["/", "/privacy", "/grading-services", "/landing/:path*"].map((source) => ({
+        source,
+        headers: securityHeaders(true),
+      })),
       {
         source: "/sw.js",
         headers: [

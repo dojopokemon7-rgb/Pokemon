@@ -51,3 +51,33 @@ describe("landing routes serve the built pages", () => {
     expect(css).toContain("/landing/fonts/");
   });
 });
+
+describe("Google tag (GA4) + Consent Mode on every landing page", () => {
+  it.each([
+    ["/", root],
+    ["/privacy", privacy],
+    ["/grading-services", grading],
+  ] as const)("%s loads gtag for G-JZKE2D8E9V with consent denied BEFORE config", async (_p, handler) => {
+    const html = await (await handler()).text();
+    expect(html).toContain("https://www.googletagmanager.com/gtag/js?id=G-JZKE2D8E9V");
+    const def = html.indexOf("gtag('consent', 'default'");
+    const cfg = html.indexOf("gtag('config', 'G-JZKE2D8E9V')");
+    expect(def).toBeGreaterThan(-1);
+    expect(cfg).toBeGreaterThan(def);
+    expect(html.indexOf("gtag('js'")).toBeGreaterThan(def);
+    for (const k of ["ad_storage", "ad_user_data", "ad_personalization", "analytics_storage"]) {
+      expect(html.slice(def, cfg)).toMatch(new RegExp(`${k}: 'denied'`));
+    }
+    expect(html).not.toContain("cloudflareinsights");
+  });
+
+  it("consent banner chunk exists and shares the app's storage key + event", () => {
+    const f = readdirSync(assets).find((n) => /^ConsentBanner-.*\.js$/.test(n))!;
+    expect(f).toBeTruthy();
+    const js = readFileSync(join(assets, f), "utf8");
+    expect(js).toContain("dojo-analytics-consent");
+    expect(js).toContain("dojo-consent-changed");
+    expect(js).toContain("analytics_storage");
+    expect(js).not.toContain("ad_storage");
+  });
+});
