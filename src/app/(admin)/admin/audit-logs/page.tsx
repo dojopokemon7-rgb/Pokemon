@@ -21,6 +21,7 @@ const ACTION_LABELS: Record<string, string> = {
   "user.ban": "Banned User",
   "user.unban": "Unbanned User",
   "listing.remove": "Removed Listing",
+  "grading_interest.export": "Exported Grading Interest",
 };
 
 const PAGE_LIMIT = 100;

@@ -638,3 +638,23 @@ model ScanFeedback {
   @@index([createdAt])
   @@map("scan_feedback")
 }
+
+// CGC grading "notify me" list from the marketing landing (/grading-services).
+// One row per address (email stored trimmed + LOWERCASED so @unique is
+// case-insensitive, like the old D1 `COLLATE NOCASE`). A repeat submit UPDATES
+// category/volume in place and stamps updatedAt (null = never re-submitted).
+// cuid id (not autoincrement): non-enumerable and no sequence gaps on upsert.
+// category/volume are enforced by Zod in the route AND by CHECK constraints in
+// the hand-written migration (20260101000000_add_grading_interest).
+model GradingInterest {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  category  String // cards | comics | both
+  volume    String // 1-10 | 11-50 | 51-200 | 200+
+  source    String? // bounded to 40 chars in the route
+  joinedAt  DateTime  @default(now())
+  updatedAt DateTime?
+
+  @@index([joinedAt])
+  @@map("grading_interest")
+}

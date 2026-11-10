@@ -23,6 +23,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { label: "Users", href: "/admin/users" },
   { label: "Card Database", href: "/admin/cards" },
   { label: "Transactions", href: "/admin/transactions" },
+  { label: "Grading Interest", href: "/admin/grading-interest" },
   { label: "Audit Logs", href: "/admin/audit-logs" },
 ] as const;
 
