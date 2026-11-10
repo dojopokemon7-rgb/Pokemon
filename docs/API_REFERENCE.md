@@ -238,3 +238,24 @@ verify that cookie. Creds/OTP never reach the client; never logged in prod.
 ### `GET /api/one-piece-img/[cardId]` — Bandai CDN same-origin proxy
 - `[cardId]` must match `/^((?:OP|ST|EB|PRB)\d{2}-\d{3}|P-\d{3})$/` (whitelist — prevents open proxy) else 400.
 - Upstream `https://en.onepiece-cardgame.com/images/cardlist/card/{id}.png` fetched `force-cache`; 200 streams bytes with upstream Content-Type; 404 upstream miss; 502 fetch error. Why: Bandai sends `Cross-Origin-Resource-Policy: same-site` → browser `<img>` blocked; same-origin re-serve fixes it. `Cache-Control: public, max-age=86400, swr=604800`.
+
+## Grading interest (landing "notify me" list)
+
+### `POST /api/grading/notify` — PUBLIC, unauthenticated
+Backs the landing's `/grading-services` form. Contract is identical to the old Cloudflare Worker so the prebuilt frontend (`src/lib/gradingNotify.js`) works unchanged. Body (JSON, ≤ 4 KiB): `{ email, category: "cards"|"comics"|"both", volume: "1-10"|"11-50"|"51-200"|"200+", source? }`. Email is trimmed + lowercased (≤ 254, Worker regex); `source` truncated to 40; unknown keys ignored.
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{ ok: true, returning: false }` | Saved. **Identical for new and existing addresses** (no enumeration). A repeat submit updates category/volume + `updatedAt` in place. (The Worker returned 201/200 + `returning`; the form's "already on the list" copy therefore never shows — deliberate.) |
+| 400 | `{ error }` | Bad JSON, email (`That email doesn’t look right.`), category (`Pick what you’d send.`), volume (`Pick roughly how many.`) |
+| 403 | `{ error: "Forbidden." }` | `Origin` present and host ≠ request host |
+| 405 | `{ error: "Use POST." }` + `Allow: POST` | Any other method |
+| 413 | `{ error: "Request too large." }` | Body > 4 KiB (checked on `Content-Length` and while streaming, before parsing) |
+| 415 | `{ error: "Expected a JSON body." }` | Content-Type not `application/json` |
+| 429 | `{ error }` + `Retry-After` | Per-IP limit, 5/min (`RATELIMIT_GRADING_NOTIFY_PER_MIN`), checked before the DB write. Redis down → fail-open (RULE 1) |
+| 500 | `{ error: "Could not save that right now." }` | Any DB failure, incl. table not migrated (P2021 → one loud server log line, no email logged) |
+
+`/api/join` and `/api/count` (Worker waitlist) are NOT referenced by the built landing and were not ported.
+
+### `GET /api/admin/grading-interest/export` — admin only
+`requireAdmin` (401 without a valid `dojo_admin_session`). Streams every row as Excel-compatible CSV: UTF-8 BOM, CRLF, RFC 4180 quoting, header `email,category,volume,joined_at,updated_at,source`, ISO dates, cells starting `= + - @ TAB CR` prefixed with `'` (formula-injection). `Content-Disposition: attachment; filename="grading-interest-YYYY-MM-DD.csv"`, `Cache-Control: no-store`. Writes an `AuditLog` row (`grading_interest.export`, `{ rowCount }` only). Missing table → 500 `{ error: "Table not created — run the grading_interest migration" }`. Opens directly in Excel; no `.xlsx` dependency.

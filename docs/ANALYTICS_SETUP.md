@@ -357,3 +357,9 @@ exceptions, and the custom events in `docs/ANALYTICS_EVENTS.md`. The signed-in
 user is `identify()`d with their Dojo user id; email and name live on the person
 profile only. Not-yet-built flows (stores, trading floor, events, price
 triggers, CGC) are listed there as backlog.
+
+---
+
+## Landing pages: Google Analytics (GA4) behind the same consent
+
+The marketing landing (`/`, `/privacy`, `/grading-services`) loads Google tag `G-JZKE2D8E9V` with Consent Mode v2 (everything denied by default). It shares the app's consent storage (`dojo-analytics-consent`), so Accept on either surface covers both; Decline keeps GA denied. Details, CSP scoping and the privacy-policy follow-up: `docs/ARCHITECTURE.md` §13.

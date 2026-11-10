@@ -354,3 +354,13 @@ stored history), `card-detail-chart` (card-detail price-history reads real point
 | `infra/` | Deploy scaffolding notes |
 
 - FEAT-004 additions: src/lib/utils/main-collection.ts (isMainCollectionName), src/lib/utils/main-backfill.ts (pure planner), shouldShowUncategorized / defaultSelectorIds in src/lib/utils/collection-ids.ts, OWNER-RUN scripts/backfill-main-collection.ts (dry-run default; never run by agents).
+
+## 15. Grading interest (landing notify-me) — added with `grading-notify`
+- `src/app/api/grading/notify/route.ts` — public POST (Worker-compatible contract; body cap, IP rate limit, Zod, origin check).
+- `src/app/api/admin/grading-interest/export/route.ts` — admin CSV export (audit-logged).
+- `src/app/(admin)/admin/grading-interest/page.tsx` — admin list (totals, by category/volume, newest-first, `?offset=` pagination, export button); nav entry in `AdminSidebar.tsx`.
+- `src/lib/services/grading-interest.service.ts` — `upsertGradingInterest` (P2002 race → update), `isMissingTable`, `getGradingInterestOverview`.
+- `src/lib/validators/grading-interest.validator.ts` — Zod schema + Worker error strings. `src/lib/utils/csv.ts` — BOM/CRLF/quoting/formula neutralization. `gradingNotifyTier()` in `rate-limit.ts`.
+- `prisma/migrations/20260101000000_add_grading_interest/migration.sql` — additive, idempotent, hand-applied.
+- Landing: GA4 + Consent Mode in the 3 HTML files, `ConsentBanner` chunk (`public/landing/assets/ConsentBanner-*.js`); CSP split in `next.config.ts` (`securityHeaders(landing)`) + `csp.ts` (`{ landing: true }`).
+- Tests: `tests/integration/grading-{notify,admin}.test.ts`, `tests/unit/csv.test.ts`, `tests/concurrency/grading-interest.pg.test.ts`, landing/CSP additions.
