@@ -70,11 +70,11 @@ dig +short staging.dojocollect.com
    Droplet, paste them into the mount directory the nginx service expects:
 
    ```bash
-   mkdir -p /srv/dojo/infra/cloudflare-origin   # path = <repo>/infra/cloudflare-origin
+   mkdir -p /opt/dojo/infra/cloudflare-origin   # path = <repo>/infra/cloudflare-origin
    # Paste the certificate body into cert.pem and the private key into key.pem:
-   nano /srv/dojo/infra/cloudflare-origin/cert.pem
-   nano /srv/dojo/infra/cloudflare-origin/key.pem
-   chmod 600 /srv/dojo/infra/cloudflare-origin/key.pem   # key is readable only by owner
+   nano /opt/dojo/infra/cloudflare-origin/cert.pem
+   nano /opt/dojo/infra/cloudflare-origin/key.pem
+   chmod 600 /opt/dojo/infra/cloudflare-origin/key.pem   # key is readable only by owner
    ```
 
    The directory and `*.pem` are git-ignored (see `.gitignore`) — the private key is
@@ -131,7 +131,7 @@ restart-loops. First-time switch from Caddy: follow
 [`NGINX_CUTOVER.md`](./NGINX_CUTOVER.md). Otherwise:
 
 ```bash
-cd /srv/dojo              # repo root (where docker-compose.yml lives)
+cd /opt/dojo              # repo root (where docker-compose.yml lives)
 docker compose up -d --force-recreate nginx
 docker compose logs -f nginx   # confirm it started cleanly (no [emerg] / cert errors)
 ```
@@ -176,7 +176,7 @@ docker run --rm alpine sh -c "apk add -q openssl && openssl passwd -apr1 '<passw
 #    (template entry lives in .env.example).
 
 # 3. Recreate nginx so start.sh rewrites the htpasswd from the new container env:
-cd /srv/dojo
+cd /opt/dojo
 docker compose up -d --force-recreate nginx
 ```
 

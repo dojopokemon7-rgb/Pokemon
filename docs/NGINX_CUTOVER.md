@@ -56,7 +56,7 @@ Edits to the `snippets/*.conf` files and `nginx.conf` only need `nginx -t` + rel
 ## Pre-flight checklist (on the Droplet, before the cutover)
 
 1. Origin cert present (the key is git-ignored, never committed):
-   `ls -l /srv/dojo/infra/cloudflare-origin/cert.pem /srv/dojo/infra/cloudflare-origin/key.pem`.
+   `ls -l /opt/dojo/infra/cloudflare-origin/cert.pem /opt/dojo/infra/cloudflare-origin/key.pem`.
    Without them `start.sh` stops with `ERROR: /etc/nginx/origin/cert.pem is missing`.
 2. Root `.env` has `DOMAIN=dojocollect.com` (unquoted) and `STAGING_BASICAUTH_HASH`.
    Compose refuses to start nginx without `DOMAIN`.
@@ -89,7 +89,7 @@ Edits to the `snippets/*.conf` files and `nginx.conf` only need `nginx -t` + rel
 4. Update the checkout and pull the image:
 
    ```bash
-   cd /srv/dojo
+   cd /opt/dojo
    git fetch origin && git reset --hard origin/<branch>   # same convention as app deploys; .env is git-ignored and survives
    docker compose pull nginx
    ```
@@ -97,7 +97,7 @@ Edits to the `snippets/*.conf` files and `nginx.conf` only need `nginx -t` + rel
 ## Cutover (in order)
 
 ```bash
-cd /srv/dojo
+cd /opt/dojo
 git fetch origin && git reset --hard origin/<branch>
 docker compose pull nginx
 docker compose run --rm nginx nginx -t        # expect: syntax is ok / test is successful
