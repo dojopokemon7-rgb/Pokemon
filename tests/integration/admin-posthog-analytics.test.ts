@@ -768,7 +768,7 @@ describe("per-feature row drill-down: dimension → constant HogQL predicate", (
   });
   it("isAllowedDimensionValue double-guards categorical values and passes free text", () => {
     // Categorical: ONLY the fixed enum (the taxonomy in docs/ANALYTICS_EVENTS.md).
-    for (const v of ["set", "rarity", "graded", "minPrice", "maxPrice", "hasPrice", "language", "sort"]) {
+    for (const v of ["set", "rarity", "graded", "minPrice", "maxPrice", "hasPrice", "language", "variant", "sort"]) {
       expect(isAllowedDimensionValue("filter_type", v)).toBe(true);
     }
     expect(isAllowedDimensionValue("filter_type", "DROP TABLE")).toBe(false);

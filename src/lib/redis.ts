@@ -296,6 +296,8 @@ export const RedisKeys = {
     maxPrice?: number;
     hasPrice?: string;
     language?: string;
+    // Effective variant key(s), `|`-joined (explicit OR text-inferred); omitted = no filter.
+    variant?: string;
     // Offset of the requested page (items already loaded). Embedded in the key
     // so page 2 is never served page 1's cached payload (audit 02 F-T; mirrors
     // the trending key embedding its offset).
@@ -317,6 +319,7 @@ export const RedisKeys = {
       `max=${params.maxPrice ?? ""}`,
       `hasprice=${params.hasPrice ?? ""}`,
       `lang=${params.language ?? ""}`,
+      `variant=${params.variant ?? ""}`,
       `cursor=${params.cursor ?? 0}`,
     ];
     return `card:searchq:${parts.join("|")}`;
@@ -334,6 +337,8 @@ export const RedisKeys = {
    * USER-AGNOSTIC. TTL: 86400s (CACHE_TTL.cardFilterOptions). DB-read-only.
    */
   cardFilterOptions: (game: string): string => `card:filteropts:${game}`,
+  /** Distinct printing/variant options per game ({value,label}[]). USER-AGNOSTIC. TTL: CACHE_TTL.cardVariantOptions. */
+  cardVariantOptions: (game: string): string => `card:variantopts:${game}`,
 
   /**
    * `GET /api/cards/[id]/history` payload, keyed by EXTERNAL card id (RULE 3).
@@ -425,6 +430,7 @@ export const CACHE_TTL = {
   cardSearch: 300, // 5 min
   cardPrices: 300, // 5 min
   cardFilterOptions: 86400, // 24h — set/rarity lists change only on catalog sync
+  cardVariantOptions: 3600, // 1h — printings only change on an owner-run per-printing reingest
   cardHistory: 600, // 10 min
   cardPopulation: 86400, // 24h — matches the route's existing max-age=86400
   soldRows: 120, // 2 min — short read-through; Postgres (SoldListing) is truth

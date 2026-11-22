@@ -129,3 +129,11 @@ describe("buildSearchQueryParams", () => {
     expect(params.has("sort")).toBe(false);
   });
 });
+
+describe("variant param", () => {
+  it("round-trips through buildSearchUrl and is dropped on a game switch", () => {
+    expect(buildSearchUrl({ q: "charizard", game: "pokemon", variant: "reverse holofoil" })).toBe("/search?q=charizard&game=pokemon&variant=reverse+holofoil");
+    expect(buildSearchUrl({ q: "a", variant: "any" })).toContain("variant=any");
+    expect(gameSwitchFilters({ q: "a", variant: "holofoil" }, "onepiece").variant).toBeUndefined();
+  });
+});

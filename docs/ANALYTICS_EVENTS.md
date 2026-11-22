@@ -79,7 +79,7 @@ surface from whatever those props carry — no extra instrumentation is added.
 |---|---|---|
 | `search_performed` | `query` (<=100 chars), `game`, `results_count` | once per distinct text query+filters when the first result page resolves. `results_count` is the first page, so `0` = zero-result search |
 | `card_viewed` | `card_id`, `set?`, `game`, `language?` | card detail page opened (once per card id) |
-| `filter_applied` | `filter_type` (`set`, `rarity`, `graded`, `minPrice`, `maxPrice`, `hasPrice`, `language`, `sort`), `game` | a filter/sort is set to a new non-empty value (clearing is not tracked) |
+| `filter_applied` | `filter_type` (`set`, `rarity`, `graded`, `minPrice`, `maxPrice`, `hasPrice`, `language`, `variant`, `sort`), `game` | a filter/sort is set to a new non-empty value (clearing is not tracked) |
 
 ### Wishlist
 

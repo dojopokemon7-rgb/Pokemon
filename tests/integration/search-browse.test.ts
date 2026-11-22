@@ -52,14 +52,14 @@ describe("GET /api/cards/filter-options", () => {
     dbMock.prisma.card.findMany.mockResolvedValue([{ rarity: "Rare" }, { rarity: "Unknown" }, { rarity: null }]);
     const res = await optionsGET(new Request("http://localhost/api/cards/filter-options?game=pokemon"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sets: ["Base"], rarities: ["Rare"] });
+    expect(await res.json()).toEqual({ sets: ["Base"], rarities: ["Rare"], variants: [] });
   });
 
   it("200 + empty arrays on DB error", async () => {
     dbMock.prisma.cardSet.findMany.mockRejectedValue(new Error("db down"));
     const res = await optionsGET(new Request("http://localhost/api/cards/filter-options?game=pokemon"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sets: [], rarities: [] });
+    expect(await res.json()).toEqual({ sets: [], rarities: [], variants: [] });
   });
 });
 

@@ -18,6 +18,7 @@ import Link from "next/link";
 import { CardImage, cardInitials, NoPriceText } from "@/components/CardImage";
 import { onePieceImageChain } from "@/lib/utils/card-image";
 import { fmtWeeklyDelta } from "@/lib/utils/weekly-delta";
+import { variantKey, variantDisplayLabel } from "@/lib/utils/card-variant";
 
 // ── Types ──────────────────────────────────────────────────────────
 // Matches NormalizedCardSchema on the server (card.validator.ts).
@@ -41,6 +42,9 @@ export interface CardResult {
   // the search API's NormalizedCard. Nullable — the tile shows a movement
   // indicator ONLY when this is a real number, never a fabricated delta.
   weeklyChangePct?: number | null;
+  // Scrydex printing label of THIS row ("reverseHolofoil", "altArt", …); null/
+  // absent when not stored — the tile then shows nothing extra (RULE 2).
+  printing?: string | null;
 }
 
 // ── Trending card shape — matches /api/cards/trending's response.
@@ -427,6 +431,11 @@ export function CardTile({
         {setName && setName.toLowerCase() !== "unknown set" && (
           <div data-testid="card-result-set" style={{ marginTop: "-2px", fontSize: "11px", color: "var(--color-dojo-body)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {setName}
+          </div>
+        )}
+        {card.printing && variantKey(card.printing) && (
+          <div data-testid="card-result-printing" style={{ marginTop: "-2px", fontSize: "10.5px", color: "var(--color-dojo-faint)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {variantDisplayLabel(card.printing)}
           </div>
         )}
         <div style={{ display: "flex", alignItems: "baseline", gap: "6px", marginTop: "4px" }}>

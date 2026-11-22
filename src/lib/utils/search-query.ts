@@ -51,11 +51,12 @@ export interface BrowseFilters {
   maxPrice?: number | string | null;
   hasPrice?: string | null;
   language?: string | null;
+  variant?: string | null;
 }
 
 /** True when any non-text filter is active (language "all" is not a filter). */
 export function hasActiveFilter(p: Omit<BrowseFilters, "query">): boolean {
-  return Boolean(p.set || p.rarity || p.graded || p.hasPrice || (p.language && p.language !== "all")) ||
+  return Boolean(p.set || p.rarity || p.graded || p.hasPrice || (p.language && p.language !== "all") || (p.variant && p.variant.toLowerCase() !== "any")) ||
     (p.minPrice != null && p.minPrice !== "") || (p.maxPrice != null && p.maxPrice !== "");
 }
 

@@ -25,6 +25,7 @@ export interface SearchUrlParams {
   maxPrice?: string | null;
   hasPrice?: string | null;
   language?: string | null;
+  variant?: string | null;
   /** View sort; omitted when it equals the default 'trending'. */
   sort?: string | null;
 }
@@ -45,6 +46,7 @@ function buildParams(params: SearchUrlParams, includeSort: boolean): URLSearchPa
   if (params.maxPrice) out.set("maxPrice", params.maxPrice);
   if (params.hasPrice) out.set("hasPrice", params.hasPrice);
   if (params.language) out.set("language", params.language);
+  if (params.variant) out.set("variant", params.variant);
   // 'trending' is the default view sort — omit it so default URLs stay clean.
   if (includeSort && params.sort && params.sort !== "trending") out.set("sort", params.sort);
   return out;
@@ -73,7 +75,7 @@ export function buildSearchQueryParams(params: SearchUrlParams): string {
  * The filter set to carry across a Pokémon <-> One Piece game switch.
  *
  * KEEP game-agnostic filters (minPrice, maxPrice, hasPrice, graded, language)
- * plus q + sort; DROP the per-game ones (set, rarity). `set` and `rarity` are
+ * plus q + sort; DROP the per-game ones (set, rarity, variant). `set` and `rarity` are
  * per-game catalog attributes — a Base Set / Common value cannot apply across
  * franchises, so carrying them to the other game would yield zero matches —
  * while price/hasPrice/graded/language are universal and should persist.
@@ -89,6 +91,6 @@ export function gameSwitchFilters(current: SearchUrlParams, nextGame: string): S
     graded: current.graded,
     language: current.language,
     sort: current.sort,
-    // set + rarity intentionally dropped (per-game catalog attributes)
+    // set + rarity + variant intentionally dropped (per-game catalog attributes)
   };
 }

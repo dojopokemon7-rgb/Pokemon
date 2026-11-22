@@ -19,6 +19,11 @@
  *   - `graded`   Optional (F-06). `"graded"` | `"ungraded"` — based on
  *                GRADED PRICING AVAILABILITY (does the card have a graded
  *                CurrentPrice row with a non-null price), NOT a card attribute.
+ *   - `variant`  Optional. Printing/variant filter on Card.printing (e.g.
+ *                `reverse holofoil`, `alt art`, `normal`); spelling-insensitive.
+ *                `any` = no filter. When omitted, a variant phrase in `query`
+ *                ("charizard reverse holo") is inferred (response field
+ *                `inferredVariant`). Rows with no stored printing never match.
  *   - `minPrice` Optional (F-06). Min marketPrice (USD).
  *   - `maxPrice` Optional (F-06). Max marketPrice (USD).
  *   - `hasPrice` Optional. `"true"`/`"1"` → keep ONLY cards that actually
@@ -61,6 +66,15 @@ import { ScanLanguageSchema } from "@/lib/utils/scan-language";
 import { rankCards, hasNameHit } from "@/lib/utils/search-rank";
 import { pickHeadlineRaw } from "@/lib/utils/raw-price";
 import { isSearchIndexEnabled, searchIndexIds } from "@/lib/services/card-search-index.service";
+import { getVariantOptions } from "@/lib/services/card-variants.service";
+import {
+  VARIANT_ANY,
+  variantKey,
+  variantSpellings,
+  variantDisplayLabel,
+  parseVariantFromQuery,
+  resolveInferredVariants,
+} from "@/lib/utils/card-variant";
 
 /** Flip to `true` to gate search behind a valid Better Auth session. */
 const ENFORCE_AUTH = false;
@@ -101,6 +115,14 @@ const SearchQuerySchema = z.object({
   // substring "_ja-" (e.g. "bw1b_ja-3"), English/other cards do not
   // (e.g. "xy7-57"). `all` (default/omitted) applies no predicate.
   language: ScanLanguageSchema.optional(),
+  // Variant (printing) filter: any spelling of a Card.printing value
+  // ("reverse holofoil" | "reverseHolofoil" | "alt-art"), normalized by
+  // variantKey and matched case-insensitively. No fixed allowlist: the real
+  // vocabulary is Scrydex's verbatim variant names and differs per game; valid
+  // values come from /api/cards/filter-options `variants`. Charset + length
+  // bound keep it a plain label. "any" = explicit NO filter (also stops text
+  // inference). Unknown-but-well-formed values simply match nothing (404).
+  variant: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9 _-]+$/, "variant must be a plain label").optional(),
   // Offset cursor: how many items the client has already loaded. Coerced to a
   // non-negative int; absent → page 1 (offset 0). Mirrors /api/cards/trending
   // so the results grid can page past the first RESULT_LIMIT instead of being
@@ -146,6 +168,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     maxPrice: searchParams.get("maxPrice") ?? undefined,
     hasPrice: searchParams.get("hasPrice") ?? undefined,
     language: searchParams.get("language") ?? undefined,
+    variant: searchParams.get("variant") ?? undefined,
     cursor: searchParams.get("cursor") ?? undefined,
   });
 
@@ -161,7 +184,33 @@ export async function GET(request: Request): Promise<NextResponse> {
     );
   }
 
-  const { game, query, set, rarity, graded, minPrice, maxPrice, hasPrice, language, cursor } = parsed.data;
+  const { game, set, rarity, graded, minPrice, maxPrice, hasPrice, language, cursor } = parsed.data;
+  let query = parsed.data.query;
+  // Variant filter. EXPLICIT wins: a `variant` param (even "any") disables text
+  // inference. Otherwise a variant phrase in the text ("charizard reverse holo")
+  // is stripped from the name query and applied as the filter — but ONLY when the
+  // remaining query is non-empty and that variant really exists for this game
+  // (no printing data → nothing inferred, query runs unchanged; RULE 2).
+  let variants: string[] = [];
+  let variantOpts: Awaited<ReturnType<typeof getVariantOptions>> = [];
+  let inferredVariant: { value: string; label: string } | null = null;
+  if (parsed.data.variant) {
+    if (parsed.data.variant.toLowerCase() !== VARIANT_ANY) {
+      variants = [variantKey(parsed.data.variant)];
+      variantOpts = await getVariantOptions(game);
+    }
+  } else if (query) {
+    const p = parseVariantFromQuery(query);
+    if (p.variant) {
+      variantOpts = await getVariantOptions(game);
+      const found = resolveInferredVariants(p.variant, variantOpts.map((o) => o.value));
+      if (found.length > 0) {
+        variants = found;
+        query = p.query;
+        inferredVariant = { value: p.variant, label: variantDisplayLabel(p.variant) };
+      }
+    }
+  }
   const sort = parsed.data.sort ?? "trending";
   const relevance = sort === "trending";
   // Offset pagination (audit 02 F-T): page past the first RESULT_LIMIT.
@@ -183,6 +232,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     maxPrice,
     hasPrice,
     language,
+    variant: variants.length ? [...variants].sort().join("|") : undefined,
     // Page segment: page 2 (cursor=60) must never be served page 1's cache
     // (mirrors trending embedding offset in its key — audit 02 F-T).
     cursor: offset,
@@ -194,7 +244,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     const revalidated = z.array(NormalizedCardSchema).safeParse(cached.cards);
     if (revalidated.success) {
       return NextResponse.json(
-        { cards: revalidated.data, source: cached.source, nextCursor: cached.nextCursor ?? null },
+        { cards: revalidated.data, source: cached.source, nextCursor: cached.nextCursor ?? null, inferredVariant },
         {
           status: 200,
           headers: {
@@ -353,6 +403,30 @@ export async function GET(request: Request): Promise<NextResponse> {
     AND: [{ imageUrl: { not: null } }, { NOT: { imageUrl: "" } }],
   };
 
+  // Variant (printing) filter on Card.printing. Known keys use an EXACT
+  // `printing IN (<stored spellings>)` taken from the catalog's own distinct
+  // values (cheap + btree-able; many ILIKEs measured ~5x slower on 300k rows —
+  // see .agents/tasks/variant-search/index-recommendation.md). A key with no
+  // known spelling (options cache stale/empty) falls back to case-insensitive
+  // equality over every plausible spelling. Rows with printing = null (not
+  // ingested per-printing yet) never match — they are unknown, not "normal".
+  const knownRaw = variants.flatMap((v) => variantOpts.find((o) => o.value === v)?.raw ?? []);
+  const unknownKeys = variants.filter((v) => !variantOpts.some((o) => o.value === v));
+  const variantFilter: Prisma.CardWhereInput = variants.length
+    ? {
+        AND: [
+          {
+            OR: [
+              ...(knownRaw.length ? [{ printing: { in: knownRaw } }] : []),
+              ...unknownKeys.flatMap((v) =>
+                variantSpellings(v).map((s) => ({ printing: { equals: s, mode: "insensitive" as const } }))
+              ),
+            ],
+          },
+        ],
+      }
+    : {};
+
   // Shared filter fragment: EVERY candidate query (legacy, pool, typo recall,
   // index hydration) ANDs this in, so filters are never weakened.
   const baseWhere: Prisma.CardWhereInput = {
@@ -381,6 +455,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       ...toArray(hasPriceFilter.AND),
       ...toArray(priceRangeFilter.AND),
       ...toArray(languageFilter.AND),
+      ...toArray(variantFilter.AND),
       ...toArray(imagePresentFilter.AND),
     ],
   };
@@ -451,7 +526,8 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     // Optional Typesense: ids only; rows are hydrated from Postgres with the
     // SAME filters (Postgres stays authoritative). Any failure → Postgres path.
-    if (isSearchIndexEnabled() && !p.identifierLike) {
+    // The index ignores `variant`, so skip it when a variant filter is active.
+    if (isSearchIndexEnabled() && !p.identifierLike && variants.length === 0) {
       try {
         const ids = await searchIndexIds({ game, query: q, set, rarity, minPrice, maxPrice, limit: RESULT_LIMIT });
         if (ids && ids.length > 0) {
@@ -609,7 +685,7 @@ export async function GET(request: Request): Promise<NextResponse> {
   await cacheSetJson(cacheKey, { cards, source: "local-db", nextCursor }, CACHE_TTL.cardSearch);
 
   return NextResponse.json(
-    { cards, source: "local-db", nextCursor },
+    { cards, source: "local-db", nextCursor, inferredVariant },
     {
       status: 200,
       headers: {

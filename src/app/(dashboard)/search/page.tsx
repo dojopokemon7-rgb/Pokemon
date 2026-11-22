@@ -126,6 +126,7 @@ function SortIcon() {
 // moved out of this file because a page.tsx may export ONLY its default
 // component — any named export breaks `next build`.
 import type { CardResult, TrendingCard, Game } from "./card-tiles";
+import { VARIANT_ANY } from "@/lib/utils/card-variant";
 import { flattenDedupe, getNextCursorParam } from "@/lib/utils/paginate-cards";
 
 interface SearchApiResponse {
@@ -135,6 +136,9 @@ interface SearchApiResponse {
   // is no further page. The results grid now pages via `useInfiniteQuery`
   // instead of being hard-capped at the first RESULT_LIMIT (audit 02 F-T).
   nextCursor: number | null;
+  // Variant inferred from the text query ("charizard reverse holo"), shown as a
+  // removable chip. Absent/null when none was inferred.
+  inferredVariant?: { value: string; label: string } | null;
 }
 
 interface TrendingApiResponse {
@@ -582,13 +586,17 @@ function SearchPageInner() {
   // Language filter: "" (default) = All, "en" = English/other, "ja" = Japanese.
   // Inferred server-side from the "_ja-" externalId marker (no language column).
   const languageFilter = searchParams.get("language") ?? "";
+  // Variant (printing) filter: "" = none; "any" = explicitly none (stops the
+  // server inferring a variant from the query text); else a variant key.
+  const variantParam = searchParams.get("variant") ?? "";
+  const variantFilter = variantParam === VARIANT_ANY ? "" : variantParam;
   // Browse mode: filters work WITHOUT a text query (server orders by price).
   // Clearing the last filter with no query returns to the trending view.
   const browseMode =
     hasQuery ||
     anyFilterActive({
       set: setFilter, rarity: rarityFilter, graded: gradedFilter, minPrice: minPriceFilter,
-      maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter,
+      maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter, variant: variantFilter,
     });
 
   // Sort state. BUG 2: now persisted to the URL (?sort=) so it survives the
@@ -662,6 +670,7 @@ function SearchPageInner() {
         maxPrice: maxPriceFilter,
         hasPrice: hasPriceFilter,
         language: languageFilter,
+        variant: variantParam,
         sort,
       })
     );
@@ -737,7 +746,7 @@ function SearchPageInner() {
     hasNextPage: hasMoreSearch,
     isFetchingNextPage: fetchingMoreSearch,
   } = useInfiniteQuery<SearchApiResponse>({
-    queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter, languageFilter],
+    queryKey: ["card-search", game, initialQ, sort, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter, languageFilter, variantParam],
     queryFn: async ({ pageParam }) => {
       // Compose the optional F-06 filter params only when set.
       // "trending" was never a real search sort: omit it so the API ranks by relevance.
@@ -751,6 +760,7 @@ function SearchPageInner() {
       if (maxPriceFilter) params.set("maxPrice", maxPriceFilter);
       if (hasPriceFilter) params.set("hasPrice", hasPriceFilter);
       if (languageFilter) params.set("language", languageFilter);
+      if (variantParam) params.set("variant", variantParam);
       if (pageParam != null) params.set("cursor", String(pageParam));
       const res = await fetch(`/api/cards/search?${params.toString()}`);
       if (!res.ok) {
@@ -841,7 +851,7 @@ function SearchPageInner() {
   useEffect(() => {
     const q = initialQ.trim();
     if (!browseMode || !q || searchLoading || isFetching || isError || !searchPages) return;
-    const key = [game, q, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter, languageFilter].join("|");
+    const key = [game, q, setFilter, rarityFilter, gradedFilter, minPriceFilter, maxPriceFilter, hasPriceFilter, languageFilter, variantParam].join("|");
     if (lastSearchKeyRef.current === key) return;
     lastSearchKeyRef.current = key;
     track("search_performed", {
@@ -860,7 +870,7 @@ function SearchPageInner() {
   // reachable. State — not a ref — so populating it re-renders the control.
   // Base option lists (24h server cache) so the dropdowns are populated before
   // any search; unioned with names seen in results + the active filter below.
-  const { data: filterOptions } = useQuery<{ sets: string[]; rarities: string[] }>({
+  const { data: filterOptions } = useQuery<{ sets: string[]; rarities: string[]; variants?: { value: string; label: string }[] }>({
     queryKey: ["filter-options", game],
     queryFn: async () => {
       const res = await fetch(`/api/cards/filter-options?game=${game}`);
@@ -893,7 +903,7 @@ function SearchPageInner() {
   // F-06: apply one or more filter changes at once, preserving the query,
   // game, and every other active filter. Pass "" to clear a given filter.
   const applyFilters = (
-    overrides: Partial<{ set: string; rarity: string; graded: string; minPrice: string; maxPrice: string; hasPrice: string; language: string }>
+    overrides: Partial<{ set: string; rarity: string; graded: string; minPrice: string; maxPrice: string; hasPrice: string; language: string; variant: string }>
   ) => {
     const current = {
       set: setFilter,
@@ -903,6 +913,7 @@ function SearchPageInner() {
       maxPrice: maxPriceFilter,
       hasPrice: hasPriceFilter,
       language: languageFilter,
+      variant: variantParam,
       ...overrides,
     };
     // audit 02 F-A: delegate to the shared buildSearchUrl so the URL shape has
@@ -911,9 +922,11 @@ function SearchPageInner() {
     // Analytics: one filter_applied per dimension set to a NEW non-empty value.
     const previous = {
       set: setFilter, rarity: rarityFilter, graded: gradedFilter, minPrice: minPriceFilter,
-      maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter,
+      maxPrice: maxPriceFilter, hasPrice: hasPriceFilter, language: languageFilter, variant: variantFilter,
     };
     for (const filter_type of changedFilterTypes(previous, overrides)) {
+      // Removing the inferred-variant chip writes the "any" sentinel — that is a clear, not an apply.
+      if (filter_type === "variant" && overrides.variant === VARIANT_ANY) continue;
       track("filter_applied", { filter_type, game: gameFromSearchState(game) });
     }
     router.replace(buildSearchUrl({ q: initialQ, game, ...current, sort }));
@@ -956,6 +969,10 @@ function SearchPageInner() {
       prev.length === rs.length && prev.every((v, i) => v === rs[i]) ? prev : rs
     );
   }, [rarityFilter, cards]);
+  // Variant options: real distinct Card.printing values for this game. Empty
+  // (no per-printing data ingested) → the control is hidden, never shown empty.
+  const variantOptions = filterOptions?.variants ?? [];
+  const inferredVariant = searchPages?.pages?.[0]?.inferredVariant ?? null;
   const rarityOptions = Array.from(
     new Set([...knownRarities, ...(filterOptions?.rarities ?? []), ...(rarityFilter ? [rarityFilter] : [])])
   ).sort();
@@ -1043,6 +1060,7 @@ function SearchPageInner() {
                         maxPrice: maxPriceFilter,
                         hasPrice: hasPriceFilter,
                         language: languageFilter,
+                        variant: variantParam,
                         sort,
                       },
                       g
@@ -1141,6 +1159,29 @@ function SearchPageInner() {
                   marker. "" = All (no param sent), matching how `graded` uses
                   "" for "Both". URL-driven via applyFilters so it composes with
                   q/game/sort/set and is deep-linkable. */}
+              {/* Variant (printing) filter — only when the catalog has real
+                  printing data for this game. Value = the variant key sent as
+                  ?variant=. A variant inferred from the query text shows as a
+                  chip in the results header instead. */}
+              {variantOptions.length > 0 && (
+                <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
+                  <label className="dojo-label" htmlFor="variant-filter">Variant</label>
+                  <select
+                    id="variant-filter"
+                    data-testid="variant-filter"
+                    aria-label="Filter by variant"
+                    className="dojo-select"
+                    value={variantFilter}
+                    onChange={(e) => applyFilters({ variant: e.target.value })}
+                  >
+                    <option value="">All variants</option>
+                    {variantOptions.map((v) => (
+                      <option key={v.value} value={v.value}>{v.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="dojo-input-wrap" style={{ flex: "1 1 140px", minWidth: 0 }}>
                 <label className="dojo-label" htmlFor="language-filter">Language</label>
                 <select
@@ -1363,6 +1404,26 @@ function SearchPageInner() {
                   // (AGENTS.md RULE 2).
                   : `${cards.length}${hasMoreSearch ? "+" : ""} result${cards.length !== 1 ? "s" : ""}`}
               </span>
+              {inferredVariant && !variantFilter && (
+                <button
+                  type="button"
+                  data-testid="inferred-variant-chip"
+                  onClick={() => applyFilters({ variant: VARIANT_ANY })}
+                  title="Remove variant filter"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: "6px",
+                    background: "rgba(233,180,59,0.10)",
+                    border: "1px solid var(--color-dojo-gold)",
+                    color: "var(--color-dojo-gold)",
+                    padding: "4px 8px",
+                    fontFamily: "var(--font-display)", fontWeight: 700,
+                    fontSize: "9.5px", letterSpacing: "0.10em", textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  Variant: {inferredVariant.label} ✕
+                </button>
+              )}
               {sort !== "trending" && (
                 <button
                   type="button"

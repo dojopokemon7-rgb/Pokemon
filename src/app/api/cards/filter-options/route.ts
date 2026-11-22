@@ -10,6 +10,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { RedisKeys, CACHE_TTL } from "@/lib/redis";
 import { cacheGetJson, cacheSetJson } from "@/lib/utils/cache";
+import { getVariantOptions } from "@/lib/services/card-variants.service";
 
 const QuerySchema = z.object({ game: z.enum(["pokemon", "onepiece"]) });
 const OptionsSchema = z.object({ sets: z.array(z.string()), rarities: z.array(z.string()) });
@@ -27,7 +28,10 @@ export async function GET(request: Request): Promise<NextResponse> {
   const { game } = parsed.data;
   const key = RedisKeys.cardFilterOptions(game);
   const cached = OptionsSchema.safeParse(await cacheGetJson<unknown>(key));
-  if (cached.success) return NextResponse.json(cached.data);
+  // Variants come from their own cache/helper (empty array = no printing data →
+  // the UI hides the Variant filter). Additive field; sets/rarities unchanged.
+  const variants = (await getVariantOptions(game)).map(({ value, label }) => ({ value, label }));
+  if (cached.success) return NextResponse.json({ ...cached.data, variants });
 
   try {
     const prefix = { startsWith: `${game}-` };
@@ -44,9 +48,9 @@ export async function GET(request: Request): Promise<NextResponse> {
       rarities: clean(rarities.map((r) => r.rarity)),
     });
     await cacheSetJson(key, body, CACHE_TTL.cardFilterOptions);
-    return NextResponse.json(body);
+    return NextResponse.json({ ...body, variants });
   } catch (err) {
     console.warn("[filter-options] failed, returning empty:", err instanceof Error ? err.message : err);
-    return NextResponse.json({ sets: [], rarities: [] });
+    return NextResponse.json({ sets: [], rarities: [], variants: [] });
   }
 }

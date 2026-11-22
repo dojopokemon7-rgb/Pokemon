@@ -134,7 +134,7 @@ const DIMENSION_PREDICATE_SQL: Record<AnalyticsDimension, string> = {
 // value is still placeholder-bound but not enum-restricted. Keeping these here
 // (not just at the Zod boundary) keeps the allowlist in ONE place.
 const DIMENSION_VALUE_ENUM: Partial<Record<AnalyticsDimension, readonly string[]>> = {
-  filter_type: ["set", "rarity", "graded", "minPrice", "maxPrice", "hasPrice", "language", "sort"],
+  filter_type: ["set", "rarity", "graded", "minPrice", "maxPrice", "hasPrice", "language", "variant", "sort"],
   scan_reason: ["not_recognized", "error"],
   signup_method: ["email", "google"],
   login_method: ["email", "google"],
