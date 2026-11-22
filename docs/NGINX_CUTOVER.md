@@ -32,7 +32,6 @@ Run the cutover on the Droplet. Nothing here needs a Cloudflare change.
 | `mime.types` | Stock mime types from the pinned image. |
 | `snippets/http-global.conf` | `http{}` level: Cloudflare `set_real_ip_from` ranges + `real_ip_header CF-Connecting-IP`, resolver, maps, gzip, redacted `log_format`, timeouts, TLS settings, loopback `:8081/healthz`. |
 | `snippets/proxy-common.conf` | Forwarded headers (`Host`, `X-Real-IP`, `X-Forwarded-*`), WebSocket upgrade, 330s timeouts. |
-| `snippets/security-headers.conf` | The three `add_header` lines Caddy added (see differences). |
 | `snippets/locations.conf` | Recognize tiers (30,000,000 B with a session cookie, 64,000 B without), the CSV export (unbuffered), default proxy. |
 | `templates/10-dojo.conf.template` | Server blocks. Only `${DOMAIN}` is substituted (`NGINX_ENVSUBST_FILTER=DOMAIN`). |
 | `scripts/start.sh` | Compose entrypoint: checks the origin cert, writes the staging htpasswd, then runs the official entrypoint. |
@@ -185,7 +184,7 @@ already is.
 | Other routes | No limit | Finite global cap of 30,000,000 B (equals the recognize ceiling; every other POST route caps itself at 16 KB or less). |
 | Timeouts | None | 330 s proxy read/send (cron `maxDuration` 300 s + 30 s), 10 s connect. Cloudflare cuts proxied requests at 100 s regardless. |
 | `Server` header | `Caddy` | `nginx` (no version) |
-| Security headers | `header{}` adds X-Frame-Options SAMEORIGIN, Referrer-Policy and nosniff next to the app's own, so clients see duplicates | Same duplicates, reproduced on purpose (checked against real Caddy by `verify-nginx.mjs`). A pre-existing quirk, not fixed here. |
+| Security headers | `header{}` added X-Frame-Options SAMEORIGIN, Referrer-Policy and nosniff next to the app's own, so clients saw duplicate/conflicting values | Nginx adds none: clients get exactly the app's single set (DENY, etc.). Proxy-generated responses (e.g. the staging 401) carry no security headers. Intentional fix, verified by `verify-nginx.mjs`. |
 | Staging password check | bcrypt result cached | `crypt()` on every request; see the latency table above. |
 | HTTP/3 | Served | Not served. Compose only published TCP, and Cloudflare uses h1/h2 to the origin. |
 

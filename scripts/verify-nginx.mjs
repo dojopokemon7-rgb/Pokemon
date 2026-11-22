@@ -220,13 +220,13 @@ try {
   // ---- security headers ----
   r = await prod({ path: "/hdrs" });
   const set = (n) => hdrList(r, n).sort().join(" | ");
-  check("sec headers: X-Frame-Options = SAMEORIGIN + DENY (Caddy probe: both)", set("x-frame-options") === "DENY | SAMEORIGIN", set("x-frame-options"));
-  check("sec headers: Referrer-Policy = both values", set("referrer-policy") === "no-referrer | strict-origin-when-cross-origin", set("referrer-policy"));
-  check("sec headers: nosniff twice (Caddy probe)", hdrList(r, "x-content-type-options").length === 2);
+  check("sec headers: exactly one X-Frame-Options (the app's DENY)", set("x-frame-options") === "DENY", set("x-frame-options"));
+  check("sec headers: exactly one Referrer-Policy (the app's)", set("referrer-policy") === "no-referrer", set("referrer-policy"));
+  check("sec headers: exactly one nosniff", hdrList(r, "x-content-type-options").length === 1);
   check("sec headers: only the app's HSTS, no proxy CSP/Permissions-Policy", hdrList(r, "strict-transport-security").length === 1 && !r.headers["content-security-policy"] && !r.headers["permissions-policy"]);
   check("Server header has no nginx version", r.headers.server === "nginx", r.headers.server);
-  r = await stg({ path: "/hdrs" }); check("sec headers also present on staging", hdrList(r, "x-frame-options").length === 2);
-  r = await req({ host: STG, path: "/hdrs" }); check("sec headers present on 401 (always)", r.status === 401 && hdrList(r, "x-frame-options").length === 1);
+  r = await stg({ path: "/hdrs" }); check("sec headers also single on staging", hdrList(r, "x-frame-options").length === 1);
+  r = await req({ host: STG, path: "/hdrs" }); check("401 from proxy adds no duplicate security headers", r.status === 401 && hdrList(r, "x-frame-options").length === 0);
 
   // ---- gzip ----
   r = await prod({ path: "/css", headers: { "accept-encoding": "gzip" } });
@@ -337,6 +337,8 @@ try {
   sh(["run", "-d", "--name", C.caddy, "--network", NET, "-p", `127.0.0.1:${CADDY}:80`, "-v", `${join(dir, "Caddyfile")}:/etc/caddy/Caddyfile:ro`, "caddy:2-alpine"]);
   await waitFor(async () => (await req({ tls: false, port: CADDY, host: PROD, path: "/hdrs" })).status === 200);
   const IGN = new Set(["date", "server", "content-length", "via", "connection", "keep-alive", "transfer-encoding"]);
+  // Caddy's header{} duplicates these three; nginx intentionally adds none (single-valued, asserted above), so they are excluded from parity.
+  for (const h of ["x-frame-options", "referrer-policy", "x-content-type-options"]) IGN.add(h);
   const norm = (x) => x.rawHeaders.reduce((a, v, i) => (i % 2 === 0 && !IGN.has(v.toLowerCase()) ? [...a, `${v.toLowerCase()}: ${x.rawHeaders[i + 1]}`] : a), []).sort();
   for (const [p, extra] of [["/hdrs", {}], ["/css", { "accept-encoding": "gzip" }], ["/cookie", {}]]) {
     const a = await req({ tls: false, port: CADDY, host: PROD, path: p, headers: extra }), b = await prod({ path: p, headers: extra });

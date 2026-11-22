@@ -28,7 +28,6 @@ server {
     server_name ${DOMAIN};
     ssl_certificate /etc/nginx/origin/cert.pem;
     ssl_certificate_key /etc/nginx/origin/key.pem;
-    include /etc/nginx/snippets/security-headers.conf;
     set $upstream http://app:3000;
     include /etc/nginx/snippets/locations.conf;
 }
@@ -45,7 +44,6 @@ server {
     ssl_certificate_key /etc/nginx/origin/key.pem;
     auth_basic "Staging";
     auth_basic_user_file /etc/nginx-run/htpasswd;
-    include /etc/nginx/snippets/security-headers.conf;
     set $upstream http://app-staging:3000;
     include /etc/nginx/snippets/locations.conf;
 }
