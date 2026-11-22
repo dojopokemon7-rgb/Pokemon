@@ -68,6 +68,10 @@ export function gradingNotifyTier(): RateLimitTier {
   return { bucket: "grading-notify", limit: envLimit("RATELIMIT_GRADING_NOTIFY_PER_MIN", 5), windowSeconds: WINDOW_SECONDS };
 }
 
+/** TIGHT — public anonymous contact form (sends an email), per IP. Default 3/min. */
+export function contactTier(): RateLimitTier {
+  return { bucket: "contact", limit: envLimit("RATELIMIT_CONTACT_PER_MIN", 3), windowSeconds: WINDOW_SECONDS };
+}
 /** MODERATE — card search, per user if authed else per IP. Default 60/min. */
 export function searchTier(): RateLimitTier {
   return { bucket: "search", limit: envLimit("RATELIMIT_SEARCH_PER_MIN", 60), windowSeconds: WINDOW_SECONDS };

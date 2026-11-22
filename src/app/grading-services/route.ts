@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // Streams the landing's prebuilt grading-services.html (route handlers bypass
-// layout.tsx). The page's notify-me form POSTs to /api/grading/notify, which
-// is NOT implemented in this app (it lives in the landing's Cloudflare Worker).
+// layout.tsx). The page's notify-me form POSTs to /api/grading/notify
+// (src/app/api/grading/notify/route.ts).
 export async function GET() {
   const file = join(process.cwd(), "public", "landing", "grading-services.html");
   try {

@@ -130,3 +130,49 @@ async function sendViaSes(args: { to: string; from: string; code: string }): Pro
     })
   );
 }
+
+/**
+ * Generic plain-text(+optional HTML) send through the SAME memoised SES client as
+ * the OTP path. Used by the public contact form. Unlike `sendOtpEmail` it never
+ * "dev-logs" or silently succeeds: when SES is not configured it THROWS, so the
+ * caller can tell the visitor the truth instead of faking success.
+ *
+ * `from` is EMAIL_FROM. Callers must pass header-safe `subject` / `replyTo`
+ * (no CR/LF); this function strips them again as a last line of defence.
+ */
+export async function sendSesEmail(args: {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  replyTo?: string;
+}): Promise<void> {
+  const from = process.env.EMAIL_FROM;
+  if (
+    !process.env.AWS_SES_REGION ||
+    !process.env.AWS_SES_ACCESS_KEY_ID ||
+    !process.env.AWS_SES_SECRET_ACCESS_KEY ||
+    !from
+  ) {
+    throw new Error("SES is not configured");
+  }
+  const oneLine = (s: string) => s.replace(/[\r\n\u0085\u2028\u2029]+/g, " ").trim();
+  const { SendEmailCommand } = await import("@aws-sdk/client-sesv2");
+  const client = await getSesClient();
+  await client.send(
+    new SendEmailCommand({
+      FromEmailAddress: from,
+      Destination: { ToAddresses: [oneLine(args.to)] },
+      ...(args.replyTo ? { ReplyToAddresses: [oneLine(args.replyTo)] } : {}),
+      Content: {
+        Simple: {
+          Subject: { Data: oneLine(args.subject), Charset: "UTF-8" },
+          Body: {
+            Text: { Data: args.text, Charset: "UTF-8" },
+            ...(args.html ? { Html: { Data: args.html, Charset: "UTF-8" } } : {}),
+          },
+        },
+      },
+    })
+  );
+}

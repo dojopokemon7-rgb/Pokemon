@@ -257,5 +257,18 @@ Backs the landing's `/grading-services` form. Contract is identical to the old C
 
 `/api/join` and `/api/count` (Worker waitlist) are NOT referenced by the built landing and were not ported.
 
-### `GET /api/admin/grading-interest/export` — admin only
+### `POST /api/contact` — PUBLIC, unauthenticated
+Backs the landing's `/contact` form. The message is **emailed** (SES, same client as the OTP sender) to `CONTACT_TO_EMAIL` (default `dojo.collect@nodwin.com`): From = `EMAIL_FROM`, Reply-To = the visitor's email, subject `[Dojo Contact] <subject | first 60 chars of message>` (prefixed `[STAGING] ` on staging: `CONTACT_SUBJECT_PREFIX`, else a `staging` host in `NEXT_PUBLIC_APP_URL`/`BETTER_AUTH_URL`). Body is plain text + escaped HTML with name, email, subject, page, submitted-at (ISO). **Nothing is stored in the database** (the authed `POST /api/support` form stores a `SupportTicket` row and sends no email). Body (JSON, ≤ 16 KiB): `{ name (1-100), email (valid, ≤254), subject? (≤150), message (10-5000), website (honeypot, must be empty), page? }`. All values are trimmed; CR/LF are stripped from anything placed in a header.
+| Status | Body | When |
+|---|---|---|
+| 200 | `{ ok: true }` | Sent. A filled honeypot (`website`) returns the identical response WITHOUT sending |
+| 400 | `{ error, fields: { name?, email?, subject?, message? } }` | Bad JSON or failed validation (field messages are shown inline by the form) |
+| 403 | `{ error: "Forbidden." }` | `Origin` present and host ≠ request host |
+| 405 | `{ error: "Use POST." }` + `Allow: POST` | Any other method |
+| 413 | `{ error: "Request too large." }` | Body > 16 KiB (checked on `Content-Length` and while streaming, before parsing) |
+| 415 | `{ error: "Expected a JSON body." }` | Content-Type not `application/json` |
+| 429 | `{ error }` + `Retry-After` | Per-IP limit, 3/min (`RATELIMIT_CONTACT_PER_MIN`). Redis down → fail-open (RULE 1) |
+| 500 | `{ error: "Could not send your message right now. Please email dojo.collect@nodwin.com." }` | SES not configured or the send threw. One log line (`[contact] send failed (<error name>)`), never the message or email address |
+Check order: method → Origin → content-type → rate limit → body cap → parse/Zod → honeypot → send. Shared guards live in `src/lib/utils/public-form.ts` (also used by `/api/grading/notify`).
+`/contact` itself is a landing page (`src/app/contact/route.ts` → `public/landing/contact.html`) and carries the landing-scoped CSP (GA4 origins); `/api/contact` keeps the strict app CSP.### `GET /api/admin/grading-interest/export` — admin only
 `requireAdmin` (401 without a valid `dojo_admin_session`). Streams every row as Excel-compatible CSV: UTF-8 BOM, CRLF, RFC 4180 quoting, header `email,category,volume,joined_at,updated_at,source`, ISO dates, cells starting `= + - @ TAB CR` prefixed with `'` (formula-injection). `Content-Disposition: attachment; filename="grading-interest-YYYY-MM-DD.csv"`, `Cache-Control: no-store`. Writes an `AuditLog` row (`grading_interest.export`, `{ rowCount }` only). Missing table → 500 `{ error: "Table not created — run the grading_interest migration" }`. Opens directly in Excel; no `.xlsx` dependency.

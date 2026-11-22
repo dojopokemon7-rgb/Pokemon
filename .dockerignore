@@ -59,6 +59,8 @@ tests
 infra
 docs
 public/card-photos-original
+# Landing SOURCE (Vite project). The image only needs its built output, public/landing.
+landing
 
 # Logs / scratch
 *.log

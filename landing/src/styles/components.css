@@ -1,0 +1,401 @@
+/* ── Button — the plunk ──────────────────────────────────────────────── */
+.dojo-btn {
+  --pw: var(--plunk-w);
+  --eb: var(--edge-bottom);
+  --er: var(--edge-right);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border-radius: 0;
+  box-shadow:
+    var(--pw) 0 0 0 var(--er),
+    0 var(--pw) 0 0 var(--eb),
+    var(--pw) var(--pw) 0 0 var(--eb);
+  transition:
+    transform var(--dur-press) var(--ease-mech),
+    box-shadow var(--dur-press) var(--ease-mech);
+  touch-action: manipulation;
+  user-select: none;
+  overflow: hidden;
+  text-decoration: none; /* when it renders as a link */
+}
+
+/* gloss — a soft skewed sheen that sweeps across on hover/press */
+.dojo-btn__shine {
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: 62%;
+  width: 42%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    var(--btn-shine, transparent) 22%,
+    var(--btn-shine-soft, transparent) 62%,
+    transparent 100%
+  );
+  transform: skewX(-18deg);
+  pointer-events: none;
+}
+
+.dojo-btn__shine.is-sweeping {
+  animation: dojo-shine-sweep 900ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.dojo-btn__glow {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--btn-glow, var(--btn-shine, transparent));
+  box-shadow: 0 0 8px 0 var(--btn-glow-soft, transparent);
+  pointer-events: none;
+  opacity: 0; /* the keyframes own it while playing, then it falls back out */
+  animation: dojo-shine-edge 900ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.dojo-btn__label {
+  position: relative;
+}
+
+@keyframes dojo-shine-sweep {
+  0% { transform: translateX(0) skewX(-18deg); }
+  45% { transform: translateX(180%) skewX(-18deg); }
+  45.01% { transform: translateX(-320%) skewX(-18deg); }
+  100% { transform: translateX(0) skewX(-18deg); }
+}
+
+@keyframes dojo-shine-edge {
+  0% { opacity: 0; transform: scale(1.06); }
+  15% { opacity: 1; transform: scale(1); }
+  85% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dojo-btn__shine.is-sweeping,
+  .dojo-btn__glow {
+    animation: none;
+  }
+  .dojo-btn__glow {
+    opacity: 0;
+  }
+}
+
+.dojo-btn:hover:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow:
+    calc(var(--pw) - 1px) 0 0 0 var(--er),
+    0 calc(var(--pw) - 1px) 0 0 var(--eb),
+    calc(var(--pw) - 1px) calc(var(--pw) - 1px) 0 0 var(--eb);
+}
+
+.dojo-btn:active:not(:disabled) {
+  transform: translate(var(--pw), var(--pw));
+  box-shadow: none;
+}
+
+.dojo-btn:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: 3px;
+}
+
+.dojo-btn:disabled {
+  background: var(--ink-400);
+  color: rgba(13, 13, 13, 0.5);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.dojo-btn--primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  --eb: var(--edge-accent-bottom);
+  --er: var(--edge-accent-right);
+  --btn-shine: rgba(255, 255, 255, 0.92);
+  --btn-shine-soft: rgba(255, 248, 179, 0.38);
+  --btn-glow: #fff8b3;
+  --btn-glow-soft: rgba(255, 248, 179, 0.6);
+}
+
+.dojo-btn--inverse {
+  background: var(--surface-inverse);
+  color: var(--text-inverse);
+  --btn-shine: rgba(255, 255, 255, 0.9);
+  --btn-shine-soft: rgba(235, 235, 235, 0.3);
+  --btn-glow: #ebebeb;
+  --btn-glow-soft: rgba(235, 235, 235, 0.6);
+}
+
+.dojo-btn--outline {
+  background: var(--ink-900);
+  color: var(--text-heading);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  --btn-glow: #ffffff;
+  --btn-glow-soft: rgba(255, 255, 255, 0.5);
+}
+
+.dojo-btn--outline:hover:not(:disabled) {
+  transform: none;
+  box-shadow: inset 0 0 0 1px var(--stroke-strong);
+}
+
+.dojo-btn--outline:active:not(:disabled) {
+  transform: translate(2px, 2px);
+}
+
+.dojo-btn--big {
+  min-height: 50px;
+  padding: 0 var(--sp-6);
+  font-size: 12px;
+}
+
+.dojo-btn--medium {
+  min-height: 44px;
+  padding: 0 var(--sp-4);
+  font-size: 11px;
+}
+
+.dojo-btn--small {
+  min-height: 44px; /* touch target */
+  padding: 0 var(--sp-3);
+  font-size: 10px;
+}
+
+.dojo-btn--full {
+  width: 100%;
+}
+
+.dojo-btn__arrow {
+  position: relative;
+  flex: none;
+}
+
+/* ── Star button — a light runs the outline, nothing inside ──────────── */
+.star-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-4);
+  border: var(--star-border-width, 1px) solid var(--stroke-silver);
+  border-radius: var(--star-radius, 0);
+  background: var(--face-color, var(--ink-900));
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  text-decoration: none; /* when it renders as a link */
+}
+
+.star-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.star-btn__label {
+  background: linear-gradient(to top, var(--paper-100), var(--paper-500));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.star-btn:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: 3px;
+}
+
+/* ── Tag ─────────────────────────────────────────────────────────────── */
+.dojo-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dojo-tag--success { background: var(--jade-500); color: var(--ink-900); }
+.dojo-tag--error { background: var(--verm-500); color: var(--paper-100); }
+.dojo-tag--warning { background: var(--amber-500); color: var(--ink-900); }
+.dojo-tag--accent { background: var(--gold-500); color: var(--ink-900); }
+.dojo-tag--neutral { background: var(--ink-600); color: var(--text-subheading); }
+
+.dojo-tag--subtle.dojo-tag--success { background: var(--jade-800); color: var(--jade-300); }
+.dojo-tag--subtle.dojo-tag--error { background: var(--verm-800); color: var(--verm-300); }
+.dojo-tag--subtle.dojo-tag--warning { background: var(--amber-800); color: var(--amber-300); }
+.dojo-tag--subtle.dojo-tag--accent { background: var(--gold-800); color: var(--gold-300); }
+.dojo-tag--subtle.dojo-tag--neutral { background: var(--ink-700); color: var(--text-body); }
+
+/* ── ElevatedCard ────────────────────────────────────────────────────── */
+.dojo-card {
+  background: var(--surface-card);
+  border-radius: 0;
+}
+
+.dojo-card--sm { box-shadow: 3px 3px 0 0 var(--edge-bottom); }
+.dojo-card--lg { box-shadow: 6px 6px 0 0 var(--edge-bottom); }
+.dojo-card--accent.dojo-card--sm { box-shadow: 3px 3px 0 0 var(--edge-accent-bottom); }
+.dojo-card--accent.dojo-card--lg { box-shadow: 6px 6px 0 0 var(--edge-accent-bottom); }
+.dojo-card--bordered { border: 1px solid var(--stroke-card); }
+
+/* ── PlunkMark colourways ────────────────────────────────────────────── */
+/* Three inks per mark: the face, the diagonal shimmer band clipped to it, and
+   the depth block offset behind. Gold is the fallback way. */
+.plunk-mark {
+  --pm-face: #fcec5e;
+  --pm-band: #23ce8c;
+  --pm-depth: #a76c16;
+}
+
+.plunk-mark--jade {
+  --pm-face: #23ce8c;
+  --pm-band: #fcec5e;
+  --pm-depth: #056140;
+}
+
+.plunk-mark--vermilion {
+  --pm-face: #ef4423;
+  --pm-band: #f0a73f;
+  --pm-depth: #782212;
+}
+
+.plunk-mark--chalk {
+  --pm-face: #ffffff;
+  --pm-band: #fcec5e;
+  --pm-depth: #3d3d3d;
+}
+
+/* NeoPOP electric blue — no blue ramp in the Dojo tokens, so the depth step
+   is cut to the same ratio the jade and vermilion ways use */
+.plunk-mark--electric {
+  --pm-face: #0d5cff;
+  --pm-band: #fcec5e;
+  --pm-depth: #062e80;
+}
+
+/* Sheen across the face — the same gesture as the CTA button's gloss. Parked
+   off the face and clipped to it, so nothing shows between sweeps. */
+.plunk-mark__gloss {
+  transform-box: view-box;
+  transform: translateX(0);
+}
+
+.plunk-mark__gloss.is-sweeping {
+  animation: plunk-gloss-sweep 900ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes plunk-gloss-sweep {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(1200px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plunk-mark__gloss.is-sweeping {
+    animation: none;
+  }
+}
+
+/* Mobile: each mark collapses to a single neon hue — saturated face, dark step
+   of the same hue behind it, and a light tint of it for the shimmer, in place
+   of the contrasting band the desktop ways use. */
+@media (max-width: 899px) {
+  .plunk-mark--gold {
+    --pm-face: var(--gold-500);
+    --pm-band: var(--gold-200);
+    --pm-depth: var(--gold-700);
+  }
+
+  .plunk-mark--jade {
+    --pm-face: var(--jade-500);
+    --pm-band: var(--jade-200);
+    --pm-depth: var(--jade-700);
+  }
+
+  /* the events star runs the origin-series magenta — no ramp for it in the
+     tokens, so the tint and the step are cut to match the others */
+  .plunk-mark--chalk {
+    --pm-face: var(--origin-magenta);
+    --pm-band: #ff9ad8;
+    --pm-depth: #6b0047;
+  }
+
+  .plunk-mark--electric {
+    --pm-face: #0d5cff;
+    --pm-band: #a8c6ff;
+    --pm-depth: #062e80;
+  }
+}
+
+/* ── Input field (caps label + underline) ────────────────────────────── */
+.dojo-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  text-align: left;
+}
+
+.dojo-field__label {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-subheading);
+}
+
+.dojo-field__label--error {
+  color: var(--negative);
+}
+
+.dojo-field input {
+  background: var(--ink-900);
+  border: 1px solid var(--stroke-silver);
+  border-radius: 0;
+  padding: var(--sp-2) var(--sp-4);
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 17px;
+  color: var(--text-heading);
+  caret-color: var(--field-caret);
+  min-height: 50px;
+  transition: border-color var(--dur-fast) var(--ease-mech);
+}
+
+.dojo-field input::placeholder {
+  color: var(--field-placeholder);
+  font-weight: 400;
+}
+
+.dojo-field input:focus {
+  outline: none;
+  border-color: var(--stroke-strong);
+}
+
+.dojo-field--error input {
+  border-color: var(--negative);
+}

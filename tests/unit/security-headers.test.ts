@@ -7,7 +7,7 @@ import nextConfig from "../../next.config";
 // edit can't silently drop them. (A real CSP block check needs a browser;
 // the CSP is ENFORCING — see the comment in next.config.ts.)
 // The app entry excludes the landing paths (see next.config.ts securityHeaders).
-const APP_SOURCE = "/((?!landing/|privacy$|grading-services$).+)";
+const APP_SOURCE = "/((?!landing/|privacy$|grading-services$|contact$).+)";
 const csp = (e?: { headers: { key: string; value: string }[] }) =>
   e!.headers.find((h) => h.key === "Content-Security-Policy")!.value;
 
@@ -15,7 +15,7 @@ describe("landing CSP scoping (GA4)", () => {
   it("GA origins only on landing entries, never on the app entry", async () => {
     const entries = await nextConfig.headers!();
     expect(csp(entries.find((e) => e.source === APP_SOURCE))).not.toContain("googletagmanager");
-    for (const s of ["/", "/privacy", "/grading-services", "/landing/:path*"]) {
+    for (const s of ["/", "/privacy", "/grading-services", "/contact", "/landing/:path*"]) {
       const c = csp(entries.find((e) => e.source === s));
       expect(c, s).toContain("https://www.googletagmanager.com");
       expect(c, s).toContain("https://*.google-analytics.com");
@@ -23,8 +23,8 @@ describe("landing CSP scoping (GA4)", () => {
   });
   it("the app regex excludes landing paths and includes app paths", () => {
     const re = new RegExp(`^${APP_SOURCE}$`);
-    for (const p of ["/privacy", "/grading-services", "/landing/assets/x.js", "/"]) expect(re.test(p), p).toBe(false);
-    for (const p of ["/login", "/api/x", "/dashboard", "/privacy-x", "/admin/grading-interest"]) expect(re.test(p), p).toBe(true);
+    for (const p of ["/privacy", "/grading-services", "/contact", "/landing/assets/x.js", "/"]) expect(re.test(p), p).toBe(false);
+    for (const p of ["/login", "/api/x", "/dashboard", "/privacy-x", "/contact-x", "/api/contact", "/admin/grading-interest"]) expect(re.test(p), p).toBe(true);
   });
 });
 

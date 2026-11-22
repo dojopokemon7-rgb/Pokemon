@@ -1,0 +1,1451 @@
+/* ── shared bits ─────────────────────────────────────────────────────── */
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 100%;
+  font-size: 20px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--text-heading);
+}
+
+.wordmark--sm {
+  font-size: 16px;
+}
+
+/* brand lockup — torii mark + Marcellus wordmark */
+/* Scaled to 85% of the pack's sizing. Height stays auto against the SVG's
+   587×186 viewBox, so the 3.16:1 ratio holds on its own.
+   NB: this puts both below the pack's documented 120px floor for the full
+   horizontal lockup — see note to the user. */
+.logo {
+  display: inline-flex;
+  color: var(--text-heading);
+}
+
+.logo__lockup {
+  display: block;
+  flex: none;
+  width: 105px; /* was 124 */
+  height: auto;
+}
+
+.logo--sm .logo__lockup {
+  width: 102px; /* was 120 */
+}
+
+.glyph-gold {
+  color: var(--accent);
+}
+
+.delta-up { color: var(--positive); font-style: normal; }
+.delta-down { color: var(--negative); font-style: normal; }
+.delta-gold { color: var(--accent); font-style: normal; }
+
+.thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 87%;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+.thumb--lg {
+  width: 50px;
+  height: 50px;
+  font-size: 16px;
+}
+
+/* ── nav ─────────────────────────────────────────────────────────────── */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  /* translucent ink so the hero glow reads through the bar */
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--divider);
+  transition: transform var(--dur-move) var(--ease-mech);
+}
+
+/* scrolling down — the bar clears out of the way */
+.nav--hidden {
+  transform: translateY(-100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav {
+    transition: none;
+  }
+}
+
+/* no backdrop-filter support — fall back to the solid bar, never a see-through one */
+@supports not (backdrop-filter: blur(1px)) {
+  .nav {
+    background: var(--surface-app);
+  }
+}
+
+.nav__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+}
+
+.nav__right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* section links ride the bar on desktop; below 900 the sheet carries them */
+.nav__links {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .nav__links {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-6);
+    margin-right: var(--sp-4);
+  }
+}
+
+.nav__anchor {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-subheading);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-mech);
+}
+
+.nav__anchor:hover,
+.nav__anchor[aria-current='page'] {
+  color: var(--text-heading);
+}
+
+/* the lockup is the way home from every page */
+.nav__home {
+  display: inline-flex;
+  text-decoration: none;
+}
+
+.nav__home:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: 4px;
+}
+
+.nav__anchor:focus-visible {
+  color: var(--text-heading);
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: 4px;
+}
+
+.nav__count {
+  color: var(--text-subheading);
+}
+
+@media (max-width: 640px) {
+  .nav__count {
+    display: none;
+  }
+}
+
+/* ── mobile nav: burger + sheet ──────────────────────────────────────── */
+/* the burger only exists below the breakpoint; above it the CTA is the bar */
+.nav__burger {
+  display: none;
+  width: 44px;
+  height: 44px;
+  margin-right: -10px; /* optical: the bars sit on the container edge, not the box */
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+}
+
+.nav__burger-bars {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 22px;
+  height: 16px;
+}
+
+.nav__burger-bars span {
+  display: block;
+  height: 2px;
+  width: 100%;
+  background: var(--text-heading);
+  transition:
+    transform var(--dur-move) var(--ease-snap),
+    opacity var(--dur-fast) var(--ease-mech);
+}
+
+/* the three bars fold into a cross */
+.nav__burger.is-open .nav__burger-bars span:nth-child(1) {
+  transform: translateY(7px) rotate(45deg);
+}
+
+.nav__burger.is-open .nav__burger-bars span:nth-child(2) {
+  opacity: 0;
+}
+
+.nav__burger.is-open .nav__burger-bars span:nth-child(3) {
+  transform: translateY(-7px) rotate(-45deg);
+}
+
+.nav__burger:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: 2px;
+}
+
+/* Full sheet under the bar — solid, so nothing reads through it.
+   Absolute, not fixed: .nav carries a backdrop-filter, which makes it the
+   containing block for fixed children and would collapse the sheet to nothing.
+   Anchoring to the bar's own bottom edge sidesteps that. */
+.nav__menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
+  background: var(--surface-app);
+  overflow-y: auto;
+  animation: nav-sheet-in var(--dur-move) var(--ease-snap) both;
+}
+
+@keyframes nav-sheet-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.nav__menu-inner {
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--sp-4);
+  padding-bottom: var(--sp-8);
+}
+
+.nav__link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+  text-align: left;
+  text-decoration: none; /* the sheet's links are anchors */
+  border-bottom: 1px solid var(--divider);
+}
+
+.nav__link:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: -2px;
+}
+
+.nav__menu-cta {
+  margin-top: var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+@media (max-width: 899px) {
+  .nav__burger {
+    display: inline-flex;
+  }
+
+  /* the CTA moves into the sheet */
+  .nav__cta {
+    display: none;
+  }
+}
+
+/* ── CGC announcement band — above the nav, scrolls away with the page ─ */
+.gbanner {
+  position: relative;
+  z-index: 1; /* over the fixed beams canvas */
+  display: block;
+  background: var(--ink-800);
+  border-bottom: 1px solid var(--divider);
+  text-decoration: none;
+}
+
+.gbanner__inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 40px;
+  padding-top: var(--sp-1);
+  padding-bottom: var(--sp-1);
+}
+
+.gbanner__logo {
+  flex: none;
+  width: auto;
+  height: 13px;
+}
+
+.gbanner__text {
+  color: var(--text-heading);
+}
+
+.gbanner__soon {
+  color: var(--text-body);
+}
+
+.gbanner__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.gbanner__cta svg {
+  transition: transform var(--dur-fast) var(--ease-mech);
+}
+
+.gbanner:hover .gbanner__cta svg {
+  transform: translateX(3px);
+}
+
+.gbanner:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: -2px;
+}
+
+/* phones keep the claim and the arrow; the rest is on the page it links to */
+@media (max-width: 640px) {
+  .gbanner__soon,
+  .gbanner__cta-label {
+    display: none;
+  }
+}
+
+/* ── beams backdrop — fixed behind the whole page ────────────────────── */
+.beams-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.beams-bg canvas {
+  position: absolute;
+  inset: 0;
+  filter: blur(15px);
+}
+
+/* page content sits above the canvas */
+main,
+.footer {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── hero ────────────────────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  padding: var(--sp-12) 0 var(--sp-12);
+}
+
+.hero__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-12);
+  align-items: center;
+}
+
+.hero__grid > * {
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .hero__grid {
+    /* the copy column carries a headline and a two-line paragraph; the phone
+       column only has to hold a 250px device, so the split favours the words */
+    grid-template-columns: 8fr 4fr;
+    gap: 48px;
+  }
+  .hero {
+    padding: 48px 0;
+  }
+}
+
+.hero__invited {
+  color: var(--gold-300);
+  margin-bottom: var(--sp-2);
+}
+
+.hero__title {
+  /* same treatment as the feature titles (DOJO TRUSTED STORES), scaled up */
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: clamp(22px, 3.6vw, 40px);
+  line-height: 1.55;
+  color: var(--text-heading);
+  margin-bottom: var(--sp-4);
+  text-wrap: balance;
+}
+
+/* two-up: sized so the widest line, TRACK YOUR COLLECTIBLES (18.6em wide at
+   this tracking), always fits the copy column — two-thirds of the container
+   less the gutter, (100vw − 128px) × 2/3 — and caps at 40px, which still fits
+   once the column stops growing at 1440. Three lines, so the leading tightens. */
+@media (min-width: 900px) {
+  .hero__title {
+    font-size: min(40px, calc((100vw - 128px) / 28.8));
+    line-height: 1.3;
+  }
+}
+
+/* Stacked: the product sits between the pitch and the ask — headline, copy,
+   phone, then the CTA. The copy block dissolves so its children and the phone
+   share one grid and can be ordered against each other; spacing moves from the
+   grid gap onto the items. */
+@media (max-width: 899px) {
+  .hero__grid {
+    gap: 0;
+  }
+
+  .hero__copy {
+    display: contents;
+  }
+
+  .hero__invited { order: 1; }
+  .hero__title { order: 2; }
+
+  .hero__sub {
+    order: 3;
+    margin-bottom: var(--sp-10);
+  }
+
+  .hero__phone {
+    order: 4;
+    margin-bottom: var(--sp-8);
+  }
+
+  /* scoped past the base .hero__cta rule, which sets its own top margin */
+  .hero__grid .hero__cta {
+    order: 5;
+    margin-top: 0;
+  }
+}
+
+.hero__title-accent {
+  color: var(--gold-500);
+}
+
+.hero__sub {
+  max-width: 74ch;
+  line-height: 1.65;
+  /* even line lengths instead of a long line over a short one */
+  text-wrap: pretty;
+}
+
+/* a step up beside the larger headline */
+@media (min-width: 900px) {
+  .hero__sub {
+    font-size: 16px;
+  }
+}
+
+/* CTA block — sits with the copy so it clears the fold without scrolling */
+.hero__cta {
+  margin-top: var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* pre-registration limit line */
+.hero__limit {
+  margin-top: var(--sp-5);
+  color: var(--text-body);
+}
+
+/* hero phone — portfolio home in a device frame, fits above the fold */
+.hero__phone {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.design-phone.design-phone--hero {
+  --phone-scale: 0.62;
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-height: 760px) and (min-width: 900px) {
+  .design-phone.design-phone--hero {
+    --phone-scale: 0.55;
+  }
+}
+
+/* hero device — tilted 10° so the floating cards read against it */
+.phone-frame--hero {
+  transform: rotate(10deg);
+}
+
+/* parallax floats — cards drifting around the hero device */
+/* These are positioned with only `left` set, so they shrink-to-fit whatever
+   space is left over past that offset — which squeezed the two right-hand
+   cards well below their set widths (the 76% one worst of all) once the
+   reset's `img { max-width: 100% }` capped the image to the shrunken box.
+   max-content sizes them to the card instead of to the gap. */
+.hero-float {
+  width: max-content;
+}
+
+/* the right-hand pair anchors to the right edge rather than a left offset, so
+   a full-width card can't run off the container (and off the page) with it */
+.hero-float--tl { top: 1%; left: 2%; z-index: 0; }
+.hero-float--tr { top: 9%; left: auto; right: 0; z-index: 2; }
+.hero-float--bl { top: 57%; left: 0%; z-index: 2; }
+.hero-float--br { top: 64%; left: auto; right: 4%; z-index: 0; }
+
+/* The card scans carry their own printed edge and rounded, transparent
+   corners — a rectangular hairline would cut across those, and a black backing
+   would square them off. Both are gone; the art is the whole card. */
+.hero-float__card {
+  display: block;
+  width: 108px;
+  height: auto; /* natural aspect — never crop a card (the Zoro slab is taller than 5:7) */
+  animation: hero-float-in 500ms var(--ease-snap) both;
+}
+
+.hero-float--tl .hero-float__card { rotate: -8deg; width: 112px; }
+.hero-float--tr .hero-float__card { rotate: 7deg; width: 100px; }
+.hero-float--bl .hero-float__card { rotate: -6deg; }
+.hero-float--br .hero-float__card { rotate: 9deg; width: 118px; }
+
+@keyframes hero-float-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* slow idle bob on the hero device */
+.design-phone--hero {
+  animation: hero-bob 6s ease-in-out 1s infinite;
+}
+
+@keyframes hero-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-9px); }
+}
+
+/* mobile: no pointer to parallax against — cards tuck into the corners around
+   the phone and drift slowly instead. transform:none kills the rAF parallax
+   writes (touchmove would otherwise shove the cards around while scrolling);
+   drift animates the CSS `translate` property so it composes with `rotate`. */
+@media (max-width: 899px) {
+  .hero-float {
+    transform: none !important;
+  }
+
+  /* right-side cards pin to the right edge so larger sizes can't overflow */
+  .hero-float--tl { top: -3%; left: 0; }
+  .hero-float--tr { top: 6%; left: auto; right: 0; }
+  .hero-float--bl { top: 56%; left: 0; }
+  .hero-float--br { top: 63%; left: auto; right: 0; }
+
+  .hero-float__card {
+    animation: hero-float-in 500ms var(--ease-snap) both, hero-drift 7s ease-in-out infinite;
+  }
+
+  /* staggered durations desync the bobbing; inline animation-delay staggers entry */
+  .hero-float--tl .hero-float__card { width: 104px; }
+  .hero-float--tr .hero-float__card { width: 96px; animation-duration: 500ms, 6s; }
+  .hero-float--bl .hero-float__card { width: 100px; animation-duration: 500ms, 8s; }
+  .hero-float--br .hero-float__card { width: 110px; animation-duration: 500ms, 6.5s; }
+}
+
+@keyframes hero-drift {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -7px; }
+}
+
+@media (max-width: 899px) and (prefers-reduced-motion: reduce) {
+  .hero-float__card {
+    animation: hero-float-in 500ms var(--ease-snap) both;
+  }
+}
+
+/* ── features ────────────────────────────────────────────────────────── */
+/* backed-by band — sits between hero and features */
+.backed {
+  padding: var(--sp-10) 0;
+}
+
+/* spacing carries the separation — a border/glyph separator strands a stray
+   rule at the start of a wrapped line */
+/* space-between so the row spans the same measure as the label rule above it;
+   the gap is the floor that keeps logos apart once they wrap on narrow screens */
+/* marquee: viewport clips, track holds two identical rows and slides -50%;
+   each row carries the seam gap as padding-right so the loop is seamless.
+   The gap is sized so one full set spans the container — the duplicate row
+   stays outside the masked window, so no logo appears twice at once. */
+.backed__viewport {
+  overflow: hidden;
+  margin-top: var(--sp-6);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+}
+
+.backed__track {
+  display: flex;
+  width: max-content;
+  animation: backed-marquee 32s linear infinite;
+}
+
+.backed__track:hover {
+  animation-play-state: paused;
+}
+
+.backed__row {
+  /* one set has to span the measure: 444px of logos + 7 gaps ≥ the container
+     (min(100vw, 1440) − 80 of gutter), else a logo shows twice at once */
+  --backed-gap: clamp(60px, calc((min(100vw, 1440px) - 524px) / 7), 132px);
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--backed-gap);
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--backed-gap) 0 0;
+  flex: none;
+}
+
+@keyframes backed-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backed__viewport {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  .backed__track {
+    animation: none;
+    width: auto;
+  }
+
+  .backed__row {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--sp-6) var(--sp-8);
+    padding: 0;
+    width: 100%;
+  }
+
+  .backed__row--dup {
+    display: none;
+  }
+}
+
+.backed__item img {
+  width: auto;
+  opacity: 0.85;
+  transition: opacity var(--dur-fast) var(--ease-snap);
+}
+
+.backed__item img:hover {
+  opacity: 1;
+}
+
+/* the attribution leads into the marquee, centred over a short hairline */
+.backed__label {
+  text-align: center;
+  color: var(--text-body);
+}
+
+.backed__label::after {
+  content: '';
+  display: block;
+  width: 48px;
+  height: 1px;
+  margin: var(--sp-3) auto 0;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.features {
+  padding: var(--sp-12) 0;
+}
+
+.features__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+/* alternating text / phone rows, each one a frosted glass panel */
+.feature-row {
+  display: flex;
+  align-items: center;
+  gap: clamp(28px, 5vw, 72px);
+  padding: clamp(24px, 3.4vw, 48px);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  /* same hairline as the nav bar's bottom edge */
+  border: 1px solid var(--divider);
+  border-radius: 0;
+}
+
+/* no backdrop-filter support — solid panel rather than a see-through one */
+@supports not (backdrop-filter: blur(1px)) {
+  .feature-row {
+    background: var(--ink-600);
+  }
+}
+
+/* Desktop cards carry a phone, and once they stack the glass let the bright
+   screen of the card underneath bleed through as coloured smudges. Solid
+   panels here; the frost stays on the text-only mobile cards. */
+@media (min-width: 900px) {
+  .feature-row {
+    background: var(--surface-card);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* The beams canvas is already blurred internally at 35px, so the CSS blur over
+   it is a second full-viewport pass for very little visible gain. Dropping it
+   on phones costs nothing visible and is the cheaper of the two savings — the
+   cards keep their frost. */
+@media (max-width: 899px) {
+  .beams-bg canvas {
+    filter: none;
+  }
+
+  /* The cards are scaled and dimmed per frame by the scroll stack, and a
+     backdrop-filter re-blurs what's behind them on every one. A shorter blur
+     radius is the part of that cost that scales down without changing how the
+     glass reads. */
+  .feature-row {
+    backdrop-filter: blur(9px) saturate(140%);
+    -webkit-backdrop-filter: blur(9px) saturate(140%);
+  }
+}
+
+/* scroll stack — each card sticks under the nav and the next one slides over it,
+   stepped tops so the stuck edges stay visible underneath. Runs at every width:
+   the mobile card drops its phone, so it's short enough to pin without trapping
+   the page. */
+@media (prefers-reduced-motion: no-preference) {
+  .features__stack {
+    gap: var(--sp-12);
+    /* the last card needs room to travel over the others */
+    padding-bottom: var(--sp-12);
+  }
+
+  .feature-row {
+    position: sticky;
+    top: var(--stack-top, 88px);
+    /* recede from the pinned top edge, not the middle */
+    transform-origin: top center;
+    will-change: transform, filter;
+  }
+
+  .feature-row:nth-child(2) { --stack-top: 104px; }
+  .feature-row:nth-child(3) { --stack-top: 120px; }
+  .feature-row:nth-child(4) { --stack-top: 136px; }
+}
+
+/* shorter bar on mobile, so the steps start higher and tighten up */
+@media (max-width: 899px) and (prefers-reduced-motion: no-preference) {
+  .feature-row:nth-child(1) { --stack-top: 76px; }
+  .feature-row:nth-child(2) { --stack-top: 88px; }
+  .feature-row:nth-child(3) { --stack-top: 100px; }
+  .feature-row:nth-child(4) { --stack-top: 112px; }
+}
+
+/* the phone rides smaller inside a card so the two columns stay balanced */
+@media (min-width: 900px) {
+  .feature-row .design-phone {
+    --phone-scale: 0.62;
+  }
+}
+
+/* wide and tall: the card has width to spare, and the fit rule below still
+   holds — 0.7 needs (858 × 0.7) + 258 ≈ 860px of window */
+@media (min-width: 1280px) and (min-height: 860px) {
+  .feature-row .design-phone {
+    --phone-scale: 0.7;
+  }
+}
+
+/* A stuck card must fit the window whole — nothing of it may fall below the
+   fold. Card height ≈ 858 × scale + padding, so the phone shrinks with the
+   viewport: scale ≤ (100vh − 258px) / 858. */
+@media (min-width: 900px) and (max-height: 820px) {
+  .feature-row .design-phone { --phone-scale: 0.6; }
+}
+
+@media (min-width: 900px) and (max-height: 760px) {
+  .feature-row { padding: var(--sp-6); }
+  .feature-row .design-phone { --phone-scale: 0.55; }
+}
+
+@media (min-width: 900px) and (max-height: 700px) {
+  .feature-row .design-phone { --phone-scale: 0.49; }
+}
+
+@media (min-width: 900px) and (max-height: 640px) {
+  .feature-row .design-phone { --phone-scale: 0.43; }
+}
+
+@media (min-width: 900px) and (max-height: 580px) {
+  .feature-row .design-phone { --phone-scale: 0.37; }
+}
+
+/* below this there is no honest way to pin a card and still show all of it */
+@media (min-width: 900px) and (max-height: 520px) {
+  .feature-row {
+    position: static;
+  }
+}
+
+.feature-row__text {
+  flex: 1;
+  min-width: 0;
+  max-width: 460px;
+}
+
+.feature-row__phone {
+  flex: none;
+  display: flex;
+  justify-content: center;
+}
+
+@media (min-width: 900px) {
+  .feature-row--flip {
+    flex-direction: row-reverse;
+  }
+
+  /* text holds its 460 measure; the phone's column takes whatever the wider
+     card has left and centres the device in it, so the extra width spreads
+     around the phone instead of pooling at one end of the card */
+  .feature-row__text {
+    flex: 0 1 460px;
+  }
+
+  .feature-row__phone {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 899px) {
+  .feature-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-8);
+  }
+  .feature-row__text {
+    max-width: none;
+  }
+  .feature-row__phone {
+    width: 100%;
+  }
+}
+
+.feature__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  /* tight under the number so the mark rides high in the card */
+  margin-bottom: var(--sp-1);
+}
+
+.feature__num {
+  color: var(--text-body);
+}
+
+/* mark stands directly over the title, on the same left edge */
+.plunk-mark {
+  display: block;
+  flex: none;
+  margin-bottom: var(--sp-3);
+}
+
+.feature__title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: clamp(20px, 2.4vw, 26px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  color: var(--text-heading);
+  margin-bottom: var(--sp-4);
+}
+
+.feature__body {
+  color: var(--text-body);
+  margin-bottom: var(--sp-6);
+}
+
+.feature__points {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.feature__points li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-subheading);
+}
+
+.feature__points .glyph-gold {
+  font-size: 9px;
+  flex: none;
+}
+
+/* ── feature carousel (mobile) ───────────────────────────────────────── */
+/* the screens leave the cards and regroup here, under the whole stack */
+.fcar {
+  margin-top: var(--sp-10);
+}
+
+.fcar__rail {
+  position: relative; /* offsetLeft on the slides is measured against this */
+  display: flex;
+  gap: var(--sp-6);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+
+.fcar__rail::-webkit-scrollbar {
+  display: none;
+}
+
+.fcar__slide {
+  flex: none;
+  width: 100%;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* the phone is centred in its slide, never stretched by the flex column */
+.fcar__slide .design-phone {
+  margin: 0;
+}
+
+.fcar__caption {
+  text-align: center;
+}
+
+.fcar__caption .num {
+  color: var(--accent);
+}
+
+.fcar__dots {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-1);
+  margin-top: var(--sp-4);
+}
+
+/* 8px mark, 32px target */
+.fcar__dot {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.fcar__dot::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--stroke-silver);
+  transition:
+    background var(--dur-fast) var(--ease-mech),
+    border-color var(--dur-fast) var(--ease-mech);
+}
+
+.fcar__dot.is-active::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.fcar__dot:focus-visible {
+  outline: 2px solid var(--stroke-strong);
+  outline-offset: -6px;
+}
+
+/* ── iPhone device frame ─────────────────────────────────────────────── */
+.design-phone {
+  --phone-scale: 0.76;
+  width: calc(404px * var(--phone-scale));
+  height: calc(858px * var(--phone-scale));
+  flex: none;
+}
+
+.design-phone__scale {
+  width: 404px;
+  height: 858px;
+  transform: scale(var(--phone-scale));
+  transform-origin: top left;
+}
+
+/* realistic device: grey titanium rail, black inner bezel, side buttons */
+.phone-frame {
+  position: relative;
+  width: 404px;
+  height: 858px;
+  padding: 7px;
+  border-radius: 54px;
+  background: #3a3a3c;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    inset 0 0 0 2px rgba(0, 0, 0, 0.55);
+}
+
+/* power button (right) */
+.phone-frame::before {
+  content: '';
+  position: absolute;
+  right: -3px;
+  top: 218px;
+  width: 3px;
+  height: 76px;
+  background: #4a4a4c;
+  border-radius: 0 2px 2px 0;
+}
+
+/* volume buttons (left) — second one drawn by the offset shadow copy */
+.phone-frame::after {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: 168px;
+  width: 3px;
+  height: 50px;
+  background: #4a4a4c;
+  border-radius: 2px 0 0 2px;
+  box-shadow: 0 64px 0 0 #4a4a4c;
+}
+
+.phone-frame__screen {
+  position: relative;
+  width: 390px;
+  height: 844px;
+  border-radius: 47px;
+  overflow: hidden;
+  background: var(--surface-app);
+  /* black bezel ring between the screen and the grey rail */
+  box-shadow: 0 0 0 3.5px #060606;
+}
+
+/* the screens carry their own outer border for standalone use — drop it
+   inside the bezel so it doesn't double up on the frame */
+.phone-frame__screen > [data-screen-label] {
+  border: none;
+  width: 100%;
+  height: 100%;
+}
+
+.phone-frame__island {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 112px;
+  height: 30px;
+  background: #000;
+  border-radius: 16px;
+  z-index: 50;
+}
+
+@media (max-width: 899px) {
+  .design-phone {
+    --phone-scale: 0.82;
+    margin: 0 auto;
+  }
+}
+
+@media (max-width: 420px) {
+  .design-phone {
+    --phone-scale: 0.66;
+  }
+}
+
+/* price-triggers CTA — plunk press */
+.triggers-cta:active {
+  transform: translate(4px, 4px);
+  box-shadow: none !important;
+}
+
+/* scrollable regions inside design screens — no visible scrollbar */
+.evt-scroll {
+  scrollbar-width: none;
+}
+
+.evt-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── final cta ───────────────────────────────────────────────────────── */
+.final {
+  padding: 90px 0;
+}
+
+.final__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.final__kicker {
+  color: var(--gold-300);
+  margin-bottom: var(--sp-4);
+}
+
+/* same treatment as the feature titles, a size up — the page closes on a
+   line, not just a button */
+.final__title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: clamp(22px, 2.8vw, 30px);
+  line-height: 1.3;
+  color: var(--text-heading);
+  text-wrap: balance;
+  margin-bottom: var(--sp-8);
+}
+
+/* ── footer ──────────────────────────────────────────────────────────── */
+.footer {
+  padding: var(--sp-8) 0;
+}
+
+.footer__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-4);
+}
+
+@media (min-width: 700px) {
+  .footer__inner {
+    flex-direction: row;
+    /* centred, not baseline — the logo is an SVG and the links carry a border
+       and an icon, so their baselines sit nowhere near the plain text's and the
+       four items ended up on four different lines */
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-6);
+  }
+}
+
+/* mark and the launch line travel together */
+.footer__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.footer__links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+}
+
+.footer__meta {
+  color: var(--text-body);
+}
+
+/* No rule at rest — a permanent border under every link read as two hard
+   rules across the footer, which is most of what made it shout. The underline
+   is hover feedback instead, and only then. */
+.footer__link {
+  /* body, not faint — at 30% white the policy link fell to 2.6:1 */
+  color: var(--text-body);
+  /* longhands, not the shorthand — `text-decoration: none` resets thickness,
+     so the two forms fight and only one survives */
+  text-decoration-line: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: color var(--dur-fast) var(--ease-mech);
+}
+
+.footer__link:hover,
+.footer__link:focus-visible {
+  color: var(--accent);
+  text-decoration-line: underline;
+}
+
+/* one step up from the policy link — the whole difference in emphasis */
+.footer__social {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-subheading);
+}
+
+.footer__social svg {
+  flex: none;
+  opacity: 0.85;
+}
+
+/* ── document page (privacy policy) ──────────────────────────────────── */
+.doc-bar {
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface-app);
+}
+
+.doc-bar__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: 64px;
+}
+
+.doc-bar__home {
+  text-decoration: none;
+}
+
+.doc-bar__back {
+  color: var(--text-subheading);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease-mech);
+}
+
+.doc-bar__back:hover,
+.doc-bar__back:focus-visible {
+  color: var(--accent);
+}
+
+.doc {
+  padding: var(--sp-12) 0;
+}
+
+/* a policy is read, not scanned — hold the measure well short of the container */
+.doc__inner {
+  max-width: 760px;
+}
+
+.doc__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-subheading);
+  margin-bottom: var(--sp-4);
+}
+
+.doc__title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-heading);
+}
+
+.doc__updated {
+  margin-top: var(--sp-3);
+  color: var(--text-faint);
+}
+
+.doc__h2 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: clamp(17px, 2.2vw, 20px);
+  line-height: 1.25;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-heading);
+  margin-top: var(--sp-10);
+  margin-bottom: var(--sp-4);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--divider);
+}
+
+.doc p {
+  color: var(--text-body);
+  line-height: 1.7;
+  margin-top: var(--sp-3);
+}
+
+.doc__inner > p:first-of-type {
+  margin-top: var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.doc__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+  padding-left: var(--sp-4);
+  color: var(--text-body);
+  line-height: 1.7;
+}
+
+.doc__list li {
+  padding-left: var(--sp-2);
+}
+
+.doc__list li::marker {
+  color: var(--accent);
+}
+
+/* bullets read as the system's diamond glyph rather than a dot */
+.doc__list:not(.doc__list--num) {
+  list-style: none;
+  padding-left: 0;
+}
+
+.doc__list:not(.doc__list--num) li {
+  position: relative;
+  padding-left: var(--sp-5);
+}
+
+.doc__list:not(.doc__list--num) li::before {
+  content: '◆';
+  position: absolute;
+  left: 0;
+  top: 0.35em;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.doc__list--num {
+  list-style: decimal;
+}
+
+.doc strong {
+  color: var(--text-subheading);
+  font-weight: 700;
+}
+
+.doc a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.doc__contact {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-2) var(--sp-5);
+  align-items: baseline;
+  margin-top: var(--sp-5);
+  padding: var(--sp-5);
+  border: 1px solid var(--stroke-card);
+  background: var(--surface-card);
+}
+
+.doc__contact dt {
+  color: var(--text-faint);
+}
+
+.doc__contact dd {
+  color: var(--text-subheading);
+}
+
+@media (max-width: 560px) {
+  .doc__contact {
+    grid-template-columns: 1fr;
+    gap: var(--sp-1) 0;
+  }
+
+  .doc__contact dd {
+    margin-bottom: var(--sp-3);
+  }
+}
+
+/* ── motion safety ───────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* analytics consent banner */
+.consent {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 200;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px 20px;
+  background: var(--surface-raised);
+  border: 1px solid var(--stroke-card);
+  color: var(--text-subheading);
+}
+.consent__text {
+  margin: 0;
+  flex: 1 1 280px;
+}
+.consent__text a {
+  color: var(--gold-500);
+}
+.consent__actions {
+  display: flex;
+  gap: 8px;
+}

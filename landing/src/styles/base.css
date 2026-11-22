@@ -1,0 +1,212 @@
+/* ── reset ────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--surface-app);
+  color: var(--text-body);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+button {
+  font: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+}
+
+::selection {
+  background: var(--gold-500);
+  color: var(--ink-900);
+}
+
+/* ── type scale ───────────────────────────────────────────────────────── */
+.t-hero {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 87%;
+  font-size: 44px;
+  line-height: 1.05;
+  color: var(--text-heading);
+  letter-spacing: -0.01em;
+}
+
+.t-h1 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 87%;
+  font-size: 34px;
+  line-height: 1.1;
+  color: var(--text-heading);
+  letter-spacing: -0.01em;
+}
+
+.t-h2 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 87%;
+  font-size: 28px;
+  line-height: 1.15;
+  color: var(--text-heading);
+  letter-spacing: -0.01em;
+}
+
+.t-h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  line-height: 1.2;
+  color: var(--text-heading);
+}
+
+.t-h4 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.25;
+  color: var(--text-heading);
+}
+
+.t-h5 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-heading);
+}
+
+.t-num {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 87%;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-heading);
+}
+
+.t-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-body);
+}
+
+.t-body-md {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-subheading);
+}
+
+.t-small {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-body);
+}
+
+.t-caps {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-stretch: 112%;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-subheading);
+}
+
+/* 10px reads fine on a phone held close, small at desktop distance */
+@media (min-width: 900px) {
+  .t-caps {
+    font-size: 11px;
+  }
+}
+
+.t-caps-lg {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-heading);
+}
+
+.t-serif {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1.25;
+  color: var(--text-heading);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── hard shadows (static blocks) ─────────────────────────────────────── */
+.hard-shadow {
+  box-shadow: 3px 3px 0 0 var(--edge-bottom);
+}
+
+.hard-shadow-lg {
+  box-shadow: 6px 6px 0 0 var(--edge-bottom);
+}
+
+.hard-shadow-accent {
+  box-shadow: 6px 6px 0 0 var(--edge-accent-bottom);
+}
+
+/* ── layout ───────────────────────────────────────────────────────────── */
+/* even gutters — these were 30px left against 15px right, which sat every
+   section 7–8px right of centre on phones */
+/* 1440 with the 40px gutters is a 1360 measure — at 1120 a typical laptop
+   window (~1280) sat the whole page in a narrow column with dead bands
+   either side */
+.container {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding-left: var(--sp-4);
+  padding-right: var(--sp-4);
+}
+
+@media (min-width: 768px) {
+  .container {
+    padding-left: 40px;
+    padding-right: 40px;
+  }
+}
+
+/* section intro: caps label */
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-6);
+}
+
+.section-label .glyph {
+  color: var(--accent);
+  font-size: 10px;
+}

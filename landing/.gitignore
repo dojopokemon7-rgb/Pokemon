@@ -1,0 +1,8 @@
+.env
+.dev.vars
+node_modules
+.wrangler
+dist
+.herenow
+.claude/settings.local.json
+exports

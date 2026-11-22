@@ -436,6 +436,7 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `TCGCOLLECTOR_API_KEY`, `TCGCOLLECTOR_API_BASE`, `CARDMARKET_APP_TOKEN` | no | clean One Piece images |
 | `SMS_PROVIDER_*` | no | OTP plugin disabled MVP |
 | `RESEND_API_KEY` + `EMAIL_FROM` (or `EMAIL_PROVIDER_API_KEY` + `EMAIL_PROVIDER_BASE_URL` + `EMAIL_FROM`) | prod (password reset) | configured → reset links emailed via Resend REST; dev w/o provider logs link; prod w/o provider logs a clear error (never silent) |
+| `CONTACT_TO_EMAIL` / `CONTACT_SUBJECT_PREFIX` / `RATELIMIT_CONTACT_PER_MIN` | optional (contact form) | Recipient of `POST /api/contact` emails (default `dojo.collect@nodwin.com`); explicit subject prefix (unset = `[STAGING] ` auto when the app URL host contains `staging`); per-IP limit (default 3/min). Sending reuses the `AWS_SES_*` + `EMAIL_FROM` row below; unconfigured SES → the form returns a 500, never a fake success. |
 | `AWS_SES_REGION` + `AWS_SES_ACCESS_KEY_ID` + `AWS_SES_SECRET_ACCESS_KEY` (+ `EMAIL_FROM`) | prod (email-OTP, Phase B) | email-OTP verification sender (`ses-email.ts` → `sendOtpEmail`); `hasProvider` = all four set. Phase A: unset → dev-logs the code (dev) / loud code-free error (prod); the real SES call is a throwing stub until Phase B. `EMAIL_FROM` is the shared reset sender (reused). |
 | `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` | no | client base URL / future uploads |
 | `ADMIN_EMAIL` + `ADMIN_PASSWORD` | yes (admin login) | isolated env-defined admin superuser; server-side only, never in the client bundle. Login only at `/admin` (password + mandatory email OTP). |
@@ -487,6 +488,9 @@ mints the session on a successful verify.
 **Data model:** `GradingInterest` → table `grading_interest`: `id` (cuid — non-enumerable, no sequence gaps on upsert), `email` (UNIQUE, stored trimmed + lowercased; DB `CHECK (email = lower(email))` backs the case-insensitivity the D1 `COLLATE NOCASE` gave), `category`/`volume` (Zod in the route + DB CHECKs), `source` (≤ 40), `joinedAt`, `updatedAt` (null until a repeat submit). All access is via Prisma model calls (schema-qualified; no raw SQL, avoids the S-1 PgBouncer search_path issue). Concurrent same-email submits: upsert, and on P2002 retry as an update → exactly one row, last answers win.
 
 **Env:** `RATELIMIT_GRADING_NOTIFY_PER_MIN` (default 5). No other new env.
+
+## 14. Contact page + landing source
+`/contact` is a 4th landing page (`landing/contact.html`) whose form posts to `POST /api/contact` (public; origin check, JSON-only, per-IP 3/min, 16 KiB cap, Zod, honeypot) which emails `CONTACT_TO_EMAIL` through SES (`sendSesEmail`); no DB storage. The landing SOURCE now lives in `landing/` (reconstructed from the deployed build) and `npm run landing:build` regenerates `public/landing`; see `landing/README.md`. `/contact` is in the landing CSP set (GA4 origins) in `next.config.ts`.
 
 **Deploy order:** apply the migration BEFORE (or right after) deploying; if the app ships first the form shows its normal "Could not save that right now." error and the server logs one `[grading-notify] LOUD: table grading_interest is MISSING` line — no crash, no email logged.
 

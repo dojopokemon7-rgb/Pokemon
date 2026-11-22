@@ -30,6 +30,7 @@ import {
   GradingInterestSchema,
   firstGradingError,
 } from "@/lib/validators/grading-interest.validator";
+import { readCapped, sameOrigin } from "@/lib/utils/public-form";
 import { isMissingTable, upsertGradingInterest } from "@/lib/services/grading-interest.service";
 
 export const dynamic = "force-dynamic";
@@ -38,42 +39,6 @@ const MAX_BODY_BYTES = 4 * 1024;
 const NO_STORE = { "Cache-Control": "no-store" };
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   NextResponse.json(body, { status, headers: { ...NO_STORE, ...headers } });
-
-/** Streams the body, aborting as soon as it exceeds the cap. null = too large. */
-async function readCapped(request: Request): Promise<string | null> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_BODY_BYTES) {
-        await reader.cancel().catch(() => {});
-        return null;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return ""; // transport error -> fails JSON parse -> 400
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function sameOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
-  try {
-    return !host || new URL(origin).host === host;
-  } catch {
-    return false;
-  }
-}
 
 export async function POST(request: Request): Promise<NextResponse> {
   if (!sameOrigin(request)) return json({ error: "Forbidden." }, 403);
@@ -92,7 +57,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
   }
 
-  const raw = await readCapped(request);
+  const raw = await readCapped(request, MAX_BODY_BYTES);
   if (raw === null) return json({ error: "Request too large." }, 413);
 
   let payload: unknown;

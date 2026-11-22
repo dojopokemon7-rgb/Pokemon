@@ -20,7 +20,7 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
-    exclude: ["e2e/**", "node_modules/**", ".next/**"],
+    exclude: ["e2e/**", "node_modules/**", ".next/**", "landing/**"],
     // Coverage maps which application code (src/) has NO test behind it —
     // the concrete "what's untested" signal for vibe-coded risk. Scoped to
     // src so the % reflects app code, not test files or generated output.

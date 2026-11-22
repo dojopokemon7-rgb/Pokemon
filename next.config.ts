@@ -5,7 +5,7 @@ import { buildContentSecurityPolicy } from "./src/lib/utils/csp";
 
 /**
  * Security headers shared by the app and the marketing landing. The ONLY
- * difference is the CSP: landing responses (/, /privacy, /grading-services,
+ * difference is the CSP: landing responses (/, /privacy, /grading-services, /contact,
  * /landing/*) additionally allow Google Analytics (GA4) origins; every other
  * route keeps the strict policy. The two `source` patterns below are mutually
  * exclusive so exactly one CSP is ever emitted.
@@ -117,11 +117,11 @@ const nextConfig: NextConfig = {
       // Every route EXCEPT the landing paths: strict app CSP. (`.+` so "/" is
       // excluded here and handled by the landing entries below.)
       {
-        source: "/((?!landing/|privacy$|grading-services$).+)",
+        source: "/((?!landing/|privacy$|grading-services$|contact$).+)",
         headers: securityHeaders(false),
       },
       // Landing only: same headers + GA4 origins in the CSP.
-      ...["/", "/privacy", "/grading-services", "/landing/:path*"].map((source) => ({
+      ...["/", "/privacy", "/grading-services", "/contact", "/landing/:path*"].map((source) => ({
         source,
         headers: securityHeaders(true),
       })),

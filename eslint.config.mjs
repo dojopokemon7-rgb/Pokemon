@@ -32,6 +32,8 @@ export default tseslint.config(
     // Everything else is intentionally not linted by this gate (see note above).
     ignores: [
       "src/**",
+      // marketing landing source (Vite/React, its own package + toolchain)
+      "landing/**",
       ".next/**",
       "node_modules/**",
       ".reference/**",

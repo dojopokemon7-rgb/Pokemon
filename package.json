@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
+    "landing:build": "node scripts/build-landing.mjs",
     "build:standalone": "npm run build && node scripts/assemble-standalone.mjs",
     "postinstall": "prisma generate",
     "start": "next start",

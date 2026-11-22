@@ -28,6 +28,7 @@
   // irrelevant to the app build (they run under their own toolchains).
   "exclude": [
     "node_modules",
+    "landing",
     "scripts",
     "prisma/seed.ts",
     "prisma/seed-test.ts",
