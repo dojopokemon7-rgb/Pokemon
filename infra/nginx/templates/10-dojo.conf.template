@@ -1,0 +1,51 @@
+# Rendered by the official nginx image's envsubst (NGINX_ENVSUBST_FILTER=DOMAIN,
+# so ONLY ${DOMAIN} is substituted; nginx $variables are untouched) into
+# /etc/nginx-run/conf.d, which nginx.conf includes.
+
+# Unknown Host / direct-IP hits: refuse (Caddy had no matching site either).
+server {
+    listen 80 default_server;
+    return 444;
+}
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    ssl_reject_handshake on;
+}
+
+# HTTP -> HTTPS. 308 matches Caddy's automatic redirect (probed).
+server {
+    listen 80;
+    server_name ${DOMAIN} staging.${DOMAIN};
+    return 308 https://$host$request_uri;
+}
+
+# PROD. ORIGIN TLS: Cloudflare Origin Certificate (see nginx.conf). One cert
+# covering ${DOMAIN} + *.${DOMAIN} serves both prod and staging.
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+    ssl_certificate /etc/nginx/origin/cert.pem;
+    ssl_certificate_key /etc/nginx/origin/key.pem;
+    include /etc/nginx/snippets/security-headers.conf;
+    set $upstream http://app:3000;
+    include /etc/nginx/snippets/locations.conf;
+}
+
+# STAGING: same as prod plus HTTP basic auth on EVERY path (no exemptions).
+# The htpasswd file is written by scripts/start.sh from STAGING_BASICAUTH_HASH
+# (kept in the gitignored root .env so `git reset --hard` deploys never clobber
+# it). Empty hash => `staging:*`, which never matches (fails closed).
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name staging.${DOMAIN};
+    ssl_certificate /etc/nginx/origin/cert.pem;
+    ssl_certificate_key /etc/nginx/origin/key.pem;
+    auth_basic "Staging";
+    auth_basic_user_file /etc/nginx-run/htpasswd;
+    include /etc/nginx/snippets/security-headers.conf;
+    set $upstream http://app-staging:3000;
+    include /etc/nginx/snippets/locations.conf;
+}

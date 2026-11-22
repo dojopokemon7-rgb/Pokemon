@@ -1,6 +1,6 @@
 # =============================================================
 # TCG Collection PWA — Docker Compose
-# Services: app (Next.js) | redis | caddy
+# Services: app | app-staging | redis | nginx (caddy = rollback profile)
 # PostgreSQL is REMOTE (Supabase) — not managed here.
 # =============================================================
 
@@ -47,14 +47,14 @@ services:
       redis:
         condition: service_started
     ports:
-      # Loopback-only: the app is reached ONLY through Caddy (80/443). Binding to
+      # Loopback-only: the app is reached ONLY through Nginx (80/443). Binding to
       # 127.0.0.1 keeps port 3000 off the public internet so the reverse proxy is
-      # the single entry point (no bypassing Caddy / its headers + TLS).
+      # the single entry point (no bypassing Nginx / its headers + TLS).
       - "127.0.0.1:3000:3000"
     env_file:
       - .env
     # S-3: bound the worst-case request buffering. Droplet = 2 vCPU/4GB shared by
-    # prod app + staging app + redis + caddy: prod 1200m (heap 900 leaves headroom
+    # prod app + staging app + redis + nginx: prod 1200m (heap 900 leaves headroom
     # for ~100MB transient 29MB-scan buffers + native/Buffer memory), staging 800m.
     # JUDGEMENT CALL: confirm against real RSS (docker stats) before deploying.
     mem_limit: 1200m
@@ -100,7 +100,7 @@ services:
         condition: service_started
     ports:
       # Loopback-only, DIFFERENT host port than prod (3000) to avoid a clash.
-      # Reached ONLY through Caddy (staging.dojocollect.com). The container
+      # Reached ONLY through Nginx (staging.dojocollect.com). The container
       # itself still listens on 3000.
       - "127.0.0.1:3001:3000"
     env_file:
@@ -119,10 +119,71 @@ services:
       start_period: 40s
 
   # -----------------------------------------------------------
+  # Nginx — reverse proxy, TLS via Cloudflare Origin Certificate
+  # (behind Cloudflare; ACME/Let's Encrypt not used — see infra/nginx/nginx.conf).
+  # Replaces Caddy. Image pinned: nginx 1.30.7 (stable branch), alpine, OpenSSL 3.5.9,
+  # checked 2026-11-22 (`nginx -V` in docs/NGINX_CUTOVER.md). No floating tags.
+  #
+  # The whole ./infra/nginx dir is mounted read-only at /etc/nginx, so a config
+  # edit needs NO container recreate: `docker compose exec nginx nginx -t` then
+  # `docker compose exec nginx nginx -s reload`. scripts/start.sh (entrypoint)
+  # writes the staging htpasswd, then the official /docker-entrypoint.sh renders
+  # templates/*.template (envsubst of ONLY ${DOMAIN}) into the writable
+  # /etc/nginx-run/conf.d, which nginx.conf includes.
+  #
+  # ROLLBACK to Caddy (both proxies must NEVER run together: same 80/443):
+  #   docker compose stop nginx && docker compose --profile caddy up -d caddy
+  # `docker compose up -d` starts nginx and NOT caddy (caddy is in a profile).
+  # -----------------------------------------------------------
+  nginx:
+    image: nginx:1.30.7-alpine
+    container_name: tcg_nginx
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/etc/nginx/scripts/start.sh"]
+    command: ["nginx", "-g", "daemon off;"]
+    depends_on:
+      app:
+        condition: service_started
+      app-staging:
+        condition: service_started
+    # DOMAIN and STAGING_BASICAUTH_HASH use compose variable-substitution
+    # (resolved from the root .env or the shell, NOT from an env_file). DOMAIN is
+    # REQUIRED (no plain-HTTP dev mode as with Caddy; use `npm run dev` locally).
+    # STAGING_BASICAUTH_HASH stays in the gitignored .env so `git reset --hard`
+    # deploys never clobber it (see .env.example + docs/CLOUDFLARE_SETUP.md).
+    environment:
+      - DOMAIN=${DOMAIN:?DOMAIN must be set for nginx}
+      - STAGING_BASICAUTH_HASH=${STAGING_BASICAUTH_HASH}
+      - NGINX_ENVSUBST_FILTER=DOMAIN
+      - NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx-run/conf.d
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx:/etc/nginx:ro
+      # Cloudflare Origin Certificate (cert.pem + key.pem), pasted into
+      # ./infra/cloudflare-origin on the Droplet (docs/CLOUDFLARE_SETUP.md). MUST be
+      # in place BEFORE `docker compose up nginx` (start.sh fails loudly otherwise).
+      # Git-ignored: never commit the key. Nested inside the read-only mount above;
+      # infra/nginx/origin/.gitkeep provides the mountpoint.
+      - ./infra/cloudflare-origin:/etc/nginx/origin:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 128m
+  # -----------------------------------------------------------
+  # Caddy 2 — ROLLBACK ONLY (profile `caddy`; not started by `docker compose up`).
+  # Superseded by nginx above. Use only via:
+  #   docker compose stop nginx && docker compose --profile caddy up -d caddy
+  # Never run together with nginx (same host ports 80/443).
   # Caddy 2 — reverse proxy, TLS via Cloudflare Origin Certificate
   # (behind Cloudflare; ACME/Let's Encrypt not used — see Caddyfile).
   # -----------------------------------------------------------
   caddy:
+    profiles: ["caddy"]
     image: caddy:2-alpine
     container_name: tcg_caddy
     restart: unless-stopped
