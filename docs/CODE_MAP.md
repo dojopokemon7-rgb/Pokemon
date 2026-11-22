@@ -21,7 +21,9 @@
 | `vitest.config.ts` | jsdom, globals, setup `tests/setup.ts`, includes `tests/**` + colocated `src/**/*.test.*`, excludes `e2e/**` |
 | `playwright.config.ts` | Port **3001** (must match `BETTER_AUTH_URL`); 5 projects (setup/chromium/google/authed/camera); webServer = `npm run build:standalone && node .next/standalone/server.js` with `PORT=3001` |
 | `vercel.json` | Cron: `/api/cron/refresh-owned-prices` at `0 3 * * *` (daily 03:00 UTC) |
-| `Dockerfile` / `docker-compose.yml` / `Caddyfile` | Multi-stage standalone Docker deploy; compose adds Redis service; `REDIS_URL=redis://redis:6379` in compose |
+| `Dockerfile` / `docker-compose.yml` / `Caddyfile` | Multi-stage standalone Docker deploy; compose adds Redis service + the `nginx` reverse proxy (`Caddyfile` = rollback, compose profile `caddy`); `REDIS_URL=redis://redis:6379` in compose |
+| `infra/nginx/` | Nginx proxy config: `nginx.conf`, `snippets/*.conf` (real_ip, proxy, headers, locations), `templates/10-dojo.conf.template`, `scripts/start.sh`. Runbook: `docs/NGINX_CUTOVER.md` |
+| `scripts/verify-nginx.mjs` / `scripts/verify-caddy-body-limit.mjs` | Docker-based end-to-end proofs of the nginx config (active) and the Caddy rollback body limits |
 | `.env.example` | Full env template with per-var instructions (see ARCHITECTURE.md §Environment) |
 | `postcss.config.mjs` | Tailwind 4 via `@tailwindcss/postcss` |
 | `prisma/schema.prisma` | 13 models — see §11 below + ARCHITECTURE.md §Data model |

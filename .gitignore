@@ -111,7 +111,7 @@ docker-compose.override.yml
 
 # Cloudflare Origin Certificate material (PRIVATE KEY — never commit).
 # The operator pastes the Cloudflare-issued cert.pem + key.pem here on the
-# Droplet; Caddy mounts the dir read-only (docker-compose.yml). See
+# Droplet; Nginx mounts the dir read-only (docker-compose.yml). See
 # docs/CLOUDFLARE_SETUP.md. Ignore the whole dir and its key/cert explicitly.
 /infra/cloudflare-origin/
 /infra/cloudflare-origin/*.pem

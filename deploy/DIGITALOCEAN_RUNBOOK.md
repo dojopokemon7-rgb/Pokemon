@@ -1,10 +1,15 @@
 # DigitalOcean Deployment Runbook — Dojo TCG PWA
 
 **Phase 1 (this runbook):** deploy to a Droplet, reachable over **HTTP at the Droplet IP** (no domain yet).
-**Phase 2 (later):** add a domain → Caddy auto-upgrades to HTTPS. Covered at the end.
+**Phase 2 (later):** add a domain → HTTPS. Covered at the end.
+> **Proxy update:** the reverse proxy is now **Nginx** (Caddy is a rollback profile). Nginx
+> requires `DOMAIN` and the Cloudflare origin cert, so the Phase 1 plain-HTTP-on-IP flow
+> below needs `docker compose --profile caddy up -d --build` (Caddy serves HTTP on :80
+> when `DOMAIN` is blank). For the live setup see `docs/NGINX_CUTOVER.md` and
+> `docs/CLOUDFLARE_SETUP.md`.
 
 **Model:** you run the steps on your DO account + the Droplet. Paste me any error and I'll fix it.
-**Stack:** Docker Compose = Next.js app + password-protected Redis + Caddy reverse proxy. Database is remote (Supabase Mumbai, already migrated).
+**Stack:** Docker Compose = Next.js app + password-protected Redis + Nginx reverse proxy (Caddy = rollback). Database is remote (Supabase Mumbai, already migrated).
 
 ---
 
@@ -82,7 +87,7 @@ docker compose up -d --build
 ```
 First build takes a few minutes (Next.js production build in-container). Then:
 ```bash
-docker compose ps              # app, redis, caddy should be Up
+docker compose ps              # app, redis, nginx (caddy with --profile caddy) should be Up
 docker compose logs -f app     # watch startup; Ctrl-C to stop watching
 ```
 
@@ -90,7 +95,7 @@ docker compose logs -f app     # watch startup; Ctrl-C to stop watching
 
 ## 7. Verify
 ```bash
-# Health through Caddy (port 80). Expect {"status":"ok",...} once Redis connects.
+# Health through the proxy (port 80, Phase 1 = caddy profile). Expect {"status":"ok",...} once Redis connects.
 curl -i http://localhost/api/health
 
 # A real data path (proves the Mumbai DB connection + search):
@@ -138,7 +143,7 @@ docker compose up -d --build
    - `DOMAIN="yourdomain.com"`
    - `BETTER_AUTH_URL="https://yourdomain.com"`
 3. Add the `https://yourdomain.com/...` redirect URI + origin in Google Cloud Console.
-4. `docker compose up -d` — Caddy detects `DOMAIN`, provisions a Let's Encrypt cert automatically, and serves HTTPS on 443. Verify: `https://yourdomain.com/api/health`.
+4. Put the Cloudflare Origin Certificate in `infra/cloudflare-origin` (`docs/CLOUDFLARE_SETUP.md`; no Let's Encrypt is used), then `docker compose up -d` — Nginx serves HTTPS on 443 for `DOMAIN` and `staging.DOMAIN`. Cutover from Caddy: `docs/NGINX_CUTOVER.md`. Verify: `https://yourdomain.com/api/health`.
 
 ---
 

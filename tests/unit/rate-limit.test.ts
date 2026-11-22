@@ -158,12 +158,12 @@ describe("clientIp — proxy header resolution (audit 10 F2 / 12 F8)", () => {
     expect(clientIp(req({ "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
   });
 
-  it("uses x-real-ip when present (Caddy-set, unspoofable)", () => {
+  it("uses x-real-ip when present (proxy-set, unspoofable)", () => {
     expect(clientIp(req({ "x-real-ip": "198.51.100.2" }))).toBe("198.51.100.2");
   });
 
   it("does NOT let a forged x-forwarded-for override x-real-ip (anti-spoof)", () => {
-    // Attacker sends a forged XFF first hop; Caddy still sets the real peer in
+    // Attacker sends a forged XFF first hop; the proxy still sets the real peer in
     // x-real-ip. The real IP must win so the per-IP bucket can't be rotated.
     const res = clientIp(
       req({ "x-forwarded-for": "6.6.6.6, 10.0.0.1", "x-real-ip": "198.51.100.2" })

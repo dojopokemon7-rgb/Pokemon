@@ -101,8 +101,8 @@ const MAX_REQUEST_BYTES = Math.ceil((MAX_SCAN_BYTES * 4) / 3) + 1024 * 1024; // 
 // every image request). A separate pre-check/IP limit was judged NOT warranted:
 // it would add code without lowering the memory ceiling, which is now bounded by
 // the 64KiB cap for non-sessions. Residual: a genuine signed-in user can still
-// buffer ~29MB per request (rate-limited only after parse); Caddy 30MB and the
-// container memory limit (docker-compose.yml) bound that.
+// buffer ~29MB per request (rate-limited only after parse); the proxy
+// (Nginx/Caddy) 30MB and the container memory limit (docker-compose.yml) bound that.
 const ANON_MAX_REQUEST_BYTES = 64 * 1024;
 
 // C-2 (anonymous text abuse): strict cap on the OCR `text` field. Longer input

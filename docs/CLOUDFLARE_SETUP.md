@@ -8,13 +8,18 @@
 > [`src/lib/utils/rate-limit.ts`](../src/lib/utils/rate-limit.ts) `clientIp()`.
 >
 > **These are OUT-OF-REPO operator steps.** The repo already carries the matching
-> config: Caddy `trusted_proxies` + the origin-cert `tls` directives in
-> [`../Caddyfile`](../Caddyfile), the cert volume mount in
+> config: the Nginx `set_real_ip_from` list in
+> [`../infra/nginx/snippets/http-global.conf`](../infra/nginx/snippets/http-global.conf)
+> and the origin-cert `ssl_certificate` lines in
+> [`../infra/nginx/templates/10-dojo.conf.template`](../infra/nginx/templates/10-dojo.conf.template),
+> the cert volume mount in
 > [`../docker-compose.yml`](../docker-compose.yml), and the `.gitignore` entry for
 > the private key. Run the steps BELOW on the Droplet / in the Cloudflare dashboard.
+> (Nginx replaced Caddy as the proxy; Caddy is kept as a rollback behind the compose
+> profile `caddy`. Cutover and rollback: [`NGINX_CUTOVER.md`](./NGINX_CUTOVER.md).)
 >
 > Do them IN ORDER. Step 4 (firewall) can lock you out if you skip the SSH rule, and
-> step 5 (Caddy redeploy) will crash-loop if the origin cert from step 3 isn't in
+> step 5 (nginx redeploy) refuses to start if the origin cert from step 3 isn't in
 > place first.
 
 Replace `<DROPLET_IP>` with the Droplet's public IPv4 everywhere below.
@@ -62,7 +67,7 @@ dig +short staging.dojocollect.com
    key type; set the hostnames to cover both prod and staging:
    `dojocollect.com` **and** `*.dojocollect.com`. Create it.
 3. Cloudflare shows the **Origin Certificate** and the **Private Key** ONCE. On the
-   Droplet, paste them into the mount directory the Caddy service expects:
+   Droplet, paste them into the mount directory the nginx service expects:
 
    ```bash
    mkdir -p /srv/dojo/infra/cloudflare-origin   # path = <repo>/infra/cloudflare-origin
@@ -73,12 +78,13 @@ dig +short staging.dojocollect.com
    ```
 
    The directory and `*.pem` are git-ignored (see `.gitignore`) — the private key is
-   NEVER committed. Caddy mounts this dir read-only at `/etc/caddy/origin` and serves
-   it via `tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem` (see the Caddyfile
-   prod + staging blocks). ONE Origin Certificate covering `dojocollect.com` +
-   `*.dojocollect.com` serves BOTH prod and staging. If you prefer separate certs,
-   create a second one and point the staging block's `tls` paths at the second file
-   pair.
+   NEVER committed. Nginx mounts this dir read-only at `/etc/nginx/origin` and serves
+   it via `ssl_certificate /etc/nginx/origin/cert.pem` + `ssl_certificate_key
+   /etc/nginx/origin/key.pem` (prod + staging server blocks in
+   `infra/nginx/templates/10-dojo.conf.template`). ONE Origin Certificate covering
+   `dojocollect.com` + `*.dojocollect.com` serves BOTH prod and staging. If you prefer
+   separate certs, create a second one and point the staging block's
+   `ssl_certificate` paths at the second file pair.
 
 ## 4. Lock the Droplet firewall to Cloudflare ONLY (ufw)
 
@@ -117,16 +123,21 @@ Because ufw default-denies inbound once enabled, any inbound 80/443 from a
 non-Cloudflare source is now dropped. SSH (22) stays open to all — restrict it further
 to your admin IP if you wish, but do that in a SEPARATE change after confirming access.
 
-## 5. Redeploy Caddy (cert must already be in place)
+## 5. Redeploy nginx (cert must already be in place)
 
-The origin cert from step 3 MUST exist before Caddy starts, or the `tls` directive
-fails and Caddy crash-loops. Then:
+The origin cert from step 3 MUST exist before nginx starts, or `scripts/start.sh`
+exits with `ERROR: /etc/nginx/origin/cert.pem is missing` and the container
+restart-loops. First-time switch from Caddy: follow
+[`NGINX_CUTOVER.md`](./NGINX_CUTOVER.md). Otherwise:
 
 ```bash
 cd /srv/dojo              # repo root (where docker-compose.yml lives)
-docker compose up -d --force-recreate caddy
-docker compose logs -f caddy   # confirm it started cleanly (no cert/tls errors)
+docker compose up -d --force-recreate nginx
+docker compose logs -f nginx   # confirm it started cleanly (no [emerg] / cert errors)
 ```
+
+A change to only `infra/nginx/snippets/*.conf` or `nginx.conf` needs no recreate:
+`docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload`.
 
 Verify the domain serves over HTTPS AND the direct-IP bypass is closed:
 
@@ -141,36 +152,38 @@ curl -k --resolve dojocollect.com:443:<DROPLET_IP> https://dojocollect.com
 ```
 
 Staging is reached the same way (`https://staging.dojocollect.com`) and additionally
-prompts for Caddy `basic_auth`.
+prompts for basic auth (nginx `auth_basic`).
 
 ### Staging basic-auth password (env var, survives deploys)
 
-The staging `basic_auth` hash is read from the `STAGING_BASICAUTH_HASH` env var — it is
-NO LONGER hand-edited into the Caddyfile. (Previously the Caddyfile carried a hardcoded
-placeholder hash that the operator replaced by hand; every `git reset --hard origin/staging`
-deploy overwrote it back to the placeholder and broke staging basic-auth.) Set it ONCE in
-the gitignored root `.env` and deploys no longer clobber it:
+The staging basic-auth hash is read from the `STAGING_BASICAUTH_HASH` env var. It is
+never hand-edited into a tracked file (a hash committed in the repo was overwritten by
+every `git reset --hard origin/staging` deploy). Set it ONCE in the gitignored root
+`.env` and deploys no longer clobber it:
 
 ```bash
-# 1. Generate the bcrypt hash (quote the password so the shell leaves it intact):
-docker run --rm caddy:2-alpine caddy hash-password --plaintext '<password>'
-#    → prints a $2a$... hash.
+# 1. Generate the hash (quote the password so the shell leaves it intact).
+#    Recommended: apr1. nginx runs crypt() on EVERY staging request; apr1 costs
+#    about 15 ms, bcrypt cost 14 about 1 s of a worker (measured, see NGINX_CUTOVER.md).
+docker run --rm alpine sh -c "apk add -q openssl && openssl passwd -apr1 '<password>'"
+#    → prints $apr1$salt$hash. (An existing bcrypt $2a/$2b/$2y hash also works.)
 
 # 2. Put it in the gitignored ROOT .env (the SAME file docker-compose reads DOMAIN
-#    from — the shared caddy service has no env_file, so compose interpolates both
-#    from the root .env, NOT from .env.staging). Paste the full hash UNQUOTED:
-#        STAGING_BASICAUTH_HASH=$2a$14$...
+#    from — the shared nginx service has no env_file, so compose interpolates both
+#    from the root .env, NOT from .env.staging). Paste the full hash UNQUOTED and
+#    DOUBLE every `$` (compose interpolates `$name`; an unescaped hash is truncated):
+#        STAGING_BASICAUTH_HASH=$$apr1$$salt$$hash
 #    (template entry lives in .env.example).
 
-# 3. Recreate caddy so it picks up the new container env:
+# 3. Recreate nginx so start.sh rewrites the htpasswd from the new container env:
 cd /srv/dojo
-docker compose up -d --force-recreate caddy
+docker compose up -d --force-recreate nginx
 ```
 
-The Caddyfile reads it via `basic_auth { staging {$STAGING_BASICAUTH_HASH} }` — the same
-`{$ENV_VAR}` substitution as the prod block's `{$DOMAIN::80}`. Log in with username
-`staging` and the plaintext password you hashed. If the var is empty/unset, there is no
-valid credential and staging basic-auth fails closed.
+`scripts/start.sh` writes `staging:<hash>` to `/etc/nginx-run/htpasswd` at container
+start and the staging server block reads it with `auth_basic_user_file`. Log in with
+username `staging` and the plaintext password you hashed. If the var is empty/unset the
+file holds `staging:*`, there is no valid credential and staging basic-auth fails closed.
 
 ## 6. Maintenance — keep the Cloudflare ranges fresh
 
@@ -178,53 +191,65 @@ Cloudflare occasionally changes its published IP ranges. When it does, BOTH of t
 must be refreshed from <https://www.cloudflare.com/ips-v4> and
 <https://www.cloudflare.com/ips-v6>, together:
 
-- the `servers { trusted_proxies static … }` list at the top of
-  [`../Caddyfile`](../Caddyfile) (then `docker compose up -d --force-recreate caddy`), and
+- the `set_real_ip_from` list in
+  [`../infra/nginx/snippets/http-global.conf`](../infra/nginx/snippets/http-global.conf)
+  (then `docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload`;
+  no recreate needed), and
 - the ufw allow-rules from step 4 (remove the stale `from <ip>` rules, re-run the loops).
 
-If these drift apart, client-IP resolution (Caddy) or origin reachability (ufw) breaks.
-A stale `trusted_proxies` list silently degrades the rate limiter back to one shared
-bucket; a stale ufw list can make the origin unreachable through Cloudflare.
+If these drift apart, client-IP resolution (nginx) or origin reachability (ufw) breaks.
+A stale `set_real_ip_from` list makes nginx ignore `CF-Connecting-IP` from the new
+ranges (it still passes the header to the app unchanged, but `X-Real-IP` and the
+access log show the Cloudflare edge IP); a stale ufw list can make the origin
+unreachable through Cloudflare.
 
 ## 7. Request-body limits on /api/cards/recognize (M-1)
 
 `POST /api/cards/recognize` reads its whole JSON body into memory in the Node app
 before it can authenticate (the image branch only 401s after the body is read). A
 ~29MB body costs roughly 100MB of transient memory, so the limit is enforced at
-the PROXY as well as in the app. Caddy version used by the project:
-`caddy:2-alpine` (docker-compose.yml); verified on v2.11.4.
+the PROXY as well as in the app. Proxy: `nginx:1.30.7-alpine` (docker-compose.yml).
+Cutover and rollback: [`NGINX_CUTOVER.md`](./NGINX_CUTOVER.md).
 
-Directive (in BOTH site blocks of [`../Caddyfile`](../Caddyfile)):
+Directives (in `infra/nginx/snippets/locations.conf`, included by BOTH server blocks):
 
 ```
-@recognize path /api/cards/recognize
-request_body @recognize { max_size 30MB }          # session-cookie callers
-@recognize_anon { path /api/cards/recognize
-                  not header_regexp Cookie (?:^|;\s*)(?:__Secure-)?better-auth\.session_token= }
-request_body @recognize_anon { max_size 64KB }     # no session cookie
+location ~* ^/api/cards/recognize$ {            # case-insensitive, no trailing slash (same as Caddy)
+    client_max_body_size 30000000;               # session-cookie callers
+    if ($recognize_anon) { rewrite ^ /__recognize_anon last; }
+    ...
+}
+location = /__recognize_anon { internal; client_max_body_size 64000; ... }   # no session cookie
 ```
 
-Caddy's `MB`/`KB` are decimal (30MB = 30,000,000 B; 64KB = 64,000 B). 30MB sits
-just ABOVE the app cap MAX_REQUEST_BYTES = 29,010,603 B, so a legitimate max
+`$recognize_anon` (a `map` in `snippets/http-global.conf`) is 1 unless the Cookie header
+matches `(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=`. `client_max_body_size`
+cannot take a variable, so anonymous callers are rewritten to an internal location with
+the smaller limit; it proxies the ORIGINAL URI and is unreachable from outside (404).
+Sizes are bytes: 30,000,000 and 64,000 (the same numbers Caddy's `30MB`/`64KB` meant).
+30MB sits just ABOVE the app cap MAX_REQUEST_BYTES = 29,010,603 B, so a legitimate max
 (20MiB) image still passes and the app's 413 stays the precise guard. The cookie
-check is a presence check only (Caddy cannot validate sessions): a forged cookie
-header gets the 30MB ceiling AT CADDY. The app closes that hole (S-3): it resolves
+check is a presence check only (nginx cannot validate sessions): a forged cookie
+header gets the 30MB ceiling AT THE PROXY. The app closes that hole (S-3): it resolves
 the session (headers only) BEFORE reading the body and gives only a real
 authenticated user the 29,010,603 B cap; everyone else, forged cookie included,
 gets 64KiB (413, stream cancelled).
 
-Observed Caddy behaviour (scripts/verify-caddy-body-limit.mjs): Caddy does NOT
-short-circuit on Content-Length. It streams to the upstream, aborts at max_size
-and answers the client 413; the upstream sees a truncated, incomplete request
-(the app's body reader then returns 400 "Invalid JSON", never a full oversized
-body). So the limit BOUNDS buffering rather than avoiding the first KB/MB.
+Observed nginx behaviour (scripts/verify-nginx.mjs): nginx rejects on
+`Content-Length` up front with 413 and sends NOTHING to the upstream; chunked bodies
+are cut at the limit with 413 and the upstream never sees a complete request. Accepted
+bodies are buffered (`proxy_request_buffering on`) and forwarded whole, so the app never
+sees a truncated body (Caddy streamed and cut mid-way, so the app saw a 400 "Invalid
+JSON"). Cost: up to 30MB of temp-file buffering per scan. Every other route has a
+finite `client_max_body_size 30000000` (nginx's default 1m would 413 recognize; all
+other POST routes cap themselves at 16KB or less).
 
 | Who sends what | Rejecting layer | Status |
 |---|---|---|
-| No session cookie, body > 64KB (Caddy, 64,000 B) | Caddy | 413 |
-| No session cookie, body > 64KiB (app, if Caddy absent/bypassed) | app `readBodyWithCap` | 413 `request-too-large` |
+| No session cookie, body > 64,000 B (nginx) | nginx | 413 |
+| No session cookie, body > 64KiB (app, if the proxy is absent/bypassed) | app `readBodyWithCap` | 413 `request-too-large` |
 | Forged cookie / no valid session, body > 64KiB (app) | app `readBodyWithCap` | 413 `request-too-large` |
-| Session cookie, body > 30,000,000 B | Caddy | 413 |
+| Session cookie, body > 30,000,000 B | nginx | 413 |
 | Body > 29,010,603 B (and <= 30MB) | app `readBodyWithCap` | 413 `request-too-large` |
 | Valid JSON, decoded image > 20MiB, wrong MIME, not an image | app `validateScanUpload` | 400 |
 | Anonymous image (small body) | app | 401 `auth-required` |
@@ -233,20 +258,27 @@ Forged-cookie hole: CLOSED at the APP layer (S-3). A junk `better-auth.session_t
 cookie no longer selects the large cap; only a resolved session does, and a
 session-lookup error counts as unauthenticated (64KiB). Memory ceiling now: non-
 session callers buffer <= 64KiB; a genuine signed-in user can still buffer up to
-~29MB (~100MB transient) per request, bounded by Caddy 30MB and the container
+~29MB (~100MB transient) per request, bounded by the proxy's 30MB and the container
 `mem_limit` + `--max-old-space-size` in docker-compose.yml (app 1200m/heap 900,
 app-staging 800m/heap 600 — judgement calls, confirm with `docker stats`).
 
-Verify the shipped Caddyfile against the real image (needs Docker, no prod impact):
+Verify the shipped config against the real image (needs Docker, no prod impact, binds
+only high loopback ports):
 
 ```
-node scripts/verify-caddy-body-limit.mjs
+node scripts/verify-nginx.mjs                 # ACTIVE proxy: routing, auth, headers, body tiers, gzip, timeouts...
+node scripts/verify-caddy-body-limit.mjs      # ROLLBACK proxy (Caddyfile, profile `caddy`)
 ```
 
-Apply (operator, repo change only until deployed). Caddy MUST be RECREATED, not
-reloaded: the Caddyfile is a single-file bind mount and an in-place edit/replace
-(e.g. `git reset --hard`) can leave the container reading a stale inode.
+Apply (operator, repo change only until deployed). The whole `infra/nginx` directory is
+mounted, so a limit change needs only a validated reload, not a recreate:
 
 ```
-docker compose up -d --force-recreate caddy
+docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload
 ```
+
+Rollback note: Caddy's equivalent directives live in the `Caddyfile` (`request_body`
+with `max_size 30MB` / `64KB`). Caddy MUST be RECREATED, not reloaded: the Caddyfile
+is a single-file bind mount and an in-place edit/replace (e.g. `git reset --hard`)
+can leave the container reading a stale inode:
+`docker compose --profile caddy up -d --force-recreate caddy`.

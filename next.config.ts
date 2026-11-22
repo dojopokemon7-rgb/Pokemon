@@ -95,7 +95,7 @@ const nextConfig: NextConfig = {
       // Application security headers (sec-audit-3 Finding #1, HIGH)
       // -----------------------------------------------------------------
       // On Vercel the app previously shipped ZERO security headers (the
-      // Caddyfile sets a few, but only in a local :80 block that is NOT in
+      // Nginx proxy sets a few, but those are NOT in
       // the Vercel ingress path). This global `/:path*` entry closes that
       // gap for every response.
       //

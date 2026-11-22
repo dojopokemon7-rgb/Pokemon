@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * ROLLBACK proxy only: Nginx is the active proxy (see scripts/verify-nginx.mjs).
+ * This verifies the Caddy rollback config (compose profile `caddy`, ./Caddyfile).
+ *
  * M-1 verification: does Caddy really reject oversized bodies on
  * /api/cards/recognize WITHOUT forwarding them to the upstream?
  *

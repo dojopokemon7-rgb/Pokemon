@@ -13,7 +13,7 @@ Install these tools **before** cloning the project.
 |------|-------------|----------|-------|
 | **Node.js** | 22.x LTS | https://nodejs.org | Use LTS, not Current |
 | **npm** | 10.x | Bundled with Node.js | Verify: `npm -v` |
-| **Docker Desktop** | 4.x+ | https://www.docker.com/products/docker-desktop/ | Needed for Redis & Caddy |
+| **Docker Desktop** | 4.x+ | https://www.docker.com/products/docker-desktop/ | Needed for Redis & the Nginx proxy |
 | **Git** | Any | https://git-scm.com | For cloning the repo |
 
 ### Verify Installations
@@ -192,7 +192,7 @@ Copy the output into `.env` as `BETTER_AUTH_SECRET`.
 
 ## 6. Docker Services
 
-The project uses Docker Compose to manage Redis and Caddy (reverse proxy).
+The project uses Docker Compose to manage Redis and Nginx (reverse proxy; Caddy is a rollback profile).
 PostgreSQL lives on Supabase (remote) — it is **not** managed by Docker.
 
 ### Services
@@ -201,7 +201,8 @@ PostgreSQL lives on Supabase (remote) — it is **not** managed by Docker.
 |---------|-------|------|---------|
 | `redis` | `redis:7-alpine` | `6379` | Session cache, OTP store, rate-limiting |
 | `app` | `./Dockerfile` | `3000` | Next.js application |
-| `caddy` | `caddy:2-alpine` | `80`, `443` | HTTPS reverse proxy |
+| `nginx` | `nginx:1.30.7-alpine` | `80`, `443` | HTTPS reverse proxy (needs `DOMAIN` + origin cert) |
+| `caddy` | `caddy:2-alpine` | `80`, `443` | Rollback only (profile `caddy`); never run with nginx |
 
 ### Dev Mode — Start Redis Only
 
@@ -347,9 +348,10 @@ curl -X POST http://localhost:3000/api/auth/phone-number/send-otp \
 d:/Pokemon/
 ├── .env                          # Your local secrets (never commit)
 ├── .env.example                  # Template — commit this
-├── Caddyfile                     # Caddy HTTPS reverse proxy config
+├── infra/nginx/                  # Nginx HTTPS reverse proxy config
+├── Caddyfile                     # Caddy config (rollback profile)
 ├── Dockerfile                    # Multi-stage production build
-├── docker-compose.yml            # Redis + App + Caddy services
+├── docker-compose.yml            # Redis + App + Nginx (+ Caddy rollback) services
 ├── package.json                  # NPM dependencies & scripts
 ├── tsconfig.json                 # TypeScript config
 ├── next.config.ts                # Next.js config

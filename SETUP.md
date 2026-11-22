@@ -121,9 +121,12 @@ Copy the output and paste it as your `BETTER_AUTH_SECRET` in `.env`.
 
 ---
 
-## Step 5 — Start Redis & Caddy (Docker)
+## Step 5 — Start Redis (Docker)
 
-Start only the Redis and Caddy services so you can run Next.js locally:
+Start only the Redis service so you can run Next.js locally. (The Nginx proxy needs
+`DOMAIN` + the Cloudflare origin cert, so local dev uses `npm run dev` and no proxy.
+For a plain-HTTP proxy locally: `docker compose --profile caddy up caddy` with `DOMAIN`
+blank.)
 
 ```bash
 # Start Redis in the background
@@ -246,7 +249,7 @@ docker-compose ps
 docker-compose logs -f app
 ```
 
-The app will be accessible at [http://localhost](http://localhost) (via Caddy on port 80).
+The app will be accessible at [http://localhost](http://localhost) (via the `caddy` profile on port 80; production uses Nginx, see docs/NGINX_CUTOVER.md).
 
 ---
 
@@ -271,9 +274,10 @@ When you're ready to send real OTPs:
 
 ```
 d:/Pokemon/
-├── Caddyfile                     # Caddy reverse proxy config
+├── infra/nginx/                  # Nginx reverse proxy config (active proxy)
+├── Caddyfile                     # Caddy config (rollback profile `caddy`)
 ├── Dockerfile                    # Multi-stage production build
-├── docker-compose.yml            # Redis + App + Caddy services
+├── docker-compose.yml            # Redis + App + Nginx (+ Caddy rollback) services
 ├── .env                          # Your local secrets (not in git)
 ├── .env.example                  # Template for new developers
 ├── prisma/

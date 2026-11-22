@@ -79,13 +79,14 @@ export function searchTier(): RateLimitTier {
 
 /**
  * Resolves the real client IP. The app sits behind Cloudflare (proxied DNS) in
- * front of a Caddy reverse proxy; Caddy terminates every connection, so the
- * socket IP is always Caddy/Cloudflare and the App Router `Request` has no
+ * front of an Nginx reverse proxy; Nginx terminates every connection, so the
+ * socket IP is always Nginx/Cloudflare and the App Router `Request` has no
  * reliable socket IP anyway.
  *
  * We trust `CF-Connecting-IP` FIRST. Once Cloudflare proxies the domain, the
- * TCP peer Caddy observes — and therefore the `x-real-ip` Caddy sets from
- * `{remote_host}` — is a CLOUDFLARE EDGE IP, not the visitor. That would
+ * TCP peer the proxy observes would be a CLOUDFLARE EDGE IP, not the visitor
+ * (Nginx's `real_ip` module swaps in the real client only for peers in the
+ * Cloudflare ranges, see below). Trusting the raw peer would
  * collapse every visitor into ONE per-IP rate-limit bucket. Cloudflare carries
  * the true visitor IP in `CF-Connecting-IP`, so that header is now the real
  * client key.
@@ -103,10 +104,13 @@ export function searchTier(): RateLimitTier {
  *
  * When `CF-Connecting-IP` is ABSENT (local dev, tests, CI, or a non-Cloudflare
  * path) we keep the EXISTING chain unchanged: trust `x-real-ip` NEXT because
- * Caddy sets it from `{remote_host}` — the real TCP peer IP Caddy itself
- * observes — and OVERWRITES any client-supplied value, so it CANNOT be spoofed.
- * We must NOT trust the first hop of `x-forwarded-for`: Caddy forwards XFF by
- * default, APPENDING the real peer to whatever the client sent, so the FIRST
+ * Nginx sets it with `proxy_set_header X-Real-IP $remote_addr` (infra/nginx/
+ * snippets/proxy-common.conf) and OVERWRITES any client-supplied value, so it
+ * CANNOT be spoofed. `$remote_addr` is the TCP peer, replaced by the real
+ * visitor IP (from `CF-Connecting-IP`) ONLY when the peer is inside the
+ * Cloudflare ranges (`set_real_ip_from`, infra/nginx/snippets/http-global.conf).
+ * We must NOT trust the first hop of `x-forwarded-for`: Nginx forwards XFF with
+ * `$proxy_add_x_forwarded_for`, APPENDING the peer to whatever the client sent, so the FIRST
  * XFF hop is the attacker-CONTROLLED value. Keying the rate limiter on it let
  * an attacker rotate a forged XFF to get a fresh per-IP bucket on every request
  * and brute-force past the cap on sign-in / email-OTP / admin-auth
@@ -130,12 +134,12 @@ export function clientIp(request: Request): string {
   // is spoofable; with it, every request transited Cloudflare so it's authoritative.
   const cf = request.headers.get("cf-connecting-ip");
   if (cf && cf.trim()) return cf.trim();
-  // TRUSTED next (no Cloudflare header — local/dev/test/CI or direct Caddy):
-  // Caddy's `header_up X-Real-IP {remote_host}` overwrites any client value with
-  // the real peer IP — unspoofable in this single-proxy topology.
+  // TRUSTED next (no Cloudflare header — local/dev/test/CI or direct Nginx):
+  // Nginx's `proxy_set_header X-Real-IP $remote_addr` overwrites any client value
+  // with the real peer IP — unspoofable in this single-proxy topology.
   const real = request.headers.get("x-real-ip");
   if (real && real.trim()) return real.trim();
-  // UNTRUSTED fallback (no proxy): the first XFF hop is client-appended by Caddy,
+  // UNTRUSTED fallback (no proxy): the first XFF hop is client-appended by Nginx,
   // so it's only used when x-real-ip is absent (local/dev/test/CI).
   const xff = request.headers.get("x-forwarded-for");
   if (xff) {

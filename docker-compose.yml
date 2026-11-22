@@ -179,8 +179,8 @@ services:
   # Superseded by nginx above. Use only via:
   #   docker compose stop nginx && docker compose --profile caddy up -d caddy
   # Never run together with nginx (same host ports 80/443).
-  # Caddy 2 — reverse proxy, TLS via Cloudflare Origin Certificate
-  # (behind Cloudflare; ACME/Let's Encrypt not used — see Caddyfile).
+  # TLS via Cloudflare Origin Certificate (behind Cloudflare; ACME/Let's Encrypt
+  # not used — see Caddyfile).
   # -----------------------------------------------------------
   caddy:
     profiles: ["caddy"]

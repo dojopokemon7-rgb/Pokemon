@@ -31,7 +31,7 @@ Google OAuth auth throughout.
 | Validation | Zod 3 at every boundary (`src/lib/validators/` + inline schemas in routes) |
 | OCR | Google Cloud Vision (server) with tesseract.js (on-device fallback) |
 | Tests | Vitest (unit + integration), Playwright (e2e, port 3001 against a standalone production build) |
-| Deploy | Vercel (cron + preview URLs) and/or Docker standalone (`output: "standalone"`). STAGING: a second `app-staging` container on the same Droplet at `staging.dojocollect.com` (Caddy basic-auth), isolated by a `staging` Postgres schema on the same Supabase DB — see docs/ARCHITECTURE.md §12 |
+| Deploy | Vercel (cron + preview URLs) and/or Docker standalone (`output: "standalone"`). STAGING: a second `app-staging` container on the same Droplet at `staging.dojocollect.com` (Nginx basic-auth; Caddy = rollback profile), isolated by a `staging` Postgres schema on the same Supabase DB — see docs/ARCHITECTURE.md §12 |
 
 ## 3. Commands
 
@@ -248,6 +248,7 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
 | `docs/CODE_MAP.md` | You need to find WHERE anything lives — every file, route, export, and its consumers. Start here for unfamiliar tasks. |
 | `docs/ARCHITECTURE.md` | You're changing data flows, adding endpoints/services, touching caching, auth, external APIs, the sync engine, or the schema. |
 | `docs/API_REFERENCE.md` | You're adding/modifying API routes or need exact request/response contracts. |
+| `docs/NGINX_CUTOVER.md` | You're touching the reverse proxy (`infra/nginx/`), or doing the Caddy→Nginx cutover / rollback on the Droplet. |
 | `HANDOFF.md` | Feature-completion status + test counts at handoff time (historical). |
 | `SETUP.md` | Local environment setup questions. |
 | `REQUIREMENTS.md` / `.reference/` / `dojo-design/` | Product requirements and design prototypes. |
