@@ -30,7 +30,7 @@ A wrong value never breaks the app. The job just reports `not configured / inval
 curl -fsS -H 'Authorization: Bearer <CRON_SECRET>' 'http://127.0.0.1:3000/api/cron/scrydex-reminder?dryRun=1'
 ```
 
-The JSON shows `nextRenewal`, `daysUntil`, the credit reading, what would be sent (`wouldSend`) and a `reason`. Nothing is sent or recorded. The same settings are visible (read-only) on the **Scrydex billing** card at the top of the `/admin` page.
+The JSON shows `nextRenewal`, `daysUntil`, the credit reading, what would be sent (`wouldSend`) and a `reason`. Nothing is sent or recorded, and no Scrydex credit is spent: the credit reading comes from the last cached value (refreshed by the daily run), so it shows as unavailable until the first real run has happened. The same settings are visible (read-only) on the **Scrydex billing** card at the top of the `/admin` page.
 
 ## Daily trigger (Droplet host crontab)
 
