@@ -425,6 +425,14 @@ Indexes worth knowing: `Card.@@index([updatedAt])` (trending), `Card.@@index([ta
 | `SIGNUP_ALLOWLIST` | no | gates NEW signups (email/pw + Google) via `user.create.before`; comma-separated exact emails and/or `@domain`; empty/unset = open |
 | `GOOGLE_CLIENT_ID/SECRET` | prod | `test` fallbacks keep routes alive in dev |
 | `CRON_SECRET` | prod! | guards `/api/cron/refresh-owned-prices`; unset = fail-closed in prod (rejected), unauthenticated pass-through local dev only |
+| `SCRYDEX_REMINDER_ENABLED` | no | `true` enables Scrydex renewal/low-credit emails; anything else = off (keep off on staging) |
+| `SCRYDEX_RENEWAL_DATE` | if enabled | `YYYY-MM-DD` anchor renewal date (past ok; rolled forward) |
+| `SCRYDEX_RENEWAL_CYCLE` | no | `monthly` (default) \| `yearly`; same day-of-month, clamped to month end |
+| `SCRYDEX_REMINDER_TZ` | no | IANA tz defining "today" (default `Asia/Kolkata`) |
+| `SCRYDEX_REMINDER_DAYS_BEFORE` | no | comma list of days-before to email (default `7,3,1,0`; 0 = renewal day) |
+| `SCRYDEX_LOW_CREDIT_PERCENT` | no | comma list of % remaining thresholds (default `20,5`; empty = off); needs `SCRYDEX_LIVE_CREDITS_APPROVED=true` (usage read costs 1 credit) |
+| `SCRYDEX_REMINDER_TO` | no | recipients (default `dojo.collect@nodwin.com`) |
+| `SCRYDEX_PLAN_LABEL` | no | free text shown in the email (max 80 chars) |
 | `DAILY_OWNED_PRICE_CAP` | no | max owned cards refreshed per daily run (default 250); leftovers drain next run via the 24h gate |
 | `POKEMON_TCG_API_KEY` | no | raises rate limit to 20k/day |
 | `APITCG_API_KEY` | for One Piece | x-api-key header |
@@ -477,13 +485,24 @@ mints the session on a successful verify.
 
 ## 12. Deploy topology
 
-- **Vercel**: cron 03:00 UTC hits `/api/cron/refresh-owned-prices` with `Authorization: Bearer $CRON_SECRET` (the old `/api/cron/sync-cards` 02:00 catalog sync was removed in `bf1eb28`); preview URLs trusted via `*.vercel.app`.
+- **Cron reality**: `vercel.json` has `crons: []`, so NOTHING fires `/api/cron/*` automatically on the Droplet; use host crontab entries (docs/SCRYDEX_REMINDERS.md, deploy/DIGITALOCEAN_RUNBOOK.md §8). `/api/cron/refresh-owned-prices` with `Authorization: Bearer $CRON_SECRET` (the old `/api/cron/sync-cards` 02:00 catalog sync was removed in `bf1eb28`); preview URLs trusted via `*.vercel.app`.
 - **Docker**: multi-stage build of `output:"standalone"`; compose adds Redis; healthcheck `/api/health` gates on **Postgres** (503 only when Postgres is unreachable). Redis is cache-only/optional (RULE 1) — a Redis outage yields HTTP 200 `status:"degraded"`, never 503.
 - **Reverse proxy (Nginx)**: one pinned `nginx:1.30.7-alpine` container (`tcg_nginx`, config in `infra/nginx/`, verified by `scripts/verify-nginx.mjs`) fronts prod + staging; Caddy remains as a rollback behind compose profile `caddy` (never run both). Cutover, rollback and the measured behaviour differences: [`docs/NGINX_CUTOVER.md`](./NGINX_CUTOVER.md).
 - **Cloudflare (origin hiding)**: prod + staging sit behind Cloudflare (proxied DNS), so the Droplet IP isn't exposed via the domain and the Droplet firewall is locked to Cloudflare's ranges. Nginx (the reverse proxy; Caddy is the rollback profile) trusts Cloudflare via `set_real_ip_from` + `real_ip_header CF-Connecting-IP` and serves a Cloudflare **Origin Certificate** (not Let's Encrypt — ACME HTTP-01 can't reach the firewalled origin); the rate limiter reads `CF-Connecting-IP`, trustworthy only because of that firewall lock. Operator runbook: [`docs/CLOUDFLARE_SETUP.md`](./CLOUDFLARE_SETUP.md).
 - **E2E/Docker asset fix**: `scripts/assemble-standalone.mjs` copies `.next/static` + `public` into the standalone tree (Next doesn't).
 - **Staging** (`staging.dojocollect.com`): a SECOND `app-staging` container on the SAME Droplet (same `build`/`Dockerfile` as prod `app`, loopback `127.0.0.1:3001`), fed by its own `.env.staging`. A dedicated Nginx server block reverse-proxies `staging.dojocollect.com → app-staging:3000` with the same security headers as prod PLUS nginx `auth_basic` (htpasswd written by `infra/nginx/scripts/start.sh` from `STAGING_BASICAUTH_HASH`) so the pre-release env isn't public. **DB isolation**: staging's `DATABASE_URL`/`DIRECT_URL` carry `?schema=staging`, so Prisma provisions + migrates an isolated `staging` schema in the SAME Supabase DB (prod = implicit `public`) — provisioned with `prisma migrate deploy` (replays the committed migration history), never `db push`. Redis is SHARED with prod (cache-only/optional, RULE 1 — cross-env key overlap is cosmetic). **Promote flow**: feature branch → merge/deploy to `staging` branch → `docker compose up -d --build app-staging` → test on staging.dojocollect.com → merge `staging` → `master` → prod deploy `docker compose up -d --build app` (nginx config edits need only `docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload`; changing `DOMAIN`, the staging hash or the `.template` needs `up -d --force-recreate nginx`). Owner setup steps live in the (gitignored) `.agents/tasks/staging-setup/runbook.md`.
 
+### Scrydex renewal reminders
+
+`GET /api/cron/scrydex-reminder[?dryRun=1]` (CRON_SECRET-guarded exactly like `refresh-owned-prices`) runs `runScrydexReminder()` (`scrydex-reminder.service.ts`). Pure logic (config parsing, `nextRenewalDate` with month-end clamping, due-reminder and threshold selection) is in `src/lib/utils/scrydex-reminder.ts`; email text in `scrydex-reminder-email.ts`. All settings are the `SCRYDEX_*` env vars in the table above; invalid config never crashes, the job reports `not configured / invalid: <reason>`.
+
+- **Why:** the Scrydex subscription is paid by an Amex card that does not auto-renew, so a human must pay each cycle.
+- **Idempotency:** each email is claimed first by `prisma.verification.create` with id `scrydex-reminder:renewal:<date>:<daysBefore>` / `scrydex-reminder:credit:<cycleStart>:<threshold>` (P2002 = already sent). If the send fails the claim is deleted so the next run retries (rare duplicate possible vs. losing a reminder). `expiresAt` is cycle end + 2 days so Better Auth's cleanup purges rows. No schema change, no raw SQL.
+- **Usage read:** `GET /account/v1/usage` costs 1 credit (SCRYDEX_AUDIT.md), so it passes `isScrydexLiveApproved()`, is cached in Redis (`scrydex:usage`, fresh for 1h), and failure only skips the credit alert.
+- **Staging stays off** unless `SCRYDEX_REMINDER_ENABLED=true` is set in `.env.staging`; if enabled, subjects get `[STAGING] `.
+- **Scheduling:** host crontab on the Droplet (vercel.json has no crons). See [SCRYDEX_REMINDERS.md](./SCRYDEX_REMINDERS.md).
+- **Admin:** read-only "Scrydex billing" card on `/admin` (cached usage only).
+- **After paying:** change nothing unless the billing date moved; then edit `SCRYDEX_RENEWAL_DATE` and restart `app`.
 ## 13. Grading interest, landing analytics, and the migration runbook
 
 **Data model:** `GradingInterest` → table `grading_interest`: `id` (cuid — non-enumerable, no sequence gaps on upsert), `email` (UNIQUE, stored trimmed + lowercased; DB `CHECK (email = lower(email))` backs the case-insensitivity the D1 `COLLATE NOCASE` gave), `category`/`volume` (Zod in the route + DB CHECKs), `source` (≤ 40), `joinedAt`, `updatedAt` (null until a repeat submit). All access is via Prisma model calls (schema-qualified; no raw SQL, avoids the S-1 PgBouncer search_path issue). Concurrent same-email submits: upsert, and on P2002 retry as an update → exactly one row, last answers win.

@@ -23,6 +23,7 @@ import {
   TopCollectedCardsChart,
 } from "./_components/AnalyticsCharts";
 import { LiveOverviewStats } from "./_components/LiveOverviewStats";
+import { ScrydexBillingCard } from "./_components/ScrydexBillingCard";
 import { requireAdminPage } from "@/lib/utils/require-admin-page";
 
 // Live, per-request authed read — the stat cards auto-refresh client-side, but
@@ -66,6 +67,8 @@ export default async function AdminOverviewPage() {
 
       {/* ── Financial + Activity stat cards (live, auto-refresh ~25s) ── */}
       <LiveOverviewStats initialData={{ stats, activeUsers }} />
+
+      <ScrydexBillingCard />
 
       {/* ── Analytics (real time-series) ── */}
       <SectionHeading>Analytics</SectionHeading>

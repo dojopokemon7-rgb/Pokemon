@@ -239,7 +239,10 @@ Route groups `(auth)`, `(dashboard)`, etc. are folder-only — they do NOT appea
   **History / population / deeper Scrydex data stay on the existing on-view 7-day
   cadence — this job does NOT change their schedule or scope.** The old
   `/api/cron/sync-cards` daily catalog sync was REMOVED (commit `bf1eb28`); this
-  owned-price cron is the only scheduled job.
+  owned-price cron is the only scheduled job. NOTE: `vercel.json` has `crons: []`; on the
+  Droplet nothing fires it unless a host crontab does (docs/SCRYDEX_REMINDERS.md).
+  `GET /api/cron/scrydex-reminder[?dryRun=1]` (same guard) sends Scrydex renewal/low-credit
+  emails, configured only by `SCRYDEX_*` env vars; claims via `verification` rows.
 
 ## 9. Doc index (read the one matching your task)
 

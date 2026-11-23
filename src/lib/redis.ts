@@ -228,6 +228,8 @@ export const RedisKeys = {
    * NOT approved; credit-consuming calls must refuse. See scrydex-credit-gate.ts.
    */
   scrydexCreditApproval: "scrydex:credit-approval",
+  /** Last good /account/v1/usage reading (JSON {fetchedAt,...}). Cache only; 7d TTL. */
+  scrydexUsage: "scrydex:usage",
 
   // ===========================================================
   // Server-side data caches (fail-open, CACHE-ONLY — AGENTS.md RULE 1).

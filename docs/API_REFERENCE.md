@@ -27,6 +27,7 @@
 | `/collections` | GET, POST | `requireAuth` | `CreateCollectionSchema` (in service) | — | No |
 | `/collections/[id]` | PATCH, DELETE | `requireAuth` | service schemas | — | No |
 | `/cron/sync-cards` | GET, POST | `CRON_SECRET` | — | — | No |
+| `/cron/scrydex-reminder` | GET | `CRON_SECRET` | — | `dryRun` | No |
 | `/ebay/marketplace-account-deletion` | GET, POST | public (compliance) | — | — | POST always 200 |
 | `/ebay/search` | GET | public | — | search 24h | Yes (fallback 200) |
 | `/health` | GET | public | — | ping | 503 degraded |
@@ -222,6 +223,10 @@ verify that cookie. Creds/OTP never reach the client; never logged in prod.
 ---
 
 ## Ops
+
+### `GET /api/cron/scrydex-reminder[?dryRun=1]`
+- Auth: same as refresh-owned-prices (Bearer or `?secret=`, constant-time, fail-closed in prod). 401 otherwise.
+- 200 JSON `{enabled, dryRun, nextRenewal, daysUntil, renewalSent, credit:{remaining,total,percent,fetchedAt,threshold}|null, creditSent, wouldSend:{renewal,credit}|null, reason}`. `dryRun=1` claims/sends nothing and fills `wouldSend` with subjects. Invalid config = 200 with `reason: "not configured / invalid: …"`. Setup: docs/SCRYDEX_REMINDERS.md.
 
 ### `GET|POST /api/cron/sync-cards`
 - Auth: `Authorization: Bearer $CRON_SECRET` or `?secret=`, `timingSafeEqual`; **unauthenticated when `CRON_SECRET` unset (local dev)**. `runtime="nodejs"`, `dynamic="force-dynamic"`, `maxDuration=300` (sync self-budgets 250s).
