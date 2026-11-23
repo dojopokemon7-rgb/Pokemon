@@ -19,11 +19,11 @@ const m = vi.hoisted(() => {
       [...rows.values()].filter((r) => r.identifier.startsWith(where.identifier.startsWith))
     ),
   };
-  return { rows, verification, send: vi.fn(), usage: vi.fn() };
+  return { rows, verification, send: vi.fn(), usage: vi.fn(), cached: vi.fn() };
 });
 vi.mock("@/lib/db", () => ({ prisma: { verification: m.verification } }));
 vi.mock("@/lib/utils/ses-email", () => ({ sendSesEmail: m.send }));
-vi.mock("@/lib/services/scrydex-usage.service", () => ({ getScrydexUsage: m.usage, readCachedUsage: vi.fn() }));
+vi.mock("@/lib/services/scrydex-usage.service", () => ({ getScrydexUsage: m.usage, readCachedUsage: m.cached }));
 
 import { NextRequest } from "next/server";
 import { GET } from "@/app/api/cron/scrydex-reminder/route";
@@ -125,6 +125,18 @@ describe("job", () => {
     expect(j.wouldSend.renewal).toContain("due in 7 days");
     expect(m.send).not.toHaveBeenCalled();
     expect(m.verification.create).not.toHaveBeenCalled();
+  });
+  it("dryRun never makes the live usage call; uses cache only", async () => {
+    m.cached.mockResolvedValue(usage(900));
+    const j = await (await GET(req("?dryRun=1"))).json();
+    expect(m.usage).not.toHaveBeenCalled();
+    expect(m.cached).toHaveBeenCalled();
+    expect(j.credit).toMatchObject({ remaining: 900, total: 1000 });
+    m.cached.mockResolvedValue(null);
+    const k = await (await GET(req("?dryRun=1"))).json();
+    expect(m.usage).not.toHaveBeenCalled();
+    expect(k.credit).toBeNull();
+    expect(k.reason).toContain("credit alert skipped");
   });
   it("usage unavailable -> renewal still sent, credit skipped", async () => {
     m.usage.mockResolvedValue(null);

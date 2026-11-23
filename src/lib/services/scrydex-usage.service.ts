@@ -6,7 +6,7 @@
  * It therefore goes through the SOFT credit gate (`isScrydexLiveApproved`):
  * gate closed → no HTTP, "unavailable". Calls are also cached in Redis for
  * USAGE_FRESH_MS (Scrydex itself only updates every ~20–30 min), so the daily
- * job + dry runs cost at most ~1 credit per hour of activity.
+ * real job runs cost at most ~1 credit per hour of activity. dryRun reads the\n * cache only (readCachedUsage): no live call, no credit, no cache write.
  *
  * RULE 2: a failed/invalid/gated read is `null` (unavailable) — numbers are
  * never invented. RULE 1: Redis is optional; every access is try/catch.

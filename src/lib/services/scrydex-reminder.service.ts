@@ -18,7 +18,7 @@
 import { prisma } from "@/lib/db";
 import { sendSesEmail } from "@/lib/utils/ses-email";
 import { subjectPrefix } from "@/lib/services/contact.service";
-import { getScrydexUsage, type ScrydexUsage } from "@/lib/services/scrydex-usage.service";
+import { getScrydexUsage, readCachedUsage, type ScrydexUsage } from "@/lib/services/scrydex-usage.service";
 import {
   creditPercent,
   daysUntil,
@@ -133,8 +133,10 @@ export async function runScrydexReminder(
   const reasons: string[] = [];
 
   // Usage is best-effort: failure/gated => null, renewal reminder still goes out.
+  // dryRun must be side-effect free (no live 1-credit call, no cache write):
+  // it reads the cache only, so usage is "unavailable" when nothing is cached.
   let usage: ScrydexUsage | null = null;
-  if (due !== null || wantCredit) usage = await getScrydexUsage(now);
+  if (due !== null || wantCredit) usage = dryRun ? await readCachedUsage() : await getScrydexUsage(now);
   const pct = usage ? creditPercent(usage.remainingCredits, usage.totalCredits) : null;
   const usageView =
     usage && pct !== null
